@@ -41,25 +41,15 @@ contract AntiJITVestingPlugin is BaseHook, IPluginEvents {
      */
     mapping(PoolId => mapping(bytes32 => PositionResidency)) public residencies;
 
-    constructor(
-        IPoolManager _poolManager,
-        uint32 _minResidencyBlocks
-    ) BaseHook(_poolManager) {
+    constructor(IPoolManager _poolManager, uint32 _minResidencyBlocks) BaseHook(_poolManager) {
         minResidencyBlocks = _minResidencyBlocks > 0 ? _minResidencyBlocks : 3;
     }
 
     /**
      * @inheritdoc BaseHook
      */
-    function getPluginPermissions()
-        public
-        pure
-        override
-        returns (uint32 permissions)
-    {
-        return
-            PluginDispatcher.BEFORE_MODIFY_LIQUIDITY_FLAG |
-            PluginDispatcher.AFTER_MODIFY_LIQUIDITY_FLAG;
+    function getPluginPermissions() public pure override returns (uint32 permissions) {
+        return PluginDispatcher.BEFORE_MODIFY_LIQUIDITY_FLAG | PluginDispatcher.AFTER_MODIFY_LIQUIDITY_FLAG;
     }
 
     /**
@@ -73,14 +63,7 @@ contract AntiJITVestingPlugin is BaseHook, IPluginEvents {
     ) external override onlyPoolManager returns (bytes4) {
         hookData;
         PoolId poolId = key.toId();
-        bytes32 positionKey = keccak256(
-            abi.encodePacked(
-                sender,
-                params.tickLower,
-                params.tickUpper,
-                params.salt
-            )
-        );
+        bytes32 positionKey = keccak256(abi.encodePacked(sender, params.tickLower, params.tickUpper, params.salt));
 
         PositionResidency storage residency = residencies[poolId][positionKey];
 
@@ -88,41 +71,24 @@ contract AntiJITVestingPlugin is BaseHook, IPluginEvents {
             // Addition of liquidity: record/refresh residency entry
             residency.lastDepositBlock = uint32(block.number);
             residency.lastDepositTimestamp = uint32(block.timestamp);
-            residency.liquidity += uint128(
-                uint256(int256(params.liquidityDelta))
-            );
+            residency.liquidity += uint128(uint256(int256(params.liquidityDelta)));
 
             emit LiquidityResidencyRecorded(
-                poolId,
-                sender,
-                positionKey,
-                uint32(block.number),
-                uint32(block.timestamp),
-                residency.liquidity
+                poolId, sender, positionKey, uint32(block.number), uint32(block.timestamp), residency.liquidity
             );
         } else if (params.liquidityDelta < 0) {
             // Removal of liquidity: evaluate block residency
             uint32 currentBlock = uint32(block.number);
             uint32 depositBlock = residency.lastDepositBlock;
-            uint32 elapsed = currentBlock >= depositBlock
-                ? currentBlock - depositBlock
-                : 0;
+            uint32 elapsed = currentBlock >= depositBlock ? currentBlock - depositBlock : 0;
 
             uint128 deltaAbs = uint128(uint256(int256(-params.liquidityDelta)));
 
             if (elapsed < minResidencyBlocks && residency.liquidity > 0) {
                 // JIT residency violation detected: calculate haircut penalty
-                uint256 penalty = (uint256(deltaAbs) * PENALTY_BPS) /
-                    BPS_DENOMINATOR;
+                uint256 penalty = (uint256(deltaAbs) * PENALTY_BPS) / BPS_DENOMINATOR;
 
-                emit JITPenaltyLevied(
-                    poolId,
-                    sender,
-                    positionKey,
-                    penalty,
-                    elapsed,
-                    minResidencyBlocks
-                );
+                emit JITPenaltyLevied(poolId, sender, positionKey, penalty, elapsed, minResidencyBlocks);
             }
 
             if (deltaAbs >= residency.liquidity) {
@@ -144,13 +110,7 @@ contract AntiJITVestingPlugin is BaseHook, IPluginEvents {
         IPoolManager.ModifyLiquidityParams calldata params,
         BalanceDelta delta,
         bytes calldata hookData
-    )
-        external
-        view
-        override
-        onlyPoolManager
-        returns (bytes4, BalanceDelta hookDelta)
-    {
+    ) external view override onlyPoolManager returns (bytes4, BalanceDelta hookDelta) {
         sender;
         key;
         params;

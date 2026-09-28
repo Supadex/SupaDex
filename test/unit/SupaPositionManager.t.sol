@@ -168,7 +168,7 @@ contract SupaPositionManagerTest is Test {
             deadline: block.timestamp + 100,
             hookData: ""
         });
-        (uint256 tokenId, , , ) = posManager.mint(mintParams);
+        (uint256 tokenId,,,) = posManager.mint(mintParams);
 
         // Increase liquidity
         ISupaPositionManager.IncreaseLiquidityParams memory incParams = ISupaPositionManager.IncreaseLiquidityParams({
@@ -179,7 +179,7 @@ contract SupaPositionManagerTest is Test {
             deadline: block.timestamp + 100,
             hookData: ""
         });
-        (uint128 totalLiq, , ) = posManager.increaseLiquidity(incParams);
+        (uint128 totalLiq,,) = posManager.increaseLiquidity(incParams);
         assertEq(totalLiq, 15 ether);
 
         // Decrease partial liquidity
@@ -214,7 +214,7 @@ contract SupaPositionManagerTest is Test {
             deadline: block.timestamp + 100,
             hookData: ""
         });
-        (uint256 tokenId, , , ) = posManager.mint(mintParams);
+        (uint256 tokenId,,,) = posManager.mint(mintParams);
 
         // Transfer NFT from Alice to Bob
         vm.prank(alice);
@@ -256,7 +256,7 @@ contract SupaPositionManagerTest is Test {
             deadline: block.timestamp + 100,
             hookData: ""
         });
-        (uint256 tokenId, , , ) = posManager.mint(mintParams);
+        (uint256 tokenId,,,) = posManager.mint(mintParams);
 
         // Attempting to burn active position reverts
         vm.expectRevert();

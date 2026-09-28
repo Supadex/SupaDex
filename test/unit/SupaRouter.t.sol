@@ -77,13 +77,10 @@ contract LiquidityProviderHelper is IUnlockCallback {
             abi.decode(data, (PoolKey, int24, int24, uint128));
 
         IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
-            tickLower: tickLower,
-            tickUpper: tickUpper,
-            liquidityDelta: int256(uint256(liquidity)),
-            salt: bytes32(0)
+            tickLower: tickLower, tickUpper: tickUpper, liquidityDelta: int256(uint256(liquidity)), salt: bytes32(0)
         });
 
-        (BalanceDelta delta, ) = manager.modifyLiquidity(key, params, "");
+        (BalanceDelta delta,) = manager.modifyLiquidity(key, params, "");
 
         if (delta.amount0() > 0) {
             uint256 amount0 = uint256(uint128(delta.amount0()));
@@ -274,23 +271,10 @@ contract SupaRouterTest is Test {
 
     function test_exactInputMultiHop() public {
         // Multi-hop path: TokenA -> PoolAB -> TokenB -> PoolBC -> TokenC
-        bytes memory hop1 = PathKeyLib.encodeHop(
-            tokenA,
-            tokenB,
-            poolAB.fee,
-            poolAB.tickSpacing,
-            poolAB.plugin,
-            poolAB.curveType
-        );
+        bytes memory hop1 =
+            PathKeyLib.encodeHop(tokenA, tokenB, poolAB.fee, poolAB.tickSpacing, poolAB.plugin, poolAB.curveType);
         bytes memory multiPath = abi.encodePacked(
-            hop1,
-            abi.encodePacked(
-                poolBC.fee,
-                poolBC.tickSpacing,
-                poolBC.plugin,
-                uint8(poolBC.curveType),
-                tokenC
-            )
+            hop1, abi.encodePacked(poolBC.fee, poolBC.tickSpacing, poolBC.plugin, uint8(poolBC.curveType), tokenC)
         );
 
         uint256 amountIn = 10 ether;

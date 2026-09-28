@@ -41,10 +41,7 @@ contract VolatilityTWAPOracle is IVolatilityTWAPOracle {
         state.cardinalityNext = 1;
 
         observations[poolId][0] = Observation({
-            blockTimestamp: blockTimestamp,
-            tickCumulative: 0,
-            secondsPerLiquidityCumulativeX128: 0,
-            initialized: true
+            blockTimestamp: blockTimestamp, tickCumulative: 0, secondsPerLiquidityCumulativeX128: 0, initialized: true
         });
 
         latestTicks[poolId] = tick;
@@ -107,11 +104,7 @@ contract VolatilityTWAPOracle is IVolatilityTWAPOracle {
     /**
      * @inheritdoc IVolatilityTWAPOracle
      */
-    function grow(PoolId poolId, uint16 newCardinalityNext)
-        external
-        override
-        returns (uint16 cardinalityNextUpdated)
-    {
+    function grow(PoolId poolId, uint16 newCardinalityNext) external override returns (uint16 cardinalityNextUpdated) {
         OracleState storage state = states[poolId];
         uint16 currentCardinality = state.cardinality;
         if (currentCardinality == 0) revert PluginErrors.OracleNotInitialized();
@@ -178,10 +171,7 @@ contract VolatilityTWAPOracle is IVolatilityTWAPOracle {
         secondsAgos[0] = windowSeconds;
         secondsAgos[1] = 0;
 
-        try this.observe(poolId, secondsAgos) returns (
-            int56[] memory tickCumulatives,
-            uint112[] memory
-        ) {
+        try this.observe(poolId, secondsAgos) returns (int56[] memory tickCumulatives, uint112[] memory) {
             unchecked {
                 int56 tickDelta = tickCumulatives[1] - tickCumulatives[0];
                 int256 averageTick = tickDelta / int56(uint56(windowSeconds));
@@ -239,10 +229,13 @@ contract VolatilityTWAPOracle is IVolatilityTWAPOracle {
 
                     unchecked {
                         int56 tickDiff = nextObs.tickCumulative - midObs.tickCumulative;
-                        tickCumulative = midObs.tickCumulative + (tickDiff * int56(uint56(offset))) / int56(uint56(timeDiff));
+                        tickCumulative =
+                            midObs.tickCumulative + (tickDiff * int56(uint56(offset))) / int56(uint56(timeDiff));
 
-                        uint112 secDiff = nextObs.secondsPerLiquidityCumulativeX128 - midObs.secondsPerLiquidityCumulativeX128;
-                        secondsPerLiquidity = midObs.secondsPerLiquidityCumulativeX128 + uint112((uint256(secDiff) * offset) / timeDiff);
+                        uint112 secDiff =
+                            nextObs.secondsPerLiquidityCumulativeX128 - midObs.secondsPerLiquidityCumulativeX128;
+                        secondsPerLiquidity =
+                            midObs.secondsPerLiquidityCumulativeX128 + uint112((uint256(secDiff) * offset) / timeDiff);
                     }
                     return (tickCumulative, secondsPerLiquidity);
                 }

@@ -69,8 +69,7 @@ library PluginDispatcher {
         if (!hasPermission(plugin, AFTER_INITIALIZE_FLAG)) return;
 
         bytes4 selector = IPlugin.afterInitialize.selector;
-        try IPlugin(plugin).afterInitialize{gas: HOOK_GAS_LIMIT}(sender, key, sqrtPriceX96, tick) returns (bytes4 res)
-        {
+        try IPlugin(plugin).afterInitialize{gas: HOOK_GAS_LIMIT}(sender, key, sqrtPriceX96, tick) returns (bytes4 res) {
             if (res != selector) revert PluginErrors.PluginCallFailed(plugin, selector, "");
         } catch (bytes memory reason) {
             revert PluginErrors.PluginCallFailed(plugin, selector, reason);

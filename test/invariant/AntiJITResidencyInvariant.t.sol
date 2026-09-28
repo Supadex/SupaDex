@@ -41,10 +41,7 @@ contract AntiJITResidencyHandler is Test {
             actor,
             key,
             IPoolManager.ModifyLiquidityParams({
-                tickLower: -120,
-                tickUpper: 120,
-                liquidityDelta: int256(uint256(deposit)),
-                salt: bytes32(0)
+                tickLower: -120, tickUpper: 120, liquidityDelta: int256(uint256(deposit)), salt: bytes32(0)
             }),
             ""
         );
@@ -64,10 +61,7 @@ contract AntiJITResidencyHandler is Test {
             actor,
             key,
             IPoolManager.ModifyLiquidityParams({
-                tickLower: -120,
-                tickUpper: 120,
-                liquidityDelta: -int256(uint256(burn)),
-                salt: bytes32(0)
+                tickLower: -120, tickUpper: 120, liquidityDelta: -int256(uint256(burn)), salt: bytes32(0)
             }),
             ""
         );
@@ -92,7 +86,7 @@ contract AntiJITResidencyInvariantTest is StdInvariant, Test {
         for (uint256 i = 0; i < 4; i++) {
             address actor = handler.actors(i);
             bytes32 posKey = keccak256(abi.encodePacked(actor, int24(-120), int24(120), bytes32(0)));
-            (, , uint128 trackedLiq) = plugin.residencies(pid, posKey);
+            (,, uint128 trackedLiq) = plugin.residencies(pid, posKey);
             assertEq(trackedLiq, handler.activeUserLiquidity(actor), "Liquidity residency tracking mismatch");
         }
     }

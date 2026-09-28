@@ -77,13 +77,10 @@ contract QuoterLiquidityHelper is IUnlockCallback {
             abi.decode(data, (PoolKey, int24, int24, uint128));
 
         IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
-            tickLower: tickLower,
-            tickUpper: tickUpper,
-            liquidityDelta: int256(uint256(liquidity)),
-            salt: bytes32(0)
+            tickLower: tickLower, tickUpper: tickUpper, liquidityDelta: int256(uint256(liquidity)), salt: bytes32(0)
         });
 
-        (BalanceDelta delta, ) = manager.modifyLiquidity(key, params, "");
+        (BalanceDelta delta,) = manager.modifyLiquidity(key, params, "");
 
         if (delta.amount0() > 0) {
             uint256 amount0 = uint256(uint128(delta.amount0()));
@@ -199,11 +196,7 @@ contract SupaQuoterTest is Test {
         uint128 amountIn = 10 ether;
 
         ISupaQuoter.QuoteExactInputSingleParams memory qParams = ISupaQuoter.QuoteExactInputSingleParams({
-            poolKey: poolAB,
-            zeroForOne: true,
-            amountIn: amountIn,
-            sqrtPriceLimitX96: 0,
-            hookData: ""
+            poolKey: poolAB, zeroForOne: true, amountIn: amountIn, sqrtPriceLimitX96: 0, hookData: ""
         });
 
         // Query quote
@@ -238,14 +231,10 @@ contract SupaQuoterTest is Test {
         uint128 amountOut = 5 ether;
 
         ISupaQuoter.QuoteExactOutputSingleParams memory qParams = ISupaQuoter.QuoteExactOutputSingleParams({
-            poolKey: poolAB,
-            zeroForOne: true,
-            amountOut: amountOut,
-            sqrtPriceLimitX96: 0,
-            hookData: ""
+            poolKey: poolAB, zeroForOne: true, amountOut: amountOut, sqrtPriceLimitX96: 0, hookData: ""
         });
 
-        (uint256 quotedAmountIn, , ) = quoter.quoteExactOutputSingle(qParams);
+        (uint256 quotedAmountIn,,) = quoter.quoteExactOutputSingle(qParams);
         assertTrue(quotedAmountIn > 0);
 
         ISupaRouter.ExactOutputSingleParams memory sParams = ISupaRouter.ExactOutputSingleParams({
@@ -270,11 +259,7 @@ contract SupaQuoterTest is Test {
         uint256 resB = vault.reservesOf(tokenB);
 
         ISupaQuoter.QuoteExactInputSingleParams memory qParams = ISupaQuoter.QuoteExactInputSingleParams({
-            poolKey: poolAB,
-            zeroForOne: true,
-            amountIn: 25 ether,
-            sqrtPriceLimitX96: 0,
-            hookData: ""
+            poolKey: poolAB, zeroForOne: true, amountIn: 25 ether, sqrtPriceLimitX96: 0, hookData: ""
         });
 
         quoter.quoteExactInputSingle(qParams);

@@ -66,12 +66,9 @@ contract DeltaConservationHandler is Test, IUnlockCallback {
         if (action == 0) {
             // Modify Liquidity
             IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
-                tickLower: -120,
-                tickUpper: 120,
-                liquidityDelta: int256(amount),
-                salt: bytes32(0)
+                tickLower: -120, tickUpper: 120, liquidityDelta: int256(amount), salt: bytes32(0)
             });
-            (BalanceDelta delta, ) = manager.modifyLiquidity(key, params, "");
+            (BalanceDelta delta,) = manager.modifyLiquidity(key, params, "");
             if (delta.amount0() > 0) {
                 token0.transfer(address(vault), uint128(delta.amount0()));
                 vault.settle(key.currency0);
@@ -82,11 +79,8 @@ contract DeltaConservationHandler is Test, IUnlockCallback {
             }
         } else if (action == 1) {
             // Swap
-            IPoolManager.SwapParams memory swapParams = IPoolManager.SwapParams({
-                zeroForOne: true,
-                amountSpecified: int256(amount),
-                sqrtPriceLimitX96: 0
-            });
+            IPoolManager.SwapParams memory swapParams =
+                IPoolManager.SwapParams({zeroForOne: true, amountSpecified: int256(amount), sqrtPriceLimitX96: 0});
             BalanceDelta delta = manager.swap(key, swapParams, "");
             if (delta.amount0() > 0) {
                 token0.transfer(address(vault), uint128(delta.amount0()));
@@ -150,12 +144,7 @@ contract DeltaConservationInvariantTest is StdInvariant, Test {
         }
 
         key = PoolKey({
-            currency0: c0,
-            currency1: c1,
-            fee: 3000,
-            tickSpacing: 60,
-            plugin: address(0),
-            curveType: CurveType.CLAMM
+            currency0: c0, currency1: c1, fee: 3000, tickSpacing: 60, plugin: address(0), curveType: CurveType.CLAMM
         });
 
         manager.initialize(key, 1 << 96, "");

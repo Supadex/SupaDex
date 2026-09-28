@@ -18,11 +18,10 @@ contract RoundingDirectionFuzzTest is Test {
     }
 
     /// @notice Invariant: SqrtPriceMathLib getAmount0Delta with roundUp=true must always be >= roundUp=false.
-    function testFuzz_amount0DeltaRoundingDirection(
-        uint160 sqrtPriceAX96,
-        uint160 sqrtPriceBX96,
-        uint128 liquidity
-    ) public pure {
+    function testFuzz_amount0DeltaRoundingDirection(uint160 sqrtPriceAX96, uint160 sqrtPriceBX96, uint128 liquidity)
+        public
+        pure
+    {
         sqrtPriceAX96 = uint160(bound(sqrtPriceAX96, TickMathLib.MIN_SQRT_RATIO, TickMathLib.MAX_SQRT_RATIO));
         sqrtPriceBX96 = uint160(bound(sqrtPriceBX96, TickMathLib.MIN_SQRT_RATIO, TickMathLib.MAX_SQRT_RATIO));
         liquidity = uint128(bound(liquidity, 1, type(uint128).max / 4));
@@ -37,11 +36,10 @@ contract RoundingDirectionFuzzTest is Test {
     }
 
     /// @notice Invariant: SqrtPriceMathLib getAmount1Delta with roundUp=true must always be >= roundUp=false.
-    function testFuzz_amount1DeltaRoundingDirection(
-        uint160 sqrtPriceAX96,
-        uint160 sqrtPriceBX96,
-        uint128 liquidity
-    ) public pure {
+    function testFuzz_amount1DeltaRoundingDirection(uint160 sqrtPriceAX96, uint160 sqrtPriceBX96, uint128 liquidity)
+        public
+        pure
+    {
         sqrtPriceAX96 = uint160(bound(sqrtPriceAX96, TickMathLib.MIN_SQRT_RATIO, TickMathLib.MAX_SQRT_RATIO));
         sqrtPriceBX96 = uint160(bound(sqrtPriceBX96, TickMathLib.MIN_SQRT_RATIO, TickMathLib.MAX_SQRT_RATIO));
         liquidity = uint128(bound(liquidity, 1, type(uint128).max / 4));

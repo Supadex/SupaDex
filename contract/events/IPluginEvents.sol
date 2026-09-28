@@ -12,21 +12,14 @@ interface IPluginEvents {
      * @notice Emitted when the LVR Shield plugin updates a dynamic swap fee.
      */
     event DynamicFeeUpdated(
-        PoolId indexed poolId,
-        uint24 oldFee,
-        uint24 newFee,
-        uint24 volatilitySurcharge,
-        uint32 timeElapsed
+        PoolId indexed poolId, uint24 oldFee, uint24 newFee, uint24 volatilitySurcharge, uint32 timeElapsed
     );
 
     /**
      * @notice Emitted when high-frequency volatility is observed and recorded.
      */
     event VolatilityObserved(
-        PoolId indexed poolId,
-        uint32 windowSeconds,
-        uint256 instantaneousVolatility,
-        int24 currentTick
+        PoolId indexed poolId, uint32 windowSeconds, uint256 instantaneousVolatility, int24 currentTick
     );
 
     /**

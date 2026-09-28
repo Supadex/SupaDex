@@ -27,7 +27,8 @@ library TransientStorageLib {
     /**
      * @dev Slot offset constant for nonzero delta count: keccak256("supadex.vault.nonzero.delta.count")
      */
-    bytes32 internal constant NONZERO_DELTA_COUNT_SLOT = 0x3d386d34b46c6fc3aa478672224da1c7fe68eb7810ecba14aa0fe77209353982;
+    bytes32 internal constant NONZERO_DELTA_COUNT_SLOT =
+        0x3d386d34b46c6fc3aa478672224da1c7fe68eb7810ecba14aa0fe77209353982;
 
     /**
      * @notice Acquires transient reentrancy lock. Reverts if already locked.

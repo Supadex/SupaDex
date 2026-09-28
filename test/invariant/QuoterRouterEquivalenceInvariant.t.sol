@@ -75,13 +75,10 @@ contract QuoterHelperLP is IUnlockCallback {
     function unlockCallback(bytes calldata data) external override returns (bytes memory) {
         (PoolKey memory key, uint256 amount) = abi.decode(data, (PoolKey, uint256));
         IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
-            tickLower: -120,
-            tickUpper: 120,
-            liquidityDelta: int256(amount),
-            salt: bytes32(0)
+            tickLower: -120, tickUpper: 120, liquidityDelta: int256(amount), salt: bytes32(0)
         });
 
-        (BalanceDelta delta, ) = manager.modifyLiquidity(key, params, "");
+        (BalanceDelta delta,) = manager.modifyLiquidity(key, params, "");
         if (delta.amount0() > 0) {
             MockQuoterInvToken(Currency.unwrap(key.currency0)).transfer(address(vault), uint128(delta.amount0()));
             vault.settle(key.currency0);
@@ -141,14 +138,10 @@ contract QuoterRouterEquivalenceHandler is Test {
         amountIn = bound(amountIn, 1_000, 10_000 ether);
 
         ISupaQuoter.QuoteExactInputSingleParams memory qParams = ISupaQuoter.QuoteExactInputSingleParams({
-            poolKey: clammKey,
-            zeroForOne: zeroForOne,
-            amountIn: uint128(amountIn),
-            sqrtPriceLimitX96: 0,
-            hookData: ""
+            poolKey: clammKey, zeroForOne: zeroForOne, amountIn: uint128(amountIn), sqrtPriceLimitX96: 0, hookData: ""
         });
 
-        (uint256 quotedAmountOut, , ) = quoter.quoteExactInputSingle(qParams);
+        (uint256 quotedAmountOut,,) = quoter.quoteExactInputSingle(qParams);
 
         address swapper = address(0x4444);
         if (zeroForOne) {
@@ -185,14 +178,10 @@ contract QuoterRouterEquivalenceHandler is Test {
         amountIn = bound(amountIn, 1_000, 10_000 ether);
 
         ISupaQuoter.QuoteExactInputSingleParams memory qParams = ISupaQuoter.QuoteExactInputSingleParams({
-            poolKey: binKey,
-            zeroForOne: zeroForOne,
-            amountIn: uint128(amountIn),
-            sqrtPriceLimitX96: 0,
-            hookData: ""
+            poolKey: binKey, zeroForOne: zeroForOne, amountIn: uint128(amountIn), sqrtPriceLimitX96: 0, hookData: ""
         });
 
-        (uint256 quotedAmountOut, , ) = quoter.quoteExactInputSingle(qParams);
+        (uint256 quotedAmountOut,,) = quoter.quoteExactInputSingle(qParams);
 
         address swapper = address(0x5555);
         if (zeroForOne) {
@@ -280,30 +269,15 @@ contract QuoterRouterEquivalenceInvariantTest is StdInvariant, Test {
         Currency cC = Currency.wrap(address(tokenC));
 
         clammKey = PoolKey({
-            currency0: cA,
-            currency1: cB,
-            fee: 3000,
-            tickSpacing: 60,
-            plugin: address(0),
-            curveType: CurveType.CLAMM
+            currency0: cA, currency1: cB, fee: 3000, tickSpacing: 60, plugin: address(0), curveType: CurveType.CLAMM
         });
 
         binKey = PoolKey({
-            currency0: cB,
-            currency1: cC,
-            fee: 2000,
-            tickSpacing: 10,
-            plugin: address(0),
-            curveType: CurveType.BIN_AMM
+            currency0: cB, currency1: cC, fee: 2000, tickSpacing: 10, plugin: address(0), curveType: CurveType.BIN_AMM
         });
 
         stableKey = PoolKey({
-            currency0: cA,
-            currency1: cC,
-            fee: 500,
-            tickSpacing: 1,
-            plugin: address(0),
-            curveType: CurveType.STABLE_AMM
+            currency0: cA, currency1: cC, fee: 500, tickSpacing: 1, plugin: address(0), curveType: CurveType.STABLE_AMM
         });
 
         manager.initialize(clammKey, 1 << 96, "");
@@ -321,16 +295,7 @@ contract QuoterRouterEquivalenceInvariantTest is StdInvariant, Test {
         helper.addLiquidity(stableKey, 1_000_000 ether);
 
         handler = new QuoterRouterEquivalenceHandler(
-            vault,
-            manager,
-            router,
-            quoter,
-            clammKey,
-            binKey,
-            stableKey,
-            tokenA,
-            tokenB,
-            tokenC
+            vault, manager, router, quoter, clammKey, binKey, stableKey, tokenA, tokenB, tokenC
         );
 
         targetContract(address(handler));

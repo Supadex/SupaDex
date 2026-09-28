@@ -78,7 +78,8 @@ contract MultiCurveHandler is Test, IUnlockCallback {
     }
 
     function unlockCallback(bytes calldata data) external override returns (bytes memory) {
-        (uint8 action, uint8 curveIdx, bool zeroForOne, uint256 amount) = abi.decode(data, (uint8, uint8, bool, uint256));
+        (uint8 action, uint8 curveIdx, bool zeroForOne, uint256 amount) =
+            abi.decode(data, (uint8, uint8, bool, uint256));
 
         PoolKey memory selectedKey;
         if (curveIdx == 0) selectedKey = clammKey;
@@ -88,20 +89,15 @@ contract MultiCurveHandler is Test, IUnlockCallback {
         if (action == 0) {
             // Modify Liquidity
             IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
-                tickLower: -120,
-                tickUpper: 120,
-                liquidityDelta: int256(amount),
-                salt: bytes32(0)
+                tickLower: -120, tickUpper: 120, liquidityDelta: int256(amount), salt: bytes32(0)
             });
-            (BalanceDelta delta, ) = manager.modifyLiquidity(selectedKey, params, "");
+            (BalanceDelta delta,) = manager.modifyLiquidity(selectedKey, params, "");
             _settleDeltas(selectedKey, delta);
             successfulLiquidityModifications++;
         } else if (action == 1) {
             // Swap
             IPoolManager.SwapParams memory swapParams = IPoolManager.SwapParams({
-                zeroForOne: zeroForOne,
-                amountSpecified: int256(amount),
-                sqrtPriceLimitX96: 0
+                zeroForOne: zeroForOne, amountSpecified: int256(amount), sqrtPriceLimitX96: 0
             });
             BalanceDelta delta = manager.swap(selectedKey, swapParams, "");
             _settleDeltas(selectedKey, delta);
@@ -231,30 +227,15 @@ contract MultiCurveSolvencyInvariantTest is StdInvariant, Test {
 
         // Create 3 pools across distinct curve engines
         clammKey = PoolKey({
-            currency0: cA,
-            currency1: cB,
-            fee: 3000,
-            tickSpacing: 60,
-            plugin: address(0),
-            curveType: CurveType.CLAMM
+            currency0: cA, currency1: cB, fee: 3000, tickSpacing: 60, plugin: address(0), curveType: CurveType.CLAMM
         });
 
         binKey = PoolKey({
-            currency0: cB,
-            currency1: cC,
-            fee: 2000,
-            tickSpacing: 10,
-            plugin: address(0),
-            curveType: CurveType.BIN_AMM
+            currency0: cB, currency1: cC, fee: 2000, tickSpacing: 10, plugin: address(0), curveType: CurveType.BIN_AMM
         });
 
         stableKey = PoolKey({
-            currency0: cA,
-            currency1: cC,
-            fee: 500,
-            tickSpacing: 1,
-            plugin: address(0),
-            curveType: CurveType.STABLE_AMM
+            currency0: cA, currency1: cC, fee: 500, tickSpacing: 1, plugin: address(0), curveType: CurveType.STABLE_AMM
         });
 
         // Initialize pools
@@ -262,16 +243,7 @@ contract MultiCurveSolvencyInvariantTest is StdInvariant, Test {
         manager.initialize(binKey, 1 << 96, "");
         manager.initialize(stableKey, 1 << 96, "");
 
-        handler = new MultiCurveHandler(
-            vault,
-            manager,
-            clammKey,
-            binKey,
-            stableKey,
-            tokenA,
-            tokenB,
-            tokenC
-        );
+        handler = new MultiCurveHandler(vault, manager, clammKey, binKey, stableKey, tokenA, tokenB, tokenC);
 
         // Seed initial deep liquidity in all 3 curves
         handler.addLiquidityCLAMM(500_000 ether);

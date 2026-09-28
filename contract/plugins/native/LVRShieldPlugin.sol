@@ -48,19 +48,20 @@ contract LVRShieldPlugin is BaseHook, IPluginEvents {
      * @inheritdoc BaseHook
      */
     function getPluginPermissions() public pure override returns (uint32 permissions) {
-        return PluginDispatcher.AFTER_INITIALIZE_FLAG | PluginDispatcher.BEFORE_SWAP_FLAG
-            | PluginDispatcher.AFTER_SWAP_FLAG;
+        return
+            PluginDispatcher.AFTER_INITIALIZE_FLAG | PluginDispatcher.BEFORE_SWAP_FLAG
+                | PluginDispatcher.AFTER_SWAP_FLAG;
     }
 
     /**
      * @inheritdoc BaseHook
      */
-    function afterInitialize(
-        address sender,
-        PoolKey calldata key,
-        uint160 sqrtPriceX96,
-        int24 tick
-    ) external override onlyPoolManager returns (bytes4) {
+    function afterInitialize(address sender, PoolKey calldata key, uint160 sqrtPriceX96, int24 tick)
+        external
+        override
+        onlyPoolManager
+        returns (bytes4)
+    {
         sender;
         sqrtPriceX96;
         PoolId poolId = key.toId();
@@ -107,11 +108,7 @@ contract LVRShieldPlugin is BaseHook, IPluginEvents {
 
         // Compute volatility-adaptive dynamic fee
         uint24 dynamicFee = DynamicFeeLib.computeDynamicFee(
-            state.baseFee,
-            state.lastFee,
-            uint24(volatility),
-            timeElapsed,
-            state.decayHalfLife
+            state.baseFee, state.lastFee, uint24(volatility), timeElapsed, state.decayHalfLife
         );
 
         state.lastFee = dynamicFee;

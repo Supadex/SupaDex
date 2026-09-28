@@ -61,13 +61,10 @@ contract PoolManagerTestHarness is IUnlockCallback {
 
         if (action == Action.ADD_LIQUIDITY) {
             IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
-                tickLower: -120,
-                tickUpper: 120,
-                liquidityDelta: int256(val),
-                salt: bytes32(0)
+                tickLower: -120, tickUpper: 120, liquidityDelta: int256(val), salt: bytes32(0)
             });
 
-            (BalanceDelta delta, ) = manager.modifyLiquidity(key, params, "");
+            (BalanceDelta delta,) = manager.modifyLiquidity(key, params, "");
 
             // Transfer tokens to vault and settle
             if (delta.amount0() > 0) {
@@ -79,11 +76,8 @@ contract PoolManagerTestHarness is IUnlockCallback {
                 vault.settle(key.currency1);
             }
         } else if (action == Action.SWAP) {
-            IPoolManager.SwapParams memory swapParams = IPoolManager.SwapParams({
-                zeroForOne: true,
-                amountSpecified: int256(val),
-                sqrtPriceLimitX96: 0
-            });
+            IPoolManager.SwapParams memory swapParams =
+                IPoolManager.SwapParams({zeroForOne: true, amountSpecified: int256(val), sqrtPriceLimitX96: 0});
 
             BalanceDelta delta = manager.swap(key, swapParams, "");
 
@@ -194,30 +188,18 @@ contract SupaPoolManagerTest is Test {
         manager.initialize(clammKey, 1 << 96, "");
 
         // 1. Add Liquidity
-        bytes memory addData = abi.encode(
-            PoolManagerTestHarness.Action.ADD_LIQUIDITY,
-            clammKey,
-            uint256(1_000_000)
-        );
+        bytes memory addData = abi.encode(PoolManagerTestHarness.Action.ADD_LIQUIDITY, clammKey, uint256(1_000_000));
         harness.execute(addData);
 
         // 2. Swap token0 for token1
-        bytes memory swapData = abi.encode(
-            PoolManagerTestHarness.Action.SWAP,
-            clammKey,
-            uint256(1000)
-        );
+        bytes memory swapData = abi.encode(PoolManagerTestHarness.Action.SWAP, clammKey, uint256(1000));
         harness.execute(swapData);
     }
 
     function test_donateEndToEnd() public {
         manager.initialize(clammKey, 1 << 96, "");
 
-        bytes memory donateData = abi.encode(
-            PoolManagerTestHarness.Action.DONATE,
-            clammKey,
-            uint256(500 ether)
-        );
+        bytes memory donateData = abi.encode(PoolManagerTestHarness.Action.DONATE, clammKey, uint256(500 ether));
         harness.execute(donateData);
     }
 }

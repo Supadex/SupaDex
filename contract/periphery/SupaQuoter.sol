@@ -76,14 +76,10 @@ contract SupaQuoter is ISupaQuoter, IUnlockCallback {
     /**
      * @inheritdoc ISupaQuoter
      */
-    function quoteExactInput(bytes memory path, uint128 amountIn)
-        external
-        override
-        returns (uint256 amountOut)
-    {
+    function quoteExactInput(bytes memory path, uint128 amountIn) external override returns (uint256 amountOut) {
         try this.quoteExactInputInternal(path, amountIn) {}
         catch (bytes memory reason) {
-            (amountOut, , ) = _parseQuoteInputResult(reason);
+            (amountOut,,) = _parseQuoteInputResult(reason);
             return amountOut;
         }
     }
@@ -119,14 +115,10 @@ contract SupaQuoter is ISupaQuoter, IUnlockCallback {
     /**
      * @inheritdoc ISupaQuoter
      */
-    function quoteExactOutput(bytes memory path, uint128 amountOut)
-        external
-        override
-        returns (uint256 amountIn)
-    {
+    function quoteExactOutput(bytes memory path, uint128 amountOut) external override returns (uint256 amountIn) {
         try this.quoteExactOutputInternal(path, amountOut) {}
         catch (bytes memory reason) {
-            (amountIn, , ) = _parseQuoteOutputResult(reason);
+            (amountIn,,) = _parseQuoteOutputResult(reason);
             return amountIn;
         }
     }
@@ -145,8 +137,7 @@ contract SupaQuoter is ISupaQuoter, IUnlockCallback {
         Action action = abi.decode(data, (Action));
 
         if (action == Action.QUOTE_INPUT_SINGLE) {
-            (, QuoteExactInputSingleParams memory params) =
-                abi.decode(data, (Action, QuoteExactInputSingleParams));
+            (, QuoteExactInputSingleParams memory params) = abi.decode(data, (Action, QuoteExactInputSingleParams));
 
             IPoolManager.SwapParams memory swapParams = IPoolManager.SwapParams({
                 zeroForOne: params.zeroForOne,
@@ -160,19 +151,16 @@ contract SupaQuoter is ISupaQuoter, IUnlockCallback {
 
             revert PeripheryErrors.QuoteInputSimulation(amountOut, slot0.sqrtPriceX96(), slot0.tick());
         } else if (action == Action.QUOTE_INPUT_MULTI) {
-            (, bytes memory path, uint128 amountIn) =
-                abi.decode(data, (Action, bytes, uint128));
+            (, bytes memory path, uint128 amountIn) = abi.decode(data, (Action, bytes, uint128));
 
             uint256 currentAmountIn = amountIn;
             Slot0 lastSlot0;
 
             while (true) {
-                (PoolKey memory key, , , bool zeroForOne) = path.getFirstPoolKey();
+                (PoolKey memory key,,, bool zeroForOne) = path.getFirstPoolKey();
 
                 IPoolManager.SwapParams memory swapParams = IPoolManager.SwapParams({
-                    zeroForOne: zeroForOne,
-                    amountSpecified: int256(currentAmountIn),
-                    sqrtPriceLimitX96: 0
+                    zeroForOne: zeroForOne, amountSpecified: int256(currentAmountIn), sqrtPriceLimitX96: 0
                 });
 
                 BalanceDelta delta = poolManager.swap(key, swapParams, "");
@@ -188,8 +176,7 @@ contract SupaQuoter is ISupaQuoter, IUnlockCallback {
 
             revert PeripheryErrors.QuoteInputSimulation(currentAmountIn, lastSlot0.sqrtPriceX96(), lastSlot0.tick());
         } else if (action == Action.QUOTE_OUTPUT_SINGLE) {
-            (, QuoteExactOutputSingleParams memory params) =
-                abi.decode(data, (Action, QuoteExactOutputSingleParams));
+            (, QuoteExactOutputSingleParams memory params) = abi.decode(data, (Action, QuoteExactOutputSingleParams));
 
             IPoolManager.SwapParams memory swapParams = IPoolManager.SwapParams({
                 zeroForOne: params.zeroForOne,
@@ -203,20 +190,17 @@ contract SupaQuoter is ISupaQuoter, IUnlockCallback {
 
             revert PeripheryErrors.QuoteOutputSimulation(amountIn, slot0.sqrtPriceX96(), slot0.tick());
         } else {
-            (, bytes memory path, uint128 amountOut) =
-                abi.decode(data, (Action, bytes, uint128));
+            (, bytes memory path, uint128 amountOut) = abi.decode(data, (Action, bytes, uint128));
 
             uint256 currentAmountOut = amountOut;
             Slot0 lastSlot0;
 
             while (true) {
-                (PoolKey memory key, , , bool zeroForOne) = path.getFirstPoolKey();
+                (PoolKey memory key,,, bool zeroForOne) = path.getFirstPoolKey();
                 bool swapZeroForOne = !zeroForOne;
 
                 IPoolManager.SwapParams memory swapParams = IPoolManager.SwapParams({
-                    zeroForOne: swapZeroForOne,
-                    amountSpecified: -int256(currentAmountOut),
-                    sqrtPriceLimitX96: 0
+                    zeroForOne: swapZeroForOne, amountSpecified: -int256(currentAmountOut), sqrtPriceLimitX96: 0
                 });
 
                 BalanceDelta delta = poolManager.swap(key, swapParams, "");

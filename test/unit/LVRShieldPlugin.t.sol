@@ -51,12 +51,8 @@ contract LVRShieldPluginTest is Test {
 
     function test_beforeSwapAppliesDynamicFee() public {
         // First swap at time 0
-        (bytes4 sel, uint24 dynamicFee) = plugin.beforeSwap(
-            address(this),
-            key,
-            IPoolManager.SwapParams(true, 1000, 0),
-            ""
-        );
+        (bytes4 sel, uint24 dynamicFee) =
+            plugin.beforeSwap(address(this), key, IPoolManager.SwapParams(true, 1000, 0), "");
 
         assertEq(sel, plugin.beforeSwap.selector);
         assertGe(dynamicFee, 3000); // Dynamic fee >= base fee
@@ -69,12 +65,7 @@ contract LVRShieldPluginTest is Test {
         // Advance time by 48 seconds (4 decay half-lives)
         vm.warp(block.timestamp + 48);
 
-        (, uint24 decayedFee) = plugin.beforeSwap(
-            address(this),
-            key,
-            IPoolManager.SwapParams(true, 1000, 0),
-            ""
-        );
+        (, uint24 decayedFee) = plugin.beforeSwap(address(this), key, IPoolManager.SwapParams(true, 1000, 0), "");
 
         // After multiple half lives, fee decays back to baseline
         assertEq(decayedFee, 3000);
@@ -83,7 +74,7 @@ contract LVRShieldPluginTest is Test {
     function test_setDecayHalfLife() public {
         plugin.setDecayHalfLife(key, 24);
         PoolId id = key.toId();
-        (, , , , uint32 decayHalfLife, ) = plugin.poolLVRStates(id);
+        (,,,, uint32 decayHalfLife,) = plugin.poolLVRStates(id);
         assertEq(decayHalfLife, 24);
     }
 }

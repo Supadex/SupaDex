@@ -77,19 +77,25 @@ contract SupaTimelock is ISupaTimelock {
         uint256 pLen = initialProposers.length;
         for (uint256 i = 0; i < pLen;) {
             isProposer[initialProposers[i]] = true;
-            unchecked { ++i; }
+            unchecked {
+                ++i;
+            }
         }
 
         uint256 eLen = initialExecutors.length;
         for (uint256 i = 0; i < eLen;) {
             isExecutor[initialExecutors[i]] = true;
-            unchecked { ++i; }
+            unchecked {
+                ++i;
+            }
         }
 
         uint256 cLen = initialCancellers.length;
         for (uint256 i = 0; i < cLen;) {
             isCanceller[initialCancellers[i]] = true;
-            unchecked { ++i; }
+            unchecked {
+                ++i;
+            }
         }
     }
 
@@ -98,13 +104,12 @@ contract SupaTimelock is ISupaTimelock {
     /**
      * @notice Computes deterministic hash for a proposal operation
      */
-    function hashOperation(
-        address target,
-        uint256 value,
-        bytes calldata data,
-        bytes32 predecessor,
-        bytes32 salt
-    ) public pure override returns (bytes32) {
+    function hashOperation(address target, uint256 value, bytes calldata data, bytes32 predecessor, bytes32 salt)
+        public
+        pure
+        override
+        returns (bytes32)
+    {
         return keccak256(abi.encode(target, value, data, predecessor, salt));
     }
 
@@ -171,13 +176,11 @@ contract SupaTimelock is ISupaTimelock {
     /**
      * @notice Executes a scheduled proposal operation once delay has elapsed
      */
-    function execute(
-        address target,
-        uint256 value,
-        bytes calldata data,
-        bytes32 predecessor,
-        bytes32 salt
-    ) external payable override {
+    function execute(address target, uint256 value, bytes calldata data, bytes32 predecessor, bytes32 salt)
+        external
+        payable
+        override
+    {
         if (!isExecutor[msg.sender] && msg.sender != admin) {
             revert GovernanceErrors.UnauthorizedCaller();
         }

@@ -57,7 +57,9 @@ contract CircuitBreaker is ICircuitBreaker {
         for (uint256 i = 0; i < len;) {
             isGuardian[initialGuardians[i]] = true;
             emit GuardianUpdated(initialGuardians[i], true);
-            unchecked { ++i; }
+            unchecked {
+                ++i;
+            }
         }
     }
 

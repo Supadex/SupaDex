@@ -67,11 +67,10 @@ contract MathBoundaryFuzzTest is Test {
     }
 
     /// @notice Fuzz test SqrtPriceMathLib getAmount0Delta and getAmount1Delta monotonicity.
-    function testFuzz_sqrtPriceMathDeltasMonotonic(
-        uint160 sqrtPriceAX96,
-        uint160 sqrtPriceBX96,
-        uint128 liquidity
-    ) public pure {
+    function testFuzz_sqrtPriceMathDeltasMonotonic(uint160 sqrtPriceAX96, uint160 sqrtPriceBX96, uint128 liquidity)
+        public
+        pure
+    {
         sqrtPriceAX96 = uint160(bound(sqrtPriceAX96, TickMathLib.MIN_SQRT_RATIO, TickMathLib.MAX_SQRT_RATIO));
         sqrtPriceBX96 = uint160(bound(sqrtPriceBX96, TickMathLib.MIN_SQRT_RATIO, TickMathLib.MAX_SQRT_RATIO));
         liquidity = uint128(bound(liquidity, 1, type(uint128).max / 2));
@@ -101,12 +100,10 @@ contract MathBoundaryFuzzTest is Test {
     }
 
     /// @notice Fuzz test DynamicFeeLib exponential decay monotonicity.
-    function testFuzz_dynamicFeeDecayMonotonic(
-        uint24 baseFee,
-        uint24 maxFee,
-        uint24 currentFee,
-        uint32 timePassed
-    ) public pure {
+    function testFuzz_dynamicFeeDecayMonotonic(uint24 baseFee, uint24 maxFee, uint24 currentFee, uint32 timePassed)
+        public
+        pure
+    {
         baseFee = uint24(bound(baseFee, DynamicFeeLib.MIN_FEE, 10_000));
         maxFee = uint24(bound(maxFee, baseFee, DynamicFeeLib.MAX_FEE));
         currentFee = uint24(bound(currentFee, baseFee, maxFee));

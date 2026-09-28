@@ -52,9 +52,7 @@ interface ISupaQuoter {
     /**
      * @notice Returns exact output quote for multi-hop swap route.
      */
-    function quoteExactInput(bytes memory path, uint128 amountIn)
-        external
-        returns (uint256 amountOut);
+    function quoteExactInput(bytes memory path, uint128 amountIn) external returns (uint256 amountOut);
 
     /**
      * @notice Returns exact input quote for single-hop swap.
@@ -66,7 +64,5 @@ interface ISupaQuoter {
     /**
      * @notice Returns exact input quote for multi-hop swap route.
      */
-    function quoteExactOutput(bytes memory path, uint128 amountOut)
-        external
-        returns (uint256 amountIn);
+    function quoteExactOutput(bytes memory path, uint128 amountOut) external returns (uint256 amountIn);
 }

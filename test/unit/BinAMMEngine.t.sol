@@ -37,16 +37,13 @@ contract BinAMMEngineTest is Test {
             salt: bytes32(0)
         });
 
-        (BalanceDelta delta, ) = engine.modifyLiquidity(key, params);
+        (BalanceDelta delta,) = engine.modifyLiquidity(key, params);
         assertEq(delta.amount0(), int128(int256(100_000 ether)));
         assertEq(delta.amount1(), int128(int256(100_000 ether)));
 
         // Swap
-        IPoolManager.SwapParams memory swapParams = IPoolManager.SwapParams({
-            zeroForOne: true,
-            amountSpecified: 1000 ether,
-            sqrtPriceLimitX96: 0
-        });
+        IPoolManager.SwapParams memory swapParams =
+            IPoolManager.SwapParams({zeroForOne: true, amountSpecified: 1000 ether, sqrtPriceLimitX96: 0});
 
         BalanceDelta swapDelta = engine.swap(key, swapParams, key.fee);
         assertEq(swapDelta.amount0(), 1000 ether);

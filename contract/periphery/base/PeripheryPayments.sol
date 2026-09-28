@@ -51,12 +51,7 @@ abstract contract PeripheryPayments is IPeripheryPayments {
      * @param amount Quantity of tokens to settle.
      * @param payWithClaims If true, burns caller's ERC-6909 claims instead of transferring physical tokens.
      */
-    function _pay(
-        Currency currency,
-        address payer,
-        uint256 amount,
-        bool payWithClaims
-    ) internal {
+    function _pay(Currency currency, address payer, uint256 amount, bool payWithClaims) internal {
         if (amount == 0) return;
 
         if (payWithClaims) {
@@ -79,12 +74,7 @@ abstract contract PeripheryPayments is IPeripheryPayments {
      * @param amount Quantity of tokens to take.
      * @param receiveAsClaims If true, mints ERC-6909 claims instead of transferring physical tokens.
      */
-    function _take(
-        Currency currency,
-        address recipient,
-        uint256 amount,
-        bool receiveAsClaims
-    ) internal {
+    function _take(Currency currency, address recipient, uint256 amount, bool receiveAsClaims) internal {
         if (amount == 0) return;
 
         if (receiveAsClaims) {

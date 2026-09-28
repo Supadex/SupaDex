@@ -40,21 +40,16 @@ contract CLAMMEngineTest is Test {
 
         // Add liquidity around tick 0: [-120, 120]
         IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
-            tickLower: -120,
-            tickUpper: 120,
-            liquidityDelta: 1_000_000,
-            salt: bytes32(0)
+            tickLower: -120, tickUpper: 120, liquidityDelta: 1_000_000, salt: bytes32(0)
         });
 
-        (BalanceDelta delta, ) = engine.modifyLiquidity(key, params);
+        (BalanceDelta delta,) = engine.modifyLiquidity(key, params);
         assertTrue(delta.amount0() > 0);
         assertTrue(delta.amount1() > 0);
 
         // Execute Swap: exactInput zeroForOne
         IPoolManager.SwapParams memory swapParams = IPoolManager.SwapParams({
-            zeroForOne: true,
-            amountSpecified: 1000,
-            sqrtPriceLimitX96: TickMathLib.MIN_SQRT_RATIO + 1
+            zeroForOne: true, amountSpecified: 1000, sqrtPriceLimitX96: TickMathLib.MIN_SQRT_RATIO + 1
         });
 
         BalanceDelta swapDelta = engine.swap(key, swapParams, key.fee);

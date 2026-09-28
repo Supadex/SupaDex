@@ -30,22 +30,16 @@ contract StableAMMEngineTest is Test {
 
         // Add 1,000,000 to each reserve
         IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
-            tickLower: 0,
-            tickUpper: 0,
-            liquidityDelta: 1_000_000 ether,
-            salt: bytes32(0)
+            tickLower: 0, tickUpper: 0, liquidityDelta: 1_000_000 ether, salt: bytes32(0)
         });
 
-        (BalanceDelta delta, ) = engine.modifyLiquidity(key, params);
+        (BalanceDelta delta,) = engine.modifyLiquidity(key, params);
         assertEq(delta.amount0(), int128(int256(1_000_000 ether)));
         assertEq(delta.amount1(), int128(int256(1_000_000 ether)));
 
         // Swap 10,000 token0 for token1
-        IPoolManager.SwapParams memory swapParams = IPoolManager.SwapParams({
-            zeroForOne: true,
-            amountSpecified: 10_000 ether,
-            sqrtPriceLimitX96: 0
-        });
+        IPoolManager.SwapParams memory swapParams =
+            IPoolManager.SwapParams({zeroForOne: true, amountSpecified: 10_000 ether, sqrtPriceLimitX96: 0});
 
         BalanceDelta swapDelta = engine.swap(key, swapParams, key.fee);
         assertEq(swapDelta.amount0(), 10_000 ether);

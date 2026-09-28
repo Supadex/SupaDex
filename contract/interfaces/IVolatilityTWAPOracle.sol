@@ -57,8 +57,5 @@ interface IVolatilityTWAPOracle {
     /**
      * @notice Calculates instantaneous tick volatility over a historical window.
      */
-    function getInstantaneousVolatility(PoolId poolId, uint32 windowSeconds)
-        external
-        view
-        returns (uint256 volatility);
+    function getInstantaneousVolatility(PoolId poolId, uint32 windowSeconds) external view returns (uint256 volatility);
 }

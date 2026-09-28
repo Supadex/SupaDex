@@ -119,9 +119,7 @@ contract SupaPositionManager is
         if (params.liquidity == 0) revert PeripheryErrors.ZeroLiquidity();
         tokenId = _nextTokenId++;
 
-        bytes memory result = _vault.unlock(
-            abi.encode(Action.MINT, msg.sender, tokenId, params)
-        );
+        bytes memory result = _vault.unlock(abi.encode(Action.MINT, msg.sender, tokenId, params));
 
         (liquidity, amount0, amount1) = abi.decode(result, (uint128, uint256, uint256));
 
@@ -143,9 +141,7 @@ contract SupaPositionManager is
         if (params.liquidity == 0) revert PeripheryErrors.ZeroLiquidity();
         if (!_isApprovedOrOwner(msg.sender, params.tokenId)) revert PeripheryErrors.Unauthorized();
 
-        bytes memory result = _vault.unlock(
-            abi.encode(Action.INCREASE, msg.sender, params)
-        );
+        bytes memory result = _vault.unlock(abi.encode(Action.INCREASE, msg.sender, params));
 
         (liquidity, amount0, amount1) = abi.decode(result, (uint128, uint256, uint256));
 
@@ -167,9 +163,7 @@ contract SupaPositionManager is
         if (params.liquidity == 0) revert PeripheryErrors.ZeroLiquidity();
         if (!_isApprovedOrOwner(msg.sender, params.tokenId)) revert PeripheryErrors.Unauthorized();
 
-        bytes memory result = _vault.unlock(
-            abi.encode(Action.DECREASE, msg.sender, params)
-        );
+        bytes memory result = _vault.unlock(abi.encode(Action.DECREASE, msg.sender, params));
 
         (amount0, amount1) = abi.decode(result, (uint256, uint256));
 
@@ -187,11 +181,11 @@ contract SupaPositionManager is
         override
         returns (uint256 amount0, uint256 amount1)
     {
-        if (!_isApprovedOrOwner(msg.sender, params.tokenId)) revert PeripheryErrors.Unauthorized();
+        if (!_isApprovedOrOwner(msg.sender, params.tokenId)) {
+            revert PeripheryErrors.Unauthorized();
+        }
 
-        bytes memory result = _vault.unlock(
-            abi.encode(Action.COLLECT, msg.sender, params)
-        );
+        bytes memory result = _vault.unlock(abi.encode(Action.COLLECT, msg.sender, params));
 
         (amount0, amount1) = abi.decode(result, (uint256, uint256));
 
@@ -239,8 +233,7 @@ contract SupaPositionManager is
             (uint256 amount0, uint256 amount1) = _handleDecrease(payer, params);
             return abi.encode(amount0, amount1);
         } else {
-            (, address payer, CollectParams memory params) =
-                abi.decode(data, (Action, address, CollectParams));
+            (, address payer, CollectParams memory params) = abi.decode(data, (Action, address, CollectParams));
             (uint256 amount0, uint256 amount1) = _handleCollect(payer, params);
             return abi.encode(amount0, amount1);
         }
@@ -260,7 +253,7 @@ contract SupaPositionManager is
             salt: bytes32(tokenId)
         });
 
-        (BalanceDelta callerDelta, ) = poolManager.modifyLiquidity(params.poolKey, modParams, params.hookData);
+        (BalanceDelta callerDelta,) = poolManager.modifyLiquidity(params.poolKey, modParams, params.hookData);
 
         amount0 = uint256(uint128(callerDelta.amount0()));
         amount1 = uint256(uint128(callerDelta.amount1()));
@@ -389,7 +382,11 @@ contract SupaPositionManager is
     /**
      * @dev Internal handler for collecting owed fees.
      */
-    function _handleCollect(address /* payer */, CollectParams memory params)
+    function _handleCollect(
+        address,
+        /* payer */
+        CollectParams memory params
+    )
         internal
         returns (uint256 amount0, uint256 amount1)
     {

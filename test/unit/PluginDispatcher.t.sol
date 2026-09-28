@@ -52,12 +52,12 @@ contract MockPlugin is IPlugin {
         return IPlugin.afterInitialize.selector;
     }
 
-    function beforeModifyLiquidity(address, PoolKey calldata, IPoolManager.ModifyLiquidityParams calldata, bytes calldata)
-        external
-        view
-        override
-        returns (bytes4)
-    {
+    function beforeModifyLiquidity(
+        address,
+        PoolKey calldata,
+        IPoolManager.ModifyLiquidityParams calldata,
+        bytes calldata
+    ) external view override returns (bytes4) {
         if (shouldRevert) revert("PluginRevert");
         if (invalidReturnSelector != bytes4(0)) return invalidReturnSelector;
         return IPlugin.beforeModifyLiquidity.selector;
@@ -166,12 +166,7 @@ contract PluginDispatcherTest is Test {
         assertEq(fee, 5000);
 
         int128 hookDelta = PluginDispatcher.dispatchAfterSwap(
-            address(plugin),
-            address(this),
-            key,
-            IPoolManager.SwapParams(true, 100, 0),
-            toBalanceDelta(10, 20),
-            ""
+            address(plugin), address(this), key, IPoolManager.SwapParams(true, 100, 0), toBalanceDelta(10, 20), ""
         );
         assertEq(hookDelta, 100);
     }

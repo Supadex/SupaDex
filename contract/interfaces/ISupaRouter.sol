@@ -84,38 +84,26 @@ interface ISupaRouter {
      * @param params ExactInputSingleParams struct.
      * @return amountOut The actual amount of output token received.
      */
-    function exactInputSingle(ExactInputSingleParams calldata params)
-        external
-        payable
-        returns (uint256 amountOut);
+    function exactInputSingle(ExactInputSingleParams calldata params) external payable returns (uint256 amountOut);
 
     /**
      * @notice Executes a multi-hop exact input swap across multiple pools/curves.
      * @param params ExactInputParams struct with encoded path.
      * @return amountOut The final amount of output token received.
      */
-    function exactInput(ExactInputParams calldata params)
-        external
-        payable
-        returns (uint256 amountOut);
+    function exactInput(ExactInputParams calldata params) external payable returns (uint256 amountOut);
 
     /**
      * @notice Executes a single-hop exact output swap.
      * @param params ExactOutputSingleParams struct.
      * @return amountIn The actual amount of input token spent.
      */
-    function exactOutputSingle(ExactOutputSingleParams calldata params)
-        external
-        payable
-        returns (uint256 amountIn);
+    function exactOutputSingle(ExactOutputSingleParams calldata params) external payable returns (uint256 amountIn);
 
     /**
      * @notice Executes a multi-hop exact output swap across multiple pools/curves.
      * @param params ExactOutputParams struct with encoded path.
      * @return amountIn The final amount of input token spent.
      */
-    function exactOutput(ExactOutputParams calldata params)
-        external
-        payable
-        returns (uint256 amountIn);
+    function exactOutput(ExactOutputParams calldata params) external payable returns (uint256 amountIn);
 }

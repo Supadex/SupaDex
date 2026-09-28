@@ -73,12 +73,7 @@ contract SupaPoolManager is IPoolManager {
         _;
     }
 
-    constructor(
-        IVault _vault,
-        ICurveEngine _clammEngine,
-        ICurveEngine _binEngine,
-        ICurveEngine _stableEngine
-    ) {
+    constructor(IVault _vault, ICurveEngine _clammEngine, ICurveEngine _binEngine, ICurveEngine _stableEngine) {
         owner = msg.sender;
         vault = _vault;
         clammEngine = _clammEngine;
@@ -125,7 +120,11 @@ contract SupaPoolManager is IPoolManager {
     /**
      * @inheritdoc IPoolManager
      */
-    function initialize(PoolKey memory key, uint160 sqrtPriceX96, bytes calldata /* hookData */)
+    function initialize(
+        PoolKey memory key,
+        uint160 sqrtPriceX96,
+        bytes calldata /* hookData */
+    )
         external
         override
         returns (int24 tick)
@@ -151,9 +150,7 @@ contract SupaPoolManager is IPoolManager {
         Slot0 initialSlot0 = Slot0Library.pack(sqrtPriceX96, tick, 0, key.fee, true);
         poolSlot0[id] = initialSlot0;
 
-        emit Initialize(
-            id, key.currency0, key.currency1, key.fee, key.tickSpacing, key.plugin, sqrtPriceX96, tick
-        );
+        emit Initialize(id, key.currency0, key.currency1, key.fee, key.tickSpacing, key.plugin, sqrtPriceX96, tick);
 
         PluginDispatcher.dispatchAfterInitialize(key.plugin, msg.sender, key, sqrtPriceX96, tick);
     }
@@ -161,11 +158,12 @@ contract SupaPoolManager is IPoolManager {
     /**
      * @inheritdoc IPoolManager
      */
-    function modifyLiquidity(
-        PoolKey memory key,
-        ModifyLiquidityParams memory params,
-        bytes calldata hookData
-    ) external override onlyUnlocked returns (BalanceDelta callerDelta, BalanceDelta feesAccrued) {
+    function modifyLiquidity(PoolKey memory key, ModifyLiquidityParams memory params, bytes calldata hookData)
+        external
+        override
+        onlyUnlocked
+        returns (BalanceDelta callerDelta, BalanceDelta feesAccrued)
+    {
         PoolId id = key.toId();
         _checkCircuitBreaker(id, key.curveType);
         if (!poolSlot0[id].isInitialized()) revert PoolErrors.PoolNotInitialized(id);
@@ -175,9 +173,8 @@ contract SupaPoolManager is IPoolManager {
         ICurveEngine engine = getCurveEngine(key.curveType);
         (callerDelta, feesAccrued) = engine.modifyLiquidity(key, params);
 
-        BalanceDelta hookDelta = PluginDispatcher.dispatchAfterModifyLiquidity(
-            key.plugin, msg.sender, key, params, callerDelta, hookData
-        );
+        BalanceDelta hookDelta =
+            PluginDispatcher.dispatchAfterModifyLiquidity(key.plugin, msg.sender, key, params, callerDelta, hookData);
 
         if (BalanceDelta.unwrap(hookDelta) != 0) {
             callerDelta = callerDelta.add(hookDelta);
@@ -219,9 +216,8 @@ contract SupaPoolManager is IPoolManager {
         ICurveEngine engine = getCurveEngine(key.curveType);
         swapDelta = engine.swap(key, params, fee);
 
-        int128 hookDeltaSpecified = PluginDispatcher.dispatchAfterSwap(
-            key.plugin, msg.sender, key, params, swapDelta, hookData
-        );
+        int128 hookDeltaSpecified =
+            PluginDispatcher.dispatchAfterSwap(key.plugin, msg.sender, key, params, swapDelta, hookData);
 
         if (hookDeltaSpecified != 0) {
             if (params.zeroForOne) {
@@ -276,7 +272,9 @@ contract SupaPoolManager is IPoolManager {
             vault.accountDelta(msg.sender, key.currency1, -SafeCastLib.toInt256(amount1));
         }
 
-        delta = toBalanceDelta(SafeCastLib.toInt128(SafeCastLib.toInt256(amount0)), SafeCastLib.toInt128(SafeCastLib.toInt256(amount1)));
+        delta = toBalanceDelta(
+            SafeCastLib.toInt128(SafeCastLib.toInt256(amount0)), SafeCastLib.toInt128(SafeCastLib.toInt256(amount1))
+        );
         emit Donate(id, msg.sender, amount0, amount1);
 
         PluginDispatcher.dispatchAfterDonate(key.plugin, msg.sender, key, amount0, amount1, hookData);

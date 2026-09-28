@@ -23,26 +23,13 @@ contract PathKeyLibTest is Test {
     }
 
     function test_encodeAndDecodeSingleHop() public view {
-        bytes memory path = PathKeyLib.encodeHop(
-            tokenA,
-            tokenB,
-            3000,
-            60,
-            address(0),
-            CurveType.CLAMM
-        );
+        bytes memory path = PathKeyLib.encodeHop(tokenA, tokenB, 3000, 60, address(0), CurveType.CLAMM);
 
         assertEq(path.numPools(), 1);
         assertFalse(path.hasMultiplePools());
 
-        (
-            Currency cIn,
-            Currency cOut,
-            uint24 fee,
-            int24 tickSpacing,
-            address plugin,
-            CurveType curve
-        ) = path.decodeFirstPool();
+        (Currency cIn, Currency cOut, uint24 fee, int24 tickSpacing, address plugin, CurveType curve) =
+            path.decodeFirstPool();
 
         assertEq(Currency.unwrap(cIn), Currency.unwrap(tokenA));
         assertEq(Currency.unwrap(cOut), Currency.unwrap(tokenB));
@@ -60,31 +47,23 @@ contract PathKeyLibTest is Test {
     }
 
     function test_encodeAndDecodeMultiHop() public view {
-        bytes memory hop1 = PathKeyLib.encodeHop(
-            tokenA,
-            tokenB,
-            3000,
-            60,
-            address(0),
-            CurveType.CLAMM
-        );
+        bytes memory hop1 = PathKeyLib.encodeHop(tokenA, tokenB, 3000, 60, address(0), CurveType.CLAMM);
 
         bytes memory multiPath = abi.encodePacked(
-            hop1,
-            abi.encodePacked(uint24(500), int24(10), address(0x999), uint8(CurveType.BIN_AMM), tokenC)
+            hop1, abi.encodePacked(uint24(500), int24(10), address(0x999), uint8(CurveType.BIN_AMM), tokenC)
         );
 
         assertEq(multiPath.numPools(), 2);
         assertTrue(multiPath.hasMultiplePools());
 
-        (PoolKey memory key1, , , ) = multiPath.getFirstPoolKey();
+        (PoolKey memory key1,,,) = multiPath.getFirstPoolKey();
         assertEq(key1.fee, 3000);
 
         bytes memory remaining = multiPath.skipToken();
         assertEq(remaining.numPools(), 1);
         assertFalse(remaining.hasMultiplePools());
 
-        (PoolKey memory key2, , , ) = remaining.getFirstPoolKey();
+        (PoolKey memory key2,,,) = remaining.getFirstPoolKey();
         assertEq(key2.fee, 500);
         assertEq(key2.plugin, address(0x999));
         assertTrue(key2.curveType == CurveType.BIN_AMM);
@@ -97,14 +76,7 @@ contract PathKeyLibTest is Test {
     }
 
     function test_identicalCurrenciesReverts() public {
-        bytes memory path = PathKeyLib.encodeHop(
-            tokenA,
-            tokenA,
-            3000,
-            60,
-            address(0),
-            CurveType.CLAMM
-        );
+        bytes memory path = PathKeyLib.encodeHop(tokenA, tokenA, 3000, 60, address(0), CurveType.CLAMM);
 
         vm.expectRevert(PeripheryErrors.IdenticalCurrencies.selector);
         this.externalGetFirstPoolKey(path);

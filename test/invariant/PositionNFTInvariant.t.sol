@@ -116,7 +116,7 @@ contract PositionNFTHandler is Test {
             hookData: ""
         });
 
-        (uint256 tokenId, uint128 liq, , ) = posManager.mint(params);
+        (uint256 tokenId, uint128 liq,,) = posManager.mint(params);
         vm.stopPrank();
 
         mintedTokenIds.push(tokenId);
@@ -148,7 +148,7 @@ contract PositionNFTHandler is Test {
             hookData: ""
         });
 
-        (uint128 liq, , ) = posManager.increaseLiquidity(params);
+        (uint128 liq,,) = posManager.increaseLiquidity(params);
         vm.stopPrank();
 
         activeLiquidityOfToken[tokenId] += liq;
@@ -188,10 +188,7 @@ contract PositionNFTHandler is Test {
 
         vm.startPrank(owner);
         ISupaPositionManager.CollectParams memory params = ISupaPositionManager.CollectParams({
-            tokenId: tokenId,
-            recipient: owner,
-            amount0Max: type(uint128).max,
-            amount1Max: type(uint128).max
+            tokenId: tokenId, recipient: owner, amount0Max: type(uint128).max, amount1Max: type(uint128).max
         });
 
         posManager.collect(params);
@@ -264,12 +261,7 @@ contract PositionNFTInvariantTest is StdInvariant, Test {
         }
 
         key = PoolKey({
-            currency0: c0,
-            currency1: c1,
-            fee: 3000,
-            tickSpacing: 60,
-            plugin: address(0),
-            curveType: CurveType.CLAMM
+            currency0: c0, currency1: c1, fee: 3000, tickSpacing: 60, plugin: address(0), curveType: CurveType.CLAMM
         });
 
         manager.initialize(key, 1 << 96, "");

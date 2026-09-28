@@ -45,10 +45,7 @@ contract LVRDynamicFeeHandler is Test {
         try oracle.write(key.toId(), uint32(block.timestamp), newTick, 1_000_000) {} catch {}
 
         (, uint24 overrideFee) = plugin.beforeSwap(
-            address(this),
-            key,
-            IPoolManager.SwapParams(true, int256(uint256(swapAmount % 1_000_000_000 + 1)), 0),
-            ""
+            address(this), key, IPoolManager.SwapParams(true, int256(uint256(swapAmount % 1_000_000_000 + 1)), 0), ""
         );
 
         latestCalculatedFee = overrideFee;

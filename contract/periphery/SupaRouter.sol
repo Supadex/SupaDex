@@ -68,9 +68,7 @@ contract SupaRouter is ISupaRouter, IUnlockCallback, IPeripheryEvents, Periphery
         checkDeadline(params.deadline)
         returns (uint256 amountOut)
     {
-        bytes memory result = _vault.unlock(
-            abi.encode(Action.EXACT_INPUT_SINGLE, msg.sender, params)
-        );
+        bytes memory result = _vault.unlock(abi.encode(Action.EXACT_INPUT_SINGLE, msg.sender, params));
         amountOut = abi.decode(result, (uint256));
 
         // Refund any residual native ETH remaining in contract
@@ -89,9 +87,7 @@ contract SupaRouter is ISupaRouter, IUnlockCallback, IPeripheryEvents, Periphery
         checkDeadline(params.deadline)
         returns (uint256 amountOut)
     {
-        bytes memory result = _vault.unlock(
-            abi.encode(Action.EXACT_INPUT_MULTI, msg.sender, params)
-        );
+        bytes memory result = _vault.unlock(abi.encode(Action.EXACT_INPUT_MULTI, msg.sender, params));
         amountOut = abi.decode(result, (uint256));
 
         // Refund any residual native ETH remaining in contract
@@ -110,9 +106,7 @@ contract SupaRouter is ISupaRouter, IUnlockCallback, IPeripheryEvents, Periphery
         checkDeadline(params.deadline)
         returns (uint256 amountIn)
     {
-        bytes memory result = _vault.unlock(
-            abi.encode(Action.EXACT_OUTPUT_SINGLE, msg.sender, params)
-        );
+        bytes memory result = _vault.unlock(abi.encode(Action.EXACT_OUTPUT_SINGLE, msg.sender, params));
         amountIn = abi.decode(result, (uint256));
 
         // Refund any residual native ETH remaining in contract
@@ -131,9 +125,7 @@ contract SupaRouter is ISupaRouter, IUnlockCallback, IPeripheryEvents, Periphery
         checkDeadline(params.deadline)
         returns (uint256 amountIn)
     {
-        bytes memory result = _vault.unlock(
-            abi.encode(Action.EXACT_OUTPUT_MULTI, msg.sender, params)
-        );
+        bytes memory result = _vault.unlock(abi.encode(Action.EXACT_OUTPUT_MULTI, msg.sender, params));
         amountIn = abi.decode(result, (uint256));
 
         // Refund any residual native ETH remaining in contract
@@ -153,16 +145,14 @@ contract SupaRouter is ISupaRouter, IUnlockCallback, IPeripheryEvents, Periphery
                 abi.decode(data, (Action, address, ExactInputSingleParams));
             return abi.encode(_handleExactInputSingle(payer, params));
         } else if (action == Action.EXACT_INPUT_MULTI) {
-            (, address payer, ExactInputParams memory params) =
-                abi.decode(data, (Action, address, ExactInputParams));
+            (, address payer, ExactInputParams memory params) = abi.decode(data, (Action, address, ExactInputParams));
             return abi.encode(_handleExactInputMulti(payer, params));
         } else if (action == Action.EXACT_OUTPUT_SINGLE) {
             (, address payer, ExactOutputSingleParams memory params) =
                 abi.decode(data, (Action, address, ExactOutputSingleParams));
             return abi.encode(_handleExactOutputSingle(payer, params));
         } else {
-            (, address payer, ExactOutputParams memory params) =
-                abi.decode(data, (Action, address, ExactOutputParams));
+            (, address payer, ExactOutputParams memory params) = abi.decode(data, (Action, address, ExactOutputParams));
             return abi.encode(_handleExactOutputMulti(payer, params));
         }
     }
@@ -217,19 +207,17 @@ contract SupaRouter is ISupaRouter, IUnlockCallback, IPeripheryEvents, Periphery
         bytes memory path = params.path;
         if (path.length < 67) revert PeripheryErrors.InvalidPath();
 
-        (, Currency firstIn, , ) = path.getFirstPoolKey();
+        (, Currency firstIn,,) = path.getFirstPoolKey();
         Currency inputCurrency = firstIn;
         uint256 currentAmountIn = params.amountIn;
         Currency currentOutputCurrency;
 
         while (true) {
-            (PoolKey memory key, , Currency hopOut, bool zeroForOne) = path.getFirstPoolKey();
+            (PoolKey memory key,, Currency hopOut, bool zeroForOne) = path.getFirstPoolKey();
             currentOutputCurrency = hopOut;
 
             IPoolManager.SwapParams memory swapParams = IPoolManager.SwapParams({
-                zeroForOne: zeroForOne,
-                amountSpecified: int256(currentAmountIn),
-                sqrtPriceLimitX96: 0
+                zeroForOne: zeroForOne, amountSpecified: int256(currentAmountIn), sqrtPriceLimitX96: 0
             });
 
             BalanceDelta delta = poolManager.swap(key, swapParams, "");
@@ -300,21 +288,19 @@ contract SupaRouter is ISupaRouter, IUnlockCallback, IPeripheryEvents, Periphery
         bytes memory path = params.path;
         if (path.length < 67) revert PeripheryErrors.InvalidPath();
 
-        (, Currency targetOut, , ) = path.getFirstPoolKey();
+        (, Currency targetOut,,) = path.getFirstPoolKey();
         Currency outputCurrency = targetOut;
         uint256 currentAmountOut = params.amountOut;
         Currency currentInputCurrency;
 
         while (true) {
-            (PoolKey memory key, , Currency hopIn, bool zeroForOne) = path.getFirstPoolKey();
+            (PoolKey memory key,, Currency hopIn, bool zeroForOne) = path.getFirstPoolKey();
             currentInputCurrency = hopIn;
 
             bool swapZeroForOne = !zeroForOne;
 
             IPoolManager.SwapParams memory swapParams = IPoolManager.SwapParams({
-                zeroForOne: swapZeroForOne,
-                amountSpecified: -int256(currentAmountOut),
-                sqrtPriceLimitX96: 0
+                zeroForOne: swapZeroForOne, amountSpecified: -int256(currentAmountOut), sqrtPriceLimitX96: 0
             });
 
             BalanceDelta delta = poolManager.swap(key, swapParams, "");

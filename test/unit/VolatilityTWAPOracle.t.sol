@@ -62,7 +62,7 @@ contract VolatilityTWAPOracleTest is Test {
         secondsAgos[0] = 20; // 1000
         secondsAgos[1] = 0; // 1020
 
-        (int56[] memory tickCumulatives, ) = oracle.observe(poolId, secondsAgos);
+        (int56[] memory tickCumulatives,) = oracle.observe(poolId, secondsAgos);
         assertEq(tickCumulatives.length, 2);
         // delta tick cumulative across 20s at tick 100 should be 20 * 100 = 2000
         assertEq(tickCumulatives[1] - tickCumulatives[0], 2000);

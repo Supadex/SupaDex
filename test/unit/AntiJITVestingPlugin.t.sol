@@ -36,10 +36,7 @@ contract AntiJITVestingPluginTest is Test {
             address(0xA),
             key,
             IPoolManager.ModifyLiquidityParams({
-                tickLower: -120,
-                tickUpper: 120,
-                liquidityDelta: 10_000,
-                salt: bytes32(0)
+                tickLower: -120, tickUpper: 120, liquidityDelta: 10_000, salt: bytes32(0)
             }),
             ""
         );
@@ -60,10 +57,7 @@ contract AntiJITVestingPluginTest is Test {
             address(0xA),
             key,
             IPoolManager.ModifyLiquidityParams({
-                tickLower: -120,
-                tickUpper: 120,
-                liquidityDelta: 10_000,
-                salt: bytes32(0)
+                tickLower: -120, tickUpper: 120, liquidityDelta: 10_000, salt: bytes32(0)
             }),
             ""
         );
@@ -84,10 +78,7 @@ contract AntiJITVestingPluginTest is Test {
             address(0xA),
             key,
             IPoolManager.ModifyLiquidityParams({
-                tickLower: -120,
-                tickUpper: 120,
-                liquidityDelta: -10_000,
-                salt: bytes32(0)
+                tickLower: -120, tickUpper: 120, liquidityDelta: -10_000, salt: bytes32(0)
             }),
             ""
         );
@@ -101,10 +92,7 @@ contract AntiJITVestingPluginTest is Test {
             address(0xA),
             key,
             IPoolManager.ModifyLiquidityParams({
-                tickLower: -120,
-                tickUpper: 120,
-                liquidityDelta: 10_000,
-                salt: bytes32(0)
+                tickLower: -120, tickUpper: 120, liquidityDelta: 10_000, salt: bytes32(0)
             }),
             ""
         );
@@ -117,10 +105,7 @@ contract AntiJITVestingPluginTest is Test {
             address(0xA),
             key,
             IPoolManager.ModifyLiquidityParams({
-                tickLower: -120,
-                tickUpper: 120,
-                liquidityDelta: -10_000,
-                salt: bytes32(0)
+                tickLower: -120, tickUpper: 120, liquidityDelta: -10_000, salt: bytes32(0)
             }),
             ""
         );

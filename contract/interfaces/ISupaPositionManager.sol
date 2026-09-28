@@ -116,10 +116,7 @@ interface ISupaPositionManager {
     /**
      * @notice Collects accumulated LP fee earnings.
      */
-    function collect(CollectParams calldata params)
-        external
-        payable
-        returns (uint256 amount0, uint256 amount1);
+    function collect(CollectParams calldata params) external payable returns (uint256 amount0, uint256 amount1);
 
     /**
      * @notice Burns an empty position NFT with zero remaining liquidity and zero tokens owed.

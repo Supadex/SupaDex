@@ -65,13 +65,10 @@ contract PluginIntegrationHarness is IUnlockCallback {
 
         if (action == Action.ADD_LIQUIDITY) {
             IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
-                tickLower: -120,
-                tickUpper: 120,
-                liquidityDelta: int256(val),
-                salt: bytes32(0)
+                tickLower: -120, tickUpper: 120, liquidityDelta: int256(val), salt: bytes32(0)
             });
 
-            (BalanceDelta delta, ) = manager.modifyLiquidity(key, params, "");
+            (BalanceDelta delta,) = manager.modifyLiquidity(key, params, "");
 
             if (delta.amount0() > 0) {
                 MockPluginToken(Currency.unwrap(key.currency0)).transfer(address(vault), uint128(delta.amount0()));
@@ -83,13 +80,10 @@ contract PluginIntegrationHarness is IUnlockCallback {
             }
         } else if (action == Action.REMOVE_LIQUIDITY) {
             IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
-                tickLower: -120,
-                tickUpper: 120,
-                liquidityDelta: -int256(val),
-                salt: bytes32(0)
+                tickLower: -120, tickUpper: 120, liquidityDelta: -int256(val), salt: bytes32(0)
             });
 
-            (BalanceDelta delta, ) = manager.modifyLiquidity(key, params, "");
+            (BalanceDelta delta,) = manager.modifyLiquidity(key, params, "");
 
             if (delta.amount0() < 0) {
                 vault.take(key.currency0, address(this), uint128(-delta.amount0()));
@@ -98,11 +92,8 @@ contract PluginIntegrationHarness is IUnlockCallback {
                 vault.take(key.currency1, address(this), uint128(-delta.amount1()));
             }
         } else if (action == Action.SWAP) {
-            IPoolManager.SwapParams memory swapParams = IPoolManager.SwapParams({
-                zeroForOne: true,
-                amountSpecified: int256(val),
-                sqrtPriceLimitX96: 0
-            });
+            IPoolManager.SwapParams memory swapParams =
+                IPoolManager.SwapParams({zeroForOne: true, amountSpecified: int256(val), sqrtPriceLimitX96: 0});
 
             BalanceDelta delta = manager.swap(key, swapParams, "");
 
@@ -193,39 +184,29 @@ contract NativePluginsIntegrationTest is Test, IPluginEvents {
         manager.initialize(lvrPoolKey, 1 << 96, "");
 
         // 1. Add Liquidity
-        harness.execute(
-            abi.encode(PluginIntegrationHarness.Action.ADD_LIQUIDITY, lvrPoolKey, uint256(10_000_000))
-        );
+        harness.execute(abi.encode(PluginIntegrationHarness.Action.ADD_LIQUIDITY, lvrPoolKey, uint256(10_000_000)));
 
         // 2. Perform Swap 1 (elevates volatility state)
-        harness.execute(
-            abi.encode(PluginIntegrationHarness.Action.SWAP, lvrPoolKey, uint256(1000))
-        );
+        harness.execute(abi.encode(PluginIntegrationHarness.Action.SWAP, lvrPoolKey, uint256(1000)));
 
         // 3. Perform Rapid Follow-up Swap 2 in same timestamp
-        harness.execute(
-            abi.encode(PluginIntegrationHarness.Action.SWAP, lvrPoolKey, uint256(500))
-        );
+        harness.execute(abi.encode(PluginIntegrationHarness.Action.SWAP, lvrPoolKey, uint256(500)));
 
         // 4. Advance time by 60 seconds (fee decays back to base fee)
         vm.warp(block.timestamp + 60);
 
-        harness.execute(
-            abi.encode(PluginIntegrationHarness.Action.SWAP, lvrPoolKey, uint256(200))
-        );
+        harness.execute(abi.encode(PluginIntegrationHarness.Action.SWAP, lvrPoolKey, uint256(200)));
     }
 
     function test_endToEndAntiJITLifecycle() public {
         manager.initialize(jitPoolKey, 1 << 96, "");
 
         // 1. Add Liquidity
-        harness.execute(
-            abi.encode(PluginIntegrationHarness.Action.ADD_LIQUIDITY, jitPoolKey, uint256(5_000_000))
-        );
+        harness.execute(abi.encode(PluginIntegrationHarness.Action.ADD_LIQUIDITY, jitPoolKey, uint256(5_000_000)));
 
         // Verify residency tracking
         bytes32 posKey = keccak256(abi.encodePacked(address(harness), int24(-120), int24(120), bytes32(0)));
-        (uint32 lastBlock, , uint128 liq) = jitPlugin.residencies(jitPoolKey.toId(), posKey);
+        (uint32 lastBlock,, uint128 liq) = jitPlugin.residencies(jitPoolKey.toId(), posKey);
         assertEq(lastBlock, uint32(block.number));
         assertEq(liq, 5_000_000);
 
@@ -240,12 +221,10 @@ contract NativePluginsIntegrationTest is Test, IPluginEvents {
             3
         );
 
-        harness.execute(
-            abi.encode(PluginIntegrationHarness.Action.REMOVE_LIQUIDITY, jitPoolKey, uint256(5_000_000))
-        );
+        harness.execute(abi.encode(PluginIntegrationHarness.Action.REMOVE_LIQUIDITY, jitPoolKey, uint256(5_000_000)));
 
         // Verify position liquidity reduced to 0
-        (, , uint128 remainingLiq) = jitPlugin.residencies(jitPoolKey.toId(), posKey);
+        (,, uint128 remainingLiq) = jitPlugin.residencies(jitPoolKey.toId(), posKey);
         assertEq(remainingLiq, 0);
     }
 }

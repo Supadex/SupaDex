@@ -44,40 +44,27 @@ contract CLAMMEngine is ICurveEngine {
     /**
      * @inheritdoc ICurveEngine
      */
-    function initialize(
-        PoolKey memory key,
-        uint160 sqrtPriceX96
-    ) external override returns (int24 tick) {
+    function initialize(PoolKey memory key, uint160 sqrtPriceX96) external override returns (int24 tick) {
         PoolId id = key.toId();
-        if (pools[id].slot0.isInitialized())
+        if (pools[id].slot0.isInitialized()) {
             revert PoolErrors.PoolAlreadyInitialized(id);
+        }
 
         tick = TickMathLib.getTickAtSqrtRatio(sqrtPriceX96);
-        pools[id].slot0 = Slot0Library.pack(
-            sqrtPriceX96,
-            tick,
-            0,
-            key.fee,
-            true
-        );
+        pools[id].slot0 = Slot0Library.pack(sqrtPriceX96, tick, 0, key.fee, true);
     }
 
     /**
      * @notice Updates tick bitmap and liquidity gross/net for lower and upper ticks.
      */
-    function _updateTicks(
-        PoolState storage pool,
-        int24 tickLower,
-        int24 tickUpper,
-        int128 delta128,
-        int24 tickSpacing
-    ) internal {
+    function _updateTicks(PoolState storage pool, int24 tickLower, int24 tickUpper, int128 delta128, int24 tickSpacing)
+        internal
+    {
         // Lower Tick
         TickInfo storage lower = pool.ticks[tickLower];
         uint128 lowerGrossBefore = lower.liquidityGross;
-        uint128 lowerGrossAfter = delta128 < 0
-            ? lowerGrossBefore - uint128(-delta128)
-            : lowerGrossBefore + uint128(delta128);
+        uint128 lowerGrossAfter =
+            delta128 < 0 ? lowerGrossBefore - uint128(-delta128) : lowerGrossBefore + uint128(delta128);
 
         if (lowerGrossBefore == 0) {
             pool.tickBitmap.flipTick(tickLower, tickSpacing);
@@ -89,9 +76,8 @@ contract CLAMMEngine is ICurveEngine {
         // Upper Tick
         TickInfo storage upper = pool.ticks[tickUpper];
         uint128 upperGrossBefore = upper.liquidityGross;
-        uint128 upperGrossAfter = delta128 < 0
-            ? upperGrossBefore - uint128(-delta128)
-            : upperGrossBefore + uint128(delta128);
+        uint128 upperGrossAfter =
+            delta128 < 0 ? upperGrossBefore - uint128(-delta128) : upperGrossBefore + uint128(delta128);
 
         if (upperGrossBefore == 0) {
             pool.tickBitmap.flipTick(tickUpper, tickSpacing);
@@ -117,42 +103,19 @@ contract CLAMMEngine is ICurveEngine {
         bool isAdd = delta128 > 0;
 
         if (currentTick < tickLower) {
-            amount0 = SqrtPriceMathLib.getAmount0Delta(
-                sqrtRatioAX96,
-                sqrtRatioBX96,
-                absDelta,
-                isAdd
-            );
+            amount0 = SqrtPriceMathLib.getAmount0Delta(sqrtRatioAX96, sqrtRatioBX96, absDelta, isAdd);
         } else if (currentTick < tickUpper) {
-            amount0 = SqrtPriceMathLib.getAmount0Delta(
-                sqrtPriceX96,
-                sqrtRatioBX96,
-                absDelta,
-                isAdd
-            );
-            amount1 = SqrtPriceMathLib.getAmount1Delta(
-                sqrtRatioAX96,
-                sqrtPriceX96,
-                absDelta,
-                isAdd
-            );
+            amount0 = SqrtPriceMathLib.getAmount0Delta(sqrtPriceX96, sqrtRatioBX96, absDelta, isAdd);
+            amount1 = SqrtPriceMathLib.getAmount1Delta(sqrtRatioAX96, sqrtPriceX96, absDelta, isAdd);
         } else {
-            amount1 = SqrtPriceMathLib.getAmount1Delta(
-                sqrtRatioAX96,
-                sqrtRatioBX96,
-                absDelta,
-                isAdd
-            );
+            amount1 = SqrtPriceMathLib.getAmount1Delta(sqrtRatioAX96, sqrtRatioBX96, absDelta, isAdd);
         }
     }
 
     /**
      * @inheritdoc ICurveEngine
      */
-    function modifyLiquidity(
-        PoolKey memory key,
-        IPoolManager.ModifyLiquidityParams memory params
-    )
+    function modifyLiquidity(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params)
         external
         override
         returns (BalanceDelta callerDelta, BalanceDelta feesAccrued)
@@ -163,15 +126,9 @@ contract CLAMMEngine is ICurveEngine {
         if (!slot0.isInitialized()) revert PoolErrors.PoolNotInitialized(id);
 
         if (params.tickLower >= params.tickUpper) {
-            revert PoolErrors.TicksMisordered(
-                params.tickLower,
-                params.tickUpper
-            );
+            revert PoolErrors.TicksMisordered(params.tickLower, params.tickUpper);
         }
-        if (
-            params.tickLower < TickMathLib.MIN_TICK ||
-            params.tickUpper > TickMathLib.MAX_TICK
-        ) {
+        if (params.tickLower < TickMathLib.MIN_TICK || params.tickUpper > TickMathLib.MAX_TICK) {
             revert PoolErrors.TickOutOfBounds(params.tickLower);
         }
 
@@ -180,30 +137,14 @@ contract CLAMMEngine is ICurveEngine {
 
         if (params.liquidityDelta != 0) {
             int128 delta128 = SafeCastLib.toInt128(params.liquidityDelta);
-            _updateTicks(
-                pool,
-                params.tickLower,
-                params.tickUpper,
-                delta128,
-                key.tickSpacing
-            );
+            _updateTicks(pool, params.tickLower, params.tickUpper, delta128, key.tickSpacing);
 
             int24 currentTick = slot0.tick();
-            (amount0, amount1) = _computeModifyAmounts(
-                slot0.sqrtPriceX96(),
-                currentTick,
-                params.tickLower,
-                params.tickUpper,
-                delta128
-            );
+            (amount0, amount1) =
+                _computeModifyAmounts(slot0.sqrtPriceX96(), currentTick, params.tickLower, params.tickUpper, delta128);
 
-            if (
-                currentTick >= params.tickLower &&
-                currentTick < params.tickUpper
-            ) {
-                pool.liquidity = delta128 < 0
-                    ? pool.liquidity - uint128(-delta128)
-                    : pool.liquidity + uint128(delta128);
+            if (currentTick >= params.tickLower && currentTick < params.tickUpper) {
+                pool.liquidity = delta128 < 0 ? pool.liquidity - uint128(-delta128) : pool.liquidity + uint128(delta128);
             }
         }
 
@@ -230,11 +171,11 @@ contract CLAMMEngine is ICurveEngine {
     /**
      * @inheritdoc ICurveEngine
      */
-    function swap(
-        PoolKey memory key,
-        IPoolManager.SwapParams memory params,
-        uint24 fee
-    ) external override returns (BalanceDelta swapDelta) {
+    function swap(PoolKey memory key, IPoolManager.SwapParams memory params, uint24 fee)
+        external
+        override
+        returns (BalanceDelta swapDelta)
+    {
         PoolId id = key.toId();
         PoolState storage pool = pools[id];
         Slot0 slot0 = pool.slot0;
@@ -246,44 +187,34 @@ contract CLAMMEngine is ICurveEngine {
         state.currentTick = slot0.tick();
         state.liquidity = pool.liquidity;
         state.exactInput = params.amountSpecified > 0;
-        state.amountSpecifiedRemaining = state.exactInput
-            ? uint256(params.amountSpecified)
-            : uint256(-params.amountSpecified);
+        state.amountSpecifiedRemaining =
+            state.exactInput ? uint256(params.amountSpecified) : uint256(-params.amountSpecified);
 
         while (state.amountSpecifiedRemaining > 0 && state.liquidity > 0) {
-            (int24 nextTick, bool initialized) = pool
-                .tickBitmap
-                .nextInitializedTickWithinOneWord(
-                    state.currentTick,
-                    key.tickSpacing,
-                    params.zeroForOne
-                );
+            (int24 nextTick, bool initialized) = pool.tickBitmap
+                .nextInitializedTickWithinOneWord(state.currentTick, key.tickSpacing, params.zeroForOne);
 
-            if (nextTick < TickMathLib.MIN_TICK)
+            if (nextTick < TickMathLib.MIN_TICK) {
                 nextTick = TickMathLib.MIN_TICK;
-            if (nextTick > TickMathLib.MAX_TICK)
+            }
+            if (nextTick > TickMathLib.MAX_TICK) {
                 nextTick = TickMathLib.MAX_TICK;
+            }
 
             uint160 sqrtPriceNextX96 = TickMathLib.getSqrtRatioAtTick(nextTick);
 
-            (
-                uint160 sqrtPriceAfterStepX96,
-                uint256 amountInStep,
-                uint256 amountOutStep,
-                uint256 feeAmountStep
-            ) = computeSwapStep(
-                    state.sqrtPriceX96,
-                    sqrtPriceNextX96,
-                    state.liquidity,
-                    state.amountSpecifiedRemaining,
-                    fee,
-                    params.zeroForOne,
-                    state.exactInput
-                );
+            (uint160 sqrtPriceAfterStepX96, uint256 amountInStep, uint256 amountOutStep, uint256 feeAmountStep) = computeSwapStep(
+                state.sqrtPriceX96,
+                sqrtPriceNextX96,
+                state.liquidity,
+                state.amountSpecifiedRemaining,
+                fee,
+                params.zeroForOne,
+                state.exactInput
+            );
 
             if (state.exactInput) {
-                state.amountSpecifiedRemaining -= (amountInStep +
-                    feeAmountStep);
+                state.amountSpecifiedRemaining -= (amountInStep + feeAmountStep);
                 state.amountCalculated += amountOutStep;
             } else {
                 state.amountSpecifiedRemaining -= amountOutStep;
@@ -291,17 +222,13 @@ contract CLAMMEngine is ICurveEngine {
             }
 
             state.sqrtPriceX96 = sqrtPriceAfterStepX96;
-            state.currentTick = TickMathLib.getTickAtSqrtRatio(
-                state.sqrtPriceX96
-            );
+            state.currentTick = TickMathLib.getTickAtSqrtRatio(state.sqrtPriceX96);
 
             if (state.sqrtPriceX96 == sqrtPriceNextX96) {
                 if (initialized) {
                     int128 net = pool.ticks[nextTick].liquidityNet;
                     if (params.zeroForOne) net = -net;
-                    state.liquidity = net < 0
-                        ? state.liquidity - uint128(-net)
-                        : state.liquidity + uint128(net);
+                    state.liquidity = net < 0 ? state.liquidity - uint128(-net) : state.liquidity + uint128(net);
                 }
                 state.currentTick = params.zeroForOne ? nextTick - 1 : nextTick;
             } else {
@@ -309,46 +236,24 @@ contract CLAMMEngine is ICurveEngine {
             }
         }
 
-        pool.slot0 = slot0.setSqrtPriceX96(state.sqrtPriceX96).setTick(
-            state.currentTick
-        );
+        pool.slot0 = slot0.setSqrtPriceX96(state.sqrtPriceX96).setTick(state.currentTick);
         pool.liquidity = state.liquidity;
 
         if (params.zeroForOne) {
             int128 a0 = state.exactInput
-                ? SafeCastLib.toInt128(
-                    params.amountSpecified -
-                        SafeCastLib.toInt256(state.amountSpecifiedRemaining)
-                )
-                : SafeCastLib.toInt128(
-                    SafeCastLib.toInt256(state.amountCalculated)
-                );
+                ? SafeCastLib.toInt128(params.amountSpecified - SafeCastLib.toInt256(state.amountSpecifiedRemaining))
+                : SafeCastLib.toInt128(SafeCastLib.toInt256(state.amountCalculated));
             int128 a1 = state.exactInput
-                ? -SafeCastLib.toInt128(
-                    SafeCastLib.toInt256(state.amountCalculated)
-                )
-                : -SafeCastLib.toInt128(
-                    -params.amountSpecified -
-                        SafeCastLib.toInt256(state.amountSpecifiedRemaining)
-                );
+                ? -SafeCastLib.toInt128(SafeCastLib.toInt256(state.amountCalculated))
+                : -SafeCastLib.toInt128(-params.amountSpecified - SafeCastLib.toInt256(state.amountSpecifiedRemaining));
             swapDelta = toBalanceDelta(a0, a1);
         } else {
             int128 a0 = state.exactInput
-                ? -SafeCastLib.toInt128(
-                    SafeCastLib.toInt256(state.amountCalculated)
-                )
-                : -SafeCastLib.toInt128(
-                    -params.amountSpecified -
-                        SafeCastLib.toInt256(state.amountSpecifiedRemaining)
-                );
+                ? -SafeCastLib.toInt128(SafeCastLib.toInt256(state.amountCalculated))
+                : -SafeCastLib.toInt128(-params.amountSpecified - SafeCastLib.toInt256(state.amountSpecifiedRemaining));
             int128 a1 = state.exactInput
-                ? SafeCastLib.toInt128(
-                    params.amountSpecified -
-                        SafeCastLib.toInt256(state.amountSpecifiedRemaining)
-                )
-                : SafeCastLib.toInt128(
-                    SafeCastLib.toInt256(state.amountCalculated)
-                );
+                ? SafeCastLib.toInt128(params.amountSpecified - SafeCastLib.toInt256(state.amountSpecifiedRemaining))
+                : SafeCastLib.toInt128(SafeCastLib.toInt256(state.amountCalculated));
             swapDelta = toBalanceDelta(a0, a1);
         }
     }
@@ -364,135 +269,48 @@ contract CLAMMEngine is ICurveEngine {
         uint24 feePips,
         bool zeroForOne,
         bool exactInput
-    )
-        internal
-        pure
-        returns (
-            uint160 sqrtPriceNextX96,
-            uint256 amountIn,
-            uint256 amountOut,
-            uint256 feeAmount
-        )
-    {
+    ) internal pure returns (uint160 sqrtPriceNextX96, uint256 amountIn, uint256 amountOut, uint256 feeAmount) {
         if (exactInput) {
-            uint256 amountRemainingLessFee = FullMathLib.mulDiv(
-                amountRemaining,
-                1e6 - feePips,
-                1e6
-            );
+            uint256 amountRemainingLessFee = FullMathLib.mulDiv(amountRemaining, 1e6 - feePips, 1e6);
             amountIn = zeroForOne
-                ? SqrtPriceMathLib.getAmount0Delta(
-                    sqrtPriceTargetX96,
-                    sqrtPriceCurrentX96,
-                    liquidity,
-                    true
-                )
-                : SqrtPriceMathLib.getAmount1Delta(
-                    sqrtPriceCurrentX96,
-                    sqrtPriceTargetX96,
-                    liquidity,
-                    true
-                );
+                ? SqrtPriceMathLib.getAmount0Delta(sqrtPriceTargetX96, sqrtPriceCurrentX96, liquidity, true)
+                : SqrtPriceMathLib.getAmount1Delta(sqrtPriceCurrentX96, sqrtPriceTargetX96, liquidity, true);
 
             if (amountRemainingLessFee >= amountIn) {
                 sqrtPriceNextX96 = sqrtPriceTargetX96;
             } else {
                 sqrtPriceNextX96 = SqrtPriceMathLib.getNextSqrtPriceFromInput(
-                    sqrtPriceCurrentX96,
-                    liquidity,
-                    amountRemainingLessFee,
-                    zeroForOne
+                    sqrtPriceCurrentX96, liquidity, amountRemainingLessFee, zeroForOne
                 );
                 amountIn = zeroForOne
-                    ? SqrtPriceMathLib.getAmount0Delta(
-                        sqrtPriceNextX96,
-                        sqrtPriceCurrentX96,
-                        liquidity,
-                        true
-                    )
-                    : SqrtPriceMathLib.getAmount1Delta(
-                        sqrtPriceCurrentX96,
-                        sqrtPriceNextX96,
-                        liquidity,
-                        true
-                    );
+                    ? SqrtPriceMathLib.getAmount0Delta(sqrtPriceNextX96, sqrtPriceCurrentX96, liquidity, true)
+                    : SqrtPriceMathLib.getAmount1Delta(sqrtPriceCurrentX96, sqrtPriceNextX96, liquidity, true);
             }
 
             amountOut = zeroForOne
-                ? SqrtPriceMathLib.getAmount1Delta(
-                    sqrtPriceNextX96,
-                    sqrtPriceCurrentX96,
-                    liquidity,
-                    false
-                )
-                : SqrtPriceMathLib.getAmount0Delta(
-                    sqrtPriceCurrentX96,
-                    sqrtPriceNextX96,
-                    liquidity,
-                    false
-                );
-            feeAmount = FullMathLib.mulDivRoundingUp(
-                amountIn,
-                feePips,
-                1e6 - feePips
-            );
+                ? SqrtPriceMathLib.getAmount1Delta(sqrtPriceNextX96, sqrtPriceCurrentX96, liquidity, false)
+                : SqrtPriceMathLib.getAmount0Delta(sqrtPriceCurrentX96, sqrtPriceNextX96, liquidity, false);
+            feeAmount = FullMathLib.mulDivRoundingUp(amountIn, feePips, 1e6 - feePips);
         } else {
             amountOut = zeroForOne
-                ? SqrtPriceMathLib.getAmount1Delta(
-                    sqrtPriceTargetX96,
-                    sqrtPriceCurrentX96,
-                    liquidity,
-                    false
-                )
-                : SqrtPriceMathLib.getAmount0Delta(
-                    sqrtPriceCurrentX96,
-                    sqrtPriceTargetX96,
-                    liquidity,
-                    false
-                );
+                ? SqrtPriceMathLib.getAmount1Delta(sqrtPriceTargetX96, sqrtPriceCurrentX96, liquidity, false)
+                : SqrtPriceMathLib.getAmount0Delta(sqrtPriceCurrentX96, sqrtPriceTargetX96, liquidity, false);
 
             if (amountRemaining >= amountOut) {
                 sqrtPriceNextX96 = sqrtPriceTargetX96;
             } else {
                 sqrtPriceNextX96 = SqrtPriceMathLib.getNextSqrtPriceFromOutput(
-                    sqrtPriceCurrentX96,
-                    liquidity,
-                    amountRemaining,
-                    zeroForOne
+                    sqrtPriceCurrentX96, liquidity, amountRemaining, zeroForOne
                 );
                 amountOut = zeroForOne
-                    ? SqrtPriceMathLib.getAmount1Delta(
-                        sqrtPriceNextX96,
-                        sqrtPriceCurrentX96,
-                        liquidity,
-                        false
-                    )
-                    : SqrtPriceMathLib.getAmount0Delta(
-                        sqrtPriceCurrentX96,
-                        sqrtPriceNextX96,
-                        liquidity,
-                        false
-                    );
+                    ? SqrtPriceMathLib.getAmount1Delta(sqrtPriceNextX96, sqrtPriceCurrentX96, liquidity, false)
+                    : SqrtPriceMathLib.getAmount0Delta(sqrtPriceCurrentX96, sqrtPriceNextX96, liquidity, false);
             }
 
             amountIn = zeroForOne
-                ? SqrtPriceMathLib.getAmount0Delta(
-                    sqrtPriceNextX96,
-                    sqrtPriceCurrentX96,
-                    liquidity,
-                    true
-                )
-                : SqrtPriceMathLib.getAmount1Delta(
-                    sqrtPriceCurrentX96,
-                    sqrtPriceNextX96,
-                    liquidity,
-                    true
-                );
-            feeAmount = FullMathLib.mulDivRoundingUp(
-                amountIn,
-                feePips,
-                1e6 - feePips
-            );
+                ? SqrtPriceMathLib.getAmount0Delta(sqrtPriceNextX96, sqrtPriceCurrentX96, liquidity, true)
+                : SqrtPriceMathLib.getAmount1Delta(sqrtPriceCurrentX96, sqrtPriceNextX96, liquidity, true);
+            feeAmount = FullMathLib.mulDivRoundingUp(amountIn, feePips, 1e6 - feePips);
         }
     }
 

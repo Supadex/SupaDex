@@ -38,18 +38,14 @@ contract BinAMMEngine is ICurveEngine {
     /**
      * @inheritdoc ICurveEngine
      */
-    function initialize(
-        PoolKey memory key,
-        uint160 sqrtPriceX96
-    ) external override returns (int24 tick) {
+    function initialize(PoolKey memory key, uint160 sqrtPriceX96) external override returns (int24 tick) {
         PoolId id = key.toId();
-        if (pools[id].slot0.isInitialized())
+        if (pools[id].slot0.isInitialized()) {
             revert PoolErrors.PoolAlreadyInitialized(id);
+        }
 
         uint24 binId = BinMathLib.CENTER_BIN_ID;
-        uint16 binStep = uint16(
-            uint24(key.tickSpacing > 0 ? key.tickSpacing : int24(10))
-        );
+        uint16 binStep = uint16(uint24(key.tickSpacing > 0 ? key.tickSpacing : int24(10)));
 
         pools[id].activeBinId = binId;
         pools[id].binStep = binStep;
@@ -60,43 +56,37 @@ contract BinAMMEngine is ICurveEngine {
     /**
      * @inheritdoc ICurveEngine
      */
-    function modifyLiquidity(
-        PoolKey memory key,
-        IPoolManager.ModifyLiquidityParams memory params
-    )
+    function modifyLiquidity(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params)
         external
         override
         returns (BalanceDelta callerDelta, BalanceDelta feesAccrued)
     {
         PoolId id = key.toId();
         BinPoolState storage pool = pools[id];
-        if (!pool.slot0.isInitialized())
+        if (!pool.slot0.isInitialized()) {
             revert PoolErrors.PoolNotInitialized(id);
+        }
 
         uint24 binId = uint24(uint256(int256(params.tickLower)));
         Bin storage bin = pool.bins[binId];
 
-        uint128 deltaAmount = uint128(
-            params.liquidityDelta > 0
-                ? uint256(params.liquidityDelta)
-                : uint256(-params.liquidityDelta)
-        );
+        uint128 deltaAmount =
+            uint128(params.liquidityDelta > 0 ? uint256(params.liquidityDelta) : uint256(-params.liquidityDelta));
 
         if (params.liquidityDelta > 0) {
             bin.reserve0 += deltaAmount;
             bin.reserve1 += deltaAmount;
             callerDelta = toBalanceDelta(
-                SafeCastLib.toInt128(int256(uint256(deltaAmount))),
-                SafeCastLib.toInt128(int256(uint256(deltaAmount)))
+                SafeCastLib.toInt128(int256(uint256(deltaAmount))), SafeCastLib.toInt128(int256(uint256(deltaAmount)))
             );
         } else {
-            if (bin.reserve0 < deltaAmount || bin.reserve1 < deltaAmount)
+            if (bin.reserve0 < deltaAmount || bin.reserve1 < deltaAmount) {
                 revert PoolErrors.LiquidityOverflow();
+            }
             bin.reserve0 -= deltaAmount;
             bin.reserve1 -= deltaAmount;
             callerDelta = toBalanceDelta(
-                -SafeCastLib.toInt128(int256(uint256(deltaAmount))),
-                -SafeCastLib.toInt128(int256(uint256(deltaAmount)))
+                -SafeCastLib.toInt128(int256(uint256(deltaAmount))), -SafeCastLib.toInt128(int256(uint256(deltaAmount)))
             );
         }
 
@@ -106,53 +96,38 @@ contract BinAMMEngine is ICurveEngine {
     /**
      * @inheritdoc ICurveEngine
      */
-    function swap(
-        PoolKey memory key,
-        IPoolManager.SwapParams memory params,
-        uint24 fee
-    ) external override returns (BalanceDelta swapDelta) {
+    function swap(PoolKey memory key, IPoolManager.SwapParams memory params, uint24 fee)
+        external
+        override
+        returns (BalanceDelta swapDelta)
+    {
         PoolId id = key.toId();
         BinPoolState storage pool = pools[id];
-        if (!pool.slot0.isInitialized())
+        if (!pool.slot0.isInitialized()) {
             revert PoolErrors.PoolNotInitialized(id);
+        }
         if (params.amountSpecified == 0) revert PoolErrors.ZeroSwapAmount();
 
         uint24 activeId = pool.activeBinId;
         Bin storage activeBin = pool.bins[activeId];
 
-        uint256 amountIn = uint256(
-            params.amountSpecified > 0
-                ? params.amountSpecified
-                : -params.amountSpecified
-        );
+        uint256 amountIn = uint256(params.amountSpecified > 0 ? params.amountSpecified : -params.amountSpecified);
         uint256 feeAmount = FullMathLib.mulDivRoundingUp(amountIn, fee, 1e6);
-        uint256 amountInAfterFee = amountIn > feeAmount
-            ? amountIn - feeAmount
-            : 0;
+        uint256 amountInAfterFee = amountIn > feeAmount ? amountIn - feeAmount : 0;
 
-        uint256 amountOut = BinMathLib.computeSwapAmountInBin(
-            amountInAfterFee,
-            activeId,
-            pool.binStep,
-            params.zeroForOne
-        );
+        uint256 amountOut =
+            BinMathLib.computeSwapAmountInBin(amountInAfterFee, activeId, pool.binStep, params.zeroForOne);
 
         if (params.zeroForOne) {
             if (activeBin.reserve1 < amountOut) amountOut = activeBin.reserve1;
             activeBin.reserve0 += uint128(amountIn);
             activeBin.reserve1 -= uint128(amountOut);
-            swapDelta = toBalanceDelta(
-                SafeCastLib.toInt128(int256(amountIn)),
-                -SafeCastLib.toInt128(int256(amountOut))
-            );
+            swapDelta = toBalanceDelta(SafeCastLib.toInt128(int256(amountIn)), -SafeCastLib.toInt128(int256(amountOut)));
         } else {
             if (activeBin.reserve0 < amountOut) amountOut = activeBin.reserve0;
             activeBin.reserve1 += uint128(amountIn);
             activeBin.reserve0 -= uint128(amountOut);
-            swapDelta = toBalanceDelta(
-                -SafeCastLib.toInt128(int256(amountOut)),
-                SafeCastLib.toInt128(int256(amountIn))
-            );
+            swapDelta = toBalanceDelta(-SafeCastLib.toInt128(int256(amountOut)), SafeCastLib.toInt128(int256(amountIn)));
         }
     }
 
@@ -185,10 +160,7 @@ contract BinAMMEngine is ICurveEngine {
      * @param id The ID of the pool.
      * @param binId The ID of the bin.
      */
-    function getBinReserves(
-        PoolId id,
-        uint24 binId
-    ) external view returns (uint128 reserve0, uint128 reserve1) {
+    function getBinReserves(PoolId id, uint24 binId) external view returns (uint128 reserve0, uint128 reserve1) {
         Bin storage bin = pools[id].bins[binId];
         return (bin.reserve0, bin.reserve1);
     }

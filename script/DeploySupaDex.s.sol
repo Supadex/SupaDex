@@ -48,7 +48,8 @@ contract DeploySupaDex is Script {
      * @return res DeploymentResult struct populated with deployed contract addresses.
      */
     function run() external returns (DeploymentResult memory res) {
-        uint256 deployerPrivateKey = vm.envOr("PRIVATE_KEY", uint256(0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80));
+        uint256 deployerPrivateKey =
+            vm.envOr("PRIVATE_KEY", uint256(0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80));
         address deployer = vm.addr(deployerPrivateKey);
 
         vm.startBroadcast(deployerPrivateKey);
@@ -123,10 +124,7 @@ contract DeploySupaDex is Script {
         console2.log("6. Native Plugins deployed (LVR Shield, Anti-JIT)");
 
         // 7. Periphery Contracts
-        SupaPositionManager positionManager = new SupaPositionManager(
-            poolManager,
-            IVault(res.vaultProxy)
-        );
+        SupaPositionManager positionManager = new SupaPositionManager(poolManager, IVault(res.vaultProxy));
         res.positionManager = address(positionManager);
 
         SupaRouter router = new SupaRouter(poolManager, IVault(res.vaultProxy));
