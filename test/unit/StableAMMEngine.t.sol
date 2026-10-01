@@ -41,7 +41,7 @@ contract StableAMMEngineTest is Test {
         IPoolManager.SwapParams memory swapParams =
             IPoolManager.SwapParams({zeroForOne: true, amountSpecified: 10_000 ether, sqrtPriceLimitX96: 0});
 
-        BalanceDelta swapDelta = engine.swap(key, swapParams, key.fee);
+        (BalanceDelta swapDelta,) = engine.swap(key, swapParams, key.fee, 0);
         assertEq(swapDelta.amount0(), 10_000 ether);
         // Pegged curve with fee should yield close to 10_000 * (1 - 0.0004) = ~9,996
         assertTrue(-swapDelta.amount1() > 9_900 ether);

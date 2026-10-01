@@ -15,7 +15,13 @@ import {BalanceDelta} from "../types/BalanceDelta.sol";
 import {PeripheryErrors} from "../errors/PeripheryErrors.sol";
 import {VaultErrors} from "../errors/VaultErrors.sol";
 import {ERC721} from "solady/tokens/ERC721.sol";
-import {LibString} from "solady/utils/LibString.sol";
+
+interface IPositionNFTDescriptor {
+    function tokenURI(uint256 tokenId, ISupaPositionManager.PositionInfo memory pos)
+        external
+        view
+        returns (string memory);
+}
 
 /**
  * @title SupaPositionManager
@@ -30,7 +36,6 @@ contract SupaPositionManager is
     ERC721
 {
     using CurrencyLibrary for Currency;
-    using LibString for uint256;
 
     /**
      * @dev Internal action discriminators for unlock callback routing.
@@ -39,13 +44,19 @@ contract SupaPositionManager is
         MINT,
         INCREASE,
         DECREASE,
-        COLLECT
+        COLLECT,
+        SYNC_FEES
     }
 
     /**
      * @inheritdoc ISupaPositionManager
      */
     IPoolManager public immutable override poolManager;
+
+    /**
+     * @dev External on-chain SVG/JSON renderer (keeps this contract under EIP-170).
+     */
+    IPositionNFTDescriptor public immutable descriptor;
 
     /**
      * @dev Auto-incrementing NFT token counter.
@@ -57,8 +68,11 @@ contract SupaPositionManager is
      */
     mapping(uint256 => PositionInfo) private _positions;
 
-    constructor(IPoolManager _poolManager, IVault _vaultContract) PeripheryPayments(_vaultContract) {
+    constructor(IPoolManager _poolManager, IVault _vaultContract, address _descriptor)
+        PeripheryPayments(_vaultContract)
+    {
         poolManager = _poolManager;
+        descriptor = IPositionNFTDescriptor(_descriptor);
     }
 
     /**
@@ -92,10 +106,11 @@ contract SupaPositionManager is
 
     /**
      * @inheritdoc ERC721
+     * @dev Delegates to PositionNFTDescriptor for Obsidian Lattice metadata.
      */
     function tokenURI(uint256 id) public view override returns (string memory) {
         if (!_exists(id)) revert TokenDoesNotExist();
-        return string.concat("https://api.supadex.io/v1/positions/", id.toString());
+        return descriptor.tokenURI(id, _positions[id]);
     }
 
     /**
@@ -197,6 +212,20 @@ contract SupaPositionManager is
     /**
      * @inheritdoc ISupaPositionManager
      */
+    function syncFees(uint256 tokenId) external payable override returns (uint256 fees0, uint256 fees1) {
+        if (!_isApprovedOrOwner(msg.sender, tokenId)) revert PeripheryErrors.Unauthorized();
+
+        bytes memory result = _vault.unlock(abi.encode(Action.SYNC_FEES, msg.sender, tokenId));
+        (fees0, fees1) = abi.decode(result, (uint256, uint256));
+
+        if (address(this).balance > 0) {
+            this.refundETH();
+        }
+    }
+
+    /**
+     * @inheritdoc ISupaPositionManager
+     */
     function burn(uint256 tokenId) external payable override {
         if (!_isApprovedOrOwner(msg.sender, tokenId)) revert PeripheryErrors.Unauthorized();
         PositionInfo storage pos = _positions[tokenId];
@@ -232,10 +261,55 @@ contract SupaPositionManager is
                 abi.decode(data, (Action, address, DecreaseLiquidityParams));
             (uint256 amount0, uint256 amount1) = _handleDecrease(payer, params);
             return abi.encode(amount0, amount1);
+        } else if (action == Action.SYNC_FEES) {
+            (, , uint256 tokenId) = abi.decode(data, (Action, address, uint256));
+            (uint256 fees0, uint256 fees1) = _accrueFees(tokenId);
+            if (fees0 > 0 || fees1 > 0) {
+                emit FeesSynced(tokenId, fees0, fees1);
+            }
+            return abi.encode(fees0, fees1);
         } else {
             (, address payer, CollectParams memory params) = abi.decode(data, (Action, address, CollectParams));
             (uint256 amount0, uint256 amount1) = _handleCollect(payer, params);
             return abi.encode(amount0, amount1);
+        }
+    }
+
+    /**
+     * @dev Pokes the curve engine with a zero liquidity delta to credit accrued swap fees.
+     *      Mints ERC-6909 claims to this contract so the vault flash delta settles.
+     */
+    function _accrueFees(uint256 tokenId) internal returns (uint256 fees0, uint256 fees1) {
+        PositionInfo storage pos = _positions[tokenId];
+        if (pos.liquidity == 0) return (0, 0);
+
+        IPoolManager.ModifyLiquidityParams memory modParams = IPoolManager.ModifyLiquidityParams({
+            tickLower: pos.tickLower,
+            tickUpper: pos.tickUpper,
+            liquidityDelta: 0,
+            salt: bytes32(tokenId)
+        });
+
+        (, BalanceDelta feesAccrued) = poolManager.modifyLiquidity(pos.poolKey, modParams, "");
+        (fees0, fees1) = _creditFees(pos, feesAccrued);
+    }
+
+    /**
+     * @dev Records fees into tokensOwed and parks them as vault claims (settles flash delta).
+     */
+    function _creditFees(PositionInfo storage pos, BalanceDelta feesAccrued)
+        internal
+        returns (uint256 fees0, uint256 fees1)
+    {
+        if (feesAccrued.amount0() > 0) {
+            fees0 = uint256(int256(feesAccrued.amount0()));
+            pos.tokensOwed0 += uint128(fees0);
+            _take(pos.poolKey.currency0, address(this), fees0, true);
+        }
+        if (feesAccrued.amount1() > 0) {
+            fees1 = uint256(int256(feesAccrued.amount1()));
+            pos.tokensOwed1 += uint128(fees1);
+            _take(pos.poolKey.currency1, address(this), fees1, true);
         }
     }
 
@@ -262,9 +336,9 @@ contract SupaPositionManager is
             revert PeripheryErrors.SlippageExceeded(params.amount0Max, amount0);
         }
 
-        // Settle token inputs with Vault
-        _pay(params.poolKey.currency0, payer, amount0, false);
-        _pay(params.poolKey.currency1, payer, amount1, false);
+        // Settle token inputs with Vault (physical ERC-20 or ERC-6909 claims)
+        _pay(params.poolKey.currency0, payer, amount0, params.payWithClaims);
+        _pay(params.poolKey.currency1, payer, amount1, params.payWithClaims);
 
         _positions[tokenId] = PositionInfo({
             poolKey: params.poolKey,
@@ -318,16 +392,11 @@ contract SupaPositionManager is
             revert PeripheryErrors.SlippageExceeded(params.amount0Max, amount0);
         }
 
-        // Record any accrued fees into tokensOwed
-        if (feesAccrued.amount0() > 0) {
-            pos.tokensOwed0 += uint128(uint256(int256(feesAccrued.amount0())));
-        }
-        if (feesAccrued.amount1() > 0) {
-            pos.tokensOwed1 += uint128(uint256(int256(feesAccrued.amount1())));
-        }
+        // Record any accrued fees into tokensOwed (park as vault claims)
+        _creditFees(pos, feesAccrued);
 
-        _pay(pos.poolKey.currency0, payer, amount0, false);
-        _pay(pos.poolKey.currency1, payer, amount1, false);
+        _pay(pos.poolKey.currency0, payer, amount0, params.payWithClaims);
+        _pay(pos.poolKey.currency1, payer, amount1, params.payWithClaims);
 
         pos.liquidity += params.liquidity;
         liquidity = pos.liquidity;
@@ -362,13 +431,8 @@ contract SupaPositionManager is
             revert PeripheryErrors.SlippageExceeded(params.amount0Min, amount0);
         }
 
-        // Record accrued fees
-        if (feesAccrued.amount0() > 0) {
-            pos.tokensOwed0 += uint128(uint256(int256(feesAccrued.amount0())));
-        }
-        if (feesAccrued.amount1() > 0) {
-            pos.tokensOwed1 += uint128(uint256(int256(feesAccrued.amount1())));
-        }
+        // Record accrued fees (park as vault claims)
+        _creditFees(pos, feesAccrued);
 
         pos.liquidity -= params.liquidity;
 
@@ -390,6 +454,9 @@ contract SupaPositionManager is
         internal
         returns (uint256 amount0, uint256 amount1)
     {
+        // Sync accrued swap fees into tokensOwed before withdrawing.
+        _accrueFees(params.tokenId);
+
         PositionInfo storage pos = _positions[params.tokenId];
 
         amount0 = params.amount0Max > pos.tokensOwed0 ? pos.tokensOwed0 : params.amount0Max;
@@ -397,10 +464,13 @@ contract SupaPositionManager is
 
         if (amount0 > 0) {
             pos.tokensOwed0 -= uint128(amount0);
+            // Fees were parked as claims; burn then take ERC-20 to recipient.
+            _vault.burn(pos.poolKey.currency0, amount0);
             _take(pos.poolKey.currency0, params.recipient, amount0, false);
         }
         if (amount1 > 0) {
             pos.tokensOwed1 -= uint128(amount1);
+            _vault.burn(pos.poolKey.currency1, amount1);
             _take(pos.poolKey.currency1, params.recipient, amount1, false);
         }
 

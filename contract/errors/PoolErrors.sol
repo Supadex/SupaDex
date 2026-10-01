@@ -67,4 +67,19 @@ library PoolErrors {
      * @dev Thrown when swap output is less than minimum specified or input exceeds maximum.
      */
     error SlippageExceeded();
+
+    /**
+     * @dev Thrown when protocol fee exceeds the maximum take rate.
+     */
+    error InvalidProtocolFee(uint24 protocolFee);
+
+    /**
+     * @dev Thrown when the caller is not the protocol fee controller.
+     */
+    error InvalidProtocolFeeController();
+
+    /**
+     * @dev Thrown when a pool plugin is not on the whitelist.
+     */
+    error PluginNotWhitelisted(address plugin);
 }

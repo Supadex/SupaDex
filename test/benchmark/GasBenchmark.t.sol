@@ -9,6 +9,7 @@ import {BinAMMEngine} from "../../contract/core/engines/BinAMMEngine.sol";
 import {StableAMMEngine} from "../../contract/core/engines/StableAMMEngine.sol";
 import {SupaRouter} from "../../contract/periphery/SupaRouter.sol";
 import {SupaPositionManager} from "../../contract/periphery/SupaPositionManager.sol";
+import {PositionNFTDescriptor} from "../../contract/periphery/PositionNFTDescriptor.sol";
 import {LVRShieldPlugin} from "../../contract/plugins/native/LVRShieldPlugin.sol";
 import {VolatilityTWAPOracle} from "../../contract/plugins/native/VolatilityTWAPOracle.sol";
 import {IVolatilityTWAPOracle} from "../../contract/interfaces/IVolatilityTWAPOracle.sol";
@@ -144,7 +145,8 @@ contract GasBenchmarkTest is Test {
         vault.setPoolManager(address(manager), true);
 
         router = new SupaRouter(manager, vault);
-        posManager = new SupaPositionManager(manager, vault);
+        PositionNFTDescriptor nftDescriptor = new PositionNFTDescriptor();
+        posManager = new SupaPositionManager(manager, vault, address(nftDescriptor));
 
         oracle = new VolatilityTWAPOracle();
         lvrPlugin = new LVRShieldPlugin(IPoolManager(address(manager)), IVolatilityTWAPOracle(address(oracle)));
@@ -341,7 +343,8 @@ contract GasBenchmarkTest is Test {
             amount1Max: type(uint128).max,
             recipient: user,
             deadline: block.timestamp + 100,
-            hookData: ""
+            hookData: "",
+        payWithClaims: false
         });
         posManager.mint(params);
     }

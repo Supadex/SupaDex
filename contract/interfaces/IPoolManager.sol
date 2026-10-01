@@ -5,6 +5,7 @@ import {PoolKey} from "../types/PoolKey.sol";
 import {PoolId} from "../types/PoolId.sol";
 import {BalanceDelta} from "../types/BalanceDelta.sol";
 import {Slot0} from "../types/Slot0.sol";
+import {Currency} from "../types/Currency.sol";
 import {IVault} from "./IVault.sol";
 import {IPoolEvents} from "../events/IPoolEvents.sol";
 
@@ -90,4 +91,21 @@ interface IPoolManager is IPoolEvents {
      * @notice Returns the total active liquidity for a pool.
      */
     function getLiquidity(PoolId id) external view returns (uint128);
+
+    /**
+     * @notice Returns accrued uncollected protocol fees for a currency.
+     */
+    function protocolFeesAccrued(Currency currency) external view returns (uint256);
+
+    /**
+     * @notice Sets the protocol fee take rate for a pool (owner only).
+     */
+    function setProtocolFee(PoolKey memory key, uint24 protocolFee) external;
+
+    /**
+     * @notice Collects accrued protocol fees to a recipient (fee controller only).
+     */
+    function collectProtocolFees(Currency currency, address recipient, uint256 amount)
+        external
+        returns (uint256 collected);
 }

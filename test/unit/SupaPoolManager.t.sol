@@ -178,7 +178,7 @@ contract SupaPoolManagerTest is Test {
         assertEq(tickClamm, 0);
 
         int24 tickBin = manager.initialize(binKey, 1 << 96, "");
-        assertEq(tickBin, 0);
+        assertEq(tickBin, int24(uint24(8388608))); // CENTER_BIN_ID encoded as int24
 
         int24 tickStable = manager.initialize(stableKey, 1 << 96, "");
         assertEq(tickStable, 0);

@@ -53,4 +53,14 @@ interface IPoolEvents {
      * @notice Emitted when dynamic fee is updated by a plugin or volatility engine.
      */
     event DynamicFeeUpdated(PoolId indexed id, uint24 oldFee, uint24 newFee);
+
+    /**
+     * @notice Emitted when a pool's protocol fee take rate is updated.
+     */
+    event ProtocolFeeUpdated(PoolId indexed id, uint24 protocolFee);
+
+    /**
+     * @notice Emitted when protocol fees are collected to a recipient.
+     */
+    event ProtocolFeesCollected(Currency indexed currency, address indexed recipient, uint256 amount);
 }

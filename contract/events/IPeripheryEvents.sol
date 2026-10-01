@@ -51,7 +51,22 @@ interface IPeripheryEvents {
     event FeesCollected(uint256 indexed tokenId, address indexed recipient, uint256 amount0, uint256 amount1);
 
     /**
+     * @notice Emitted when accrued swap fees are synced into a position's tokensOwed.
+     */
+    event FeesSynced(uint256 indexed tokenId, uint256 fees0, uint256 fees1);
+
+    /**
      * @notice Emitted when an empty position NFT is burned.
      */
     event PositionBurned(uint256 indexed tokenId, address indexed owner);
+
+    /**
+     * @notice Emitted when physical tokens are deposited and ERC-6909 claims minted.
+     */
+    event ClaimDeposited(address indexed sender, address indexed to, Currency indexed currency, uint256 amount);
+
+    /**
+     * @notice Emitted when ERC-6909 claims are redeemed for physical tokens.
+     */
+    event ClaimWithdrawn(address indexed sender, address indexed to, Currency indexed currency, uint256 amount);
 }

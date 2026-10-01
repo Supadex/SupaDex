@@ -49,6 +49,11 @@ library PeripheryErrors {
     error ZeroLiquidity();
 
     /**
+     * @dev Thrown when deposit / withdraw amount is zero.
+     */
+    error ZeroAmount();
+
+    /**
      * @dev Thrown when identical currencies are provided in a pool path.
      */
     error IdenticalCurrencies();

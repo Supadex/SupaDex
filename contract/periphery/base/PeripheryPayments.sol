@@ -49,12 +49,14 @@ abstract contract PeripheryPayments is IPeripheryPayments {
      * @param currency Token or native ETH.
      * @param payer Account providing the payment.
      * @param amount Quantity of tokens to settle.
-     * @param payWithClaims If true, burns caller's ERC-6909 claims instead of transferring physical tokens.
+     * @param payWithClaims If true, pulls payer's ERC-6909 claims then burns them.
      */
     function _pay(Currency currency, address payer, uint256 amount, bool payWithClaims) internal {
         if (amount == 0) return;
 
         if (payWithClaims) {
+            // Pull user claims onto this periphery locker, then burn to offset vault debt.
+            _vault.transferFrom(payer, address(this), currency.toId(), amount);
             _vault.burn(currency, amount);
         } else if (currency.isNative()) {
             if (address(this).balance < amount) {

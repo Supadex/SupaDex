@@ -9,6 +9,7 @@ import {CLAMMEngine} from "../../contract/core/engines/CLAMMEngine.sol";
 import {BinAMMEngine} from "../../contract/core/engines/BinAMMEngine.sol";
 import {StableAMMEngine} from "../../contract/core/engines/StableAMMEngine.sol";
 import {SupaPositionManager} from "../../contract/periphery/SupaPositionManager.sol";
+import {PositionNFTDescriptor} from "../../contract/periphery/PositionNFTDescriptor.sol";
 import {ISupaPositionManager} from "../../contract/interfaces/ISupaPositionManager.sol";
 import {Currency, CurrencyLibrary} from "../../contract/types/Currency.sol";
 import {PoolKey, CurveType} from "../../contract/types/PoolKey.sol";
@@ -113,7 +114,8 @@ contract PositionNFTHandler is Test {
             amount1Max: type(uint128).max,
             recipient: actor,
             deadline: block.timestamp + 100,
-            hookData: ""
+            hookData: "",
+        payWithClaims: false
         });
 
         (uint256 tokenId, uint128 liq,,) = posManager.mint(params);
@@ -145,7 +147,8 @@ contract PositionNFTHandler is Test {
             amount0Max: type(uint128).max,
             amount1Max: type(uint128).max,
             deadline: block.timestamp + 100,
-            hookData: ""
+            hookData: "",
+        payWithClaims: false
         });
 
         (uint128 liq,,) = posManager.increaseLiquidity(params);
@@ -241,7 +244,8 @@ contract PositionNFTInvariantTest is StdInvariant, Test {
         manager = new SupaPoolManager(vault, clamm, binAmm, stableAmm);
         vault.setPoolManager(address(manager), true);
 
-        posManager = new SupaPositionManager(manager, vault);
+        PositionNFTDescriptor nftDescriptor = new PositionNFTDescriptor();
+        posManager = new SupaPositionManager(manager, vault, address(nftDescriptor));
 
         MockPosInvToken tA = new MockPosInvToken("Token A", "TKNA");
         MockPosInvToken tB = new MockPosInvToken("Token B", "TKNB");

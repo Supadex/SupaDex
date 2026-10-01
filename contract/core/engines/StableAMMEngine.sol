@@ -7,32 +7,36 @@ import {PoolKey} from "../../types/PoolKey.sol";
 import {PoolId} from "../../types/PoolId.sol";
 import {BalanceDelta, toBalanceDelta} from "../../types/BalanceDelta.sol";
 import {Slot0, Slot0Library} from "../../types/Slot0.sol";
+import {Position} from "../../types/Position.sol";
 import {PoolErrors} from "../../errors/PoolErrors.sol";
 import {SafeCastLib} from "../../libraries/SafeCastLib.sol";
 import {FullMathLib} from "../../libraries/FullMathLib.sol";
+import {ProtocolFeeLib} from "../../libraries/ProtocolFeeLib.sol";
 
 /**
  * @title StableAMMEngine
- * @notice High-efficiency AMM engine for pegged and correlated assets implementing the Stableswap amplified invariant.
+ * @notice Stableswap AMM with global fee growth accrual to LP positions.
  */
 contract StableAMMEngine is ICurveEngine {
     using Slot0Library for Slot0;
 
     uint256 internal constant DEFAULT_A = 100;
     uint256 internal constant MAX_LOOP_LIMIT = 255;
+    uint256 internal constant Q128 = 1 << 128;
 
     struct StablePoolState {
         Slot0 slot0;
         uint256 reserve0;
         uint256 reserve1;
         uint256 amplificationParameter;
+        uint128 totalLiquidity;
+        uint256 feeGrowthGlobal0X128;
+        uint256 feeGrowthGlobal1X128;
+        mapping(bytes32 => Position.Info) positions;
     }
 
     mapping(PoolId => StablePoolState) internal pools;
 
-    /**
-     * @inheritdoc ICurveEngine
-     */
     function initialize(PoolKey memory key, uint160 sqrtPriceX96) external override returns (int24 tick) {
         PoolId id = key.toId();
         if (pools[id].slot0.isInitialized()) {
@@ -44,9 +48,6 @@ contract StableAMMEngine is ICurveEngine {
         tick = 0;
     }
 
-    /**
-     * @inheritdoc ICurveEngine
-     */
     function modifyLiquidity(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params)
         external
         override
@@ -58,31 +59,64 @@ contract StableAMMEngine is ICurveEngine {
             revert PoolErrors.PoolNotInitialized(id);
         }
 
-        uint256 amount = uint256(params.liquidityDelta > 0 ? params.liquidityDelta : -params.liquidityDelta);
+        bytes32 posKey = keccak256(abi.encodePacked(params.tickLower, params.tickUpper, params.salt));
+        Position.Info storage position = pool.positions[posKey];
 
-        if (params.liquidityDelta > 0) {
-            pool.reserve0 += amount;
-            pool.reserve1 += amount;
-            callerDelta = toBalanceDelta(SafeCastLib.toInt128(int256(amount)), SafeCastLib.toInt128(int256(amount)));
-        } else {
-            if (pool.reserve0 < amount || pool.reserve1 < amount) {
-                revert PoolErrors.LiquidityOverflow();
-            }
-            pool.reserve0 -= amount;
-            pool.reserve1 -= amount;
-            callerDelta = toBalanceDelta(-SafeCastLib.toInt128(int256(amount)), -SafeCastLib.toInt128(int256(amount)));
+        uint128 positionLiquidity = position.liquidity;
+        uint256 fees0;
+        uint256 fees1;
+        if (positionLiquidity > 0) {
+            fees0 = FullMathLib.mulDiv(
+                positionLiquidity, pool.feeGrowthGlobal0X128 - position.feeGrowthInside0LastX128, Q128
+            );
+            fees1 = FullMathLib.mulDiv(
+                positionLiquidity, pool.feeGrowthGlobal1X128 - position.feeGrowthInside1LastX128, Q128
+            );
         }
 
-        feesAccrued = toBalanceDelta(0, 0);
+        uint256 amount0 = uint256(params.liquidityDelta > 0 ? params.liquidityDelta : -params.liquidityDelta);
+
+        uint160 sqrtP = pool.slot0.sqrtPriceX96();
+        uint256 amount1 = amount0;
+        if (sqrtP > 0) {
+            uint256 num = FullMathLib.mulDiv(uint256(sqrtP), uint256(sqrtP), 1 << 96);
+            amount1 = FullMathLib.mulDiv(amount0, num, 1 << 96);
+            if (amount0 > 0 && amount1 == 0) amount1 = 1;
+        }
+
+        if (params.liquidityDelta > 0) {
+            pool.reserve0 += amount0;
+            pool.reserve1 += amount1;
+            pool.totalLiquidity += uint128(amount0);
+            position.liquidity = positionLiquidity + uint128(amount0);
+            callerDelta = toBalanceDelta(SafeCastLib.toInt128(int256(amount0)), SafeCastLib.toInt128(int256(amount1)));
+        } else if (params.liquidityDelta < 0) {
+            if (pool.reserve0 < amount0 || pool.reserve1 < amount1 || positionLiquidity < amount0) {
+                revert PoolErrors.LiquidityOverflow();
+            }
+            pool.reserve0 -= amount0;
+            pool.reserve1 -= amount1;
+            pool.totalLiquidity -= uint128(amount0);
+            position.liquidity = positionLiquidity - uint128(amount0);
+            callerDelta = toBalanceDelta(-SafeCastLib.toInt128(int256(amount0)), -SafeCastLib.toInt128(int256(amount1)));
+        } else {
+            callerDelta = toBalanceDelta(0, 0);
+        }
+
+        position.feeGrowthInside0LastX128 = pool.feeGrowthGlobal0X128;
+        position.feeGrowthInside1LastX128 = pool.feeGrowthGlobal1X128;
+        position.lastModifiedBlock = uint64(block.number);
+
+        feesAccrued = toBalanceDelta(
+            fees0 > 0 ? SafeCastLib.toInt128(SafeCastLib.toInt256(fees0)) : int128(0),
+            fees1 > 0 ? SafeCastLib.toInt128(SafeCastLib.toInt256(fees1)) : int128(0)
+        );
     }
 
-    /**
-     * @inheritdoc ICurveEngine
-     */
-    function swap(PoolKey memory key, IPoolManager.SwapParams memory params, uint24 fee)
+    function swap(PoolKey memory key, IPoolManager.SwapParams memory params, uint24 fee, uint24 protocolFee)
         external
         override
-        returns (BalanceDelta swapDelta)
+        returns (BalanceDelta swapDelta, uint256 protocolFeeAmount)
     {
         PoolId id = key.toId();
         StablePoolState storage pool = pools[id];
@@ -98,6 +132,18 @@ contract StableAMMEngine is ICurveEngine {
         uint256 amountIn = uint256(params.amountSpecified > 0 ? params.amountSpecified : -params.amountSpecified);
         uint256 feeAmount = FullMathLib.mulDivRoundingUp(amountIn, fee, 1e6);
         uint256 amountInAfterFee = amountIn > feeAmount ? amountIn - feeAmount : 0;
+
+        uint256 lpFee;
+        (lpFee, protocolFeeAmount) = ProtocolFeeLib.splitFee(feeAmount, protocolFee);
+
+        if (lpFee > 0 && pool.totalLiquidity > 0) {
+            uint256 delta = FullMathLib.mulDiv(lpFee, Q128, pool.totalLiquidity);
+            if (params.zeroForOne) {
+                pool.feeGrowthGlobal0X128 += delta;
+            } else {
+                pool.feeGrowthGlobal1X128 += delta;
+            }
+        }
 
         uint256 amountOut;
 
@@ -120,9 +166,6 @@ contract StableAMMEngine is ICurveEngine {
         }
     }
 
-    /**
-     * @notice Computes invariant D for 2 balances given amplification parameter A.
-     */
     function computeD(uint256 x, uint256 y, uint256 A) public pure returns (uint256 D) {
         uint256 S = x + y;
         if (S == 0) return 0;
@@ -136,7 +179,6 @@ contract StableAMMEngine is ICurveEngine {
             D_P = (D_P * D) / (x * 2);
             D_P = (D_P * D) / (y * 2);
             prevD = D;
-            // D = (Ann * S + 2 * D_P) * D / ((Ann - 1) * D + 3 * D_P)
             uint256 numerator = D * ((Ann * S) / 4 + D_P * 2);
             uint256 denominator = ((Ann - 1) * D) / 4 + D_P * 3;
             D = numerator / denominator;
@@ -146,13 +188,6 @@ contract StableAMMEngine is ICurveEngine {
         }
     }
 
-    /**
-     * @notice Computes output balance y given new balance x, initial balances, and A.
-     * @param newX Balance of token x after swap.
-     * @param x Balance of token x before swap.
-     * @param y Balance of token x before swap.
-     * @param A Amplification parameter.
-     */
     function computeY(uint256 newX, uint256 x, uint256 y, uint256 A) public pure returns (uint256 Y) {
         uint256 D = computeD(x, y, A);
         uint256 Ann = A * 4;
@@ -171,24 +206,14 @@ contract StableAMMEngine is ICurveEngine {
         }
     }
 
-    /**
-     * @inheritdoc ICurveEngine
-     */
     function getSlot0(PoolId id) external view override returns (Slot0) {
         return pools[id].slot0;
     }
 
-    /**
-     * @inheritdoc ICurveEngine
-     */
     function getLiquidity(PoolId id) external view override returns (uint128) {
-        StablePoolState storage pool = pools[id];
-        return uint128((pool.reserve0 + pool.reserve1) / 2);
+        return pools[id].totalLiquidity;
     }
 
-    /**
-     * @notice Returns pool reserves.
-     */
     function getReserves(PoolId id) external view returns (uint256 reserve0, uint256 reserve1) {
         StablePoolState storage pool = pools[id];
         return (pool.reserve0, pool.reserve1);

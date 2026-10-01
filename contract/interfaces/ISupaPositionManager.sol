@@ -38,6 +38,7 @@ interface ISupaPositionManager {
         address recipient;
         uint256 deadline;
         bytes hookData;
+        bool payWithClaims;
     }
 
     /**
@@ -50,6 +51,7 @@ interface ISupaPositionManager {
         uint128 amount1Max;
         uint256 deadline;
         bytes hookData;
+        bool payWithClaims;
     }
 
     /**
@@ -117,6 +119,11 @@ interface ISupaPositionManager {
      * @notice Collects accumulated LP fee earnings.
      */
     function collect(CollectParams calldata params) external payable returns (uint256 amount0, uint256 amount1);
+
+    /**
+     * @notice Pokes the pool engine to sync accrued swap fees into tokensOwed without collecting.
+     */
+    function syncFees(uint256 tokenId) external payable returns (uint256 fees0, uint256 fees1);
 
     /**
      * @notice Burns an empty position NFT with zero remaining liquidity and zero tokens owed.

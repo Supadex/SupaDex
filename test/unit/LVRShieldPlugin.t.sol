@@ -38,7 +38,17 @@ contract LVRShieldPluginTest is Test {
 
     function test_afterInitializeSetsBaseState() public {
         PoolId id = key.toId();
-        (uint24 baseFee, uint24 lastFee, uint32 lastSwap, int24 lastTick, uint32 decayHalfLife, bool init) =
+        (
+            uint24 baseFee,
+            uint24 lastFee,
+            uint32 lastSwap,
+            int24 lastTick,
+            uint32 decayHalfLife,
+            ,
+            ,
+            ,
+            bool init
+        ) =
             plugin.poolLVRStates(id);
 
         assertEq(baseFee, 3000);
@@ -74,7 +84,7 @@ contract LVRShieldPluginTest is Test {
     function test_setDecayHalfLife() public {
         plugin.setDecayHalfLife(key, 24);
         PoolId id = key.toId();
-        (,,,, uint32 decayHalfLife,) = plugin.poolLVRStates(id);
+        (,,,, uint32 decayHalfLife,,,,) = plugin.poolLVRStates(id);
         assertEq(decayHalfLife, 24);
     }
 }

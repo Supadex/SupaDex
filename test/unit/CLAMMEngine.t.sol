@@ -52,7 +52,7 @@ contract CLAMMEngineTest is Test {
             zeroForOne: true, amountSpecified: 1000, sqrtPriceLimitX96: TickMathLib.MIN_SQRT_RATIO + 1
         });
 
-        BalanceDelta swapDelta = engine.swap(key, swapParams, key.fee);
+        (BalanceDelta swapDelta,) = engine.swap(key, swapParams, key.fee, 0);
         assertEq(swapDelta.amount0(), 1000);
         assertTrue(swapDelta.amount1() < 0);
     }
