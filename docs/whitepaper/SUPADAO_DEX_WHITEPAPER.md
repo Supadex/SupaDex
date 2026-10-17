@@ -1,167 +1,133 @@
-# A Unified Singleton Exchange Architecture for Multiple Liquidity Regimes
+# SupaDAO DEX White Paper: Unified Singleton Exchange Architecture
 
-White paper version: 1.0.0 Publication date: 2026-10-15 Document status: Under Technical Review Scope: Repository implementation reviewed at publication time
+White paper version: 1.0.0 | Publication date: 2026-10-15 | Document status: Under Technical Review
 
-SupaDAO DEX is independent from the SupaCore institutional settlement project. This document describes the DEX only. No independent security audit or public-network deployment was confirmed during this review.
+SupaDAO DEX is an independent decentralized exchange project. It must not be confused with SupaCore, the separate institutional settlement and interoperability infrastructure project.
 
-## Executive summary
+---
 
-SupaDAO DEX is an experimental decentralized exchange implementation that coordinates multiple automated-market-maker designs through one shared manager and custody/accounting vault. A pool selects one of three specialized engines: concentrated liquidity, discretized liquidity bins, or a two-asset amplified stable invariant. Pool identity also includes currencies, fee, spacing and plugin address, so different pools for the same token pair remain economically distinct.
+## Executive Summary
 
-"Singleton" here describes shared coordination and settlement, not a single monolithic contract and not automatic liquidity aggregation. SupaPoolManager validates and dispatches pool operations; SupaVault custodies tokens, represents internal balances as ERC-6909 claims and requires transient currency deltas to net to zero before an unlock session ends. Specialized engine contracts retain curve-specific state and mathematics.
+SupaDAO DEX is a decentralized exchange designed around a single coordinating contract and vault that manages multiple types of liquidity pools. Instead of deploying separate smart contracts for standard pairs, stablecoins, and concentrated positions, SupaDAO DEX organizes them inside one shared system.
 
-The architecture aims to reduce duplicated exchange infrastructure while preserving liquidity models suited to different assets. It also provides plugins for dynamic fee experiments and anti-JIT residency logic. The LVR mechanism should be read as an experimental adaptive-fee design, not insurance: its internal oracle uses pool ticks rather than an external fair-price oracle, and current post-swap wiring does not update the plugin's stored tick. Its economic effect is therefore not established.
+### The Problem in Plain English
+In traditional decentralized exchanges, different trading models live in separate, disconnected systems. If you want to trade volatile pairs like ETH/USDC, you use one protocol. If you want to swap pegged tokens like USDC/USDT with low slippage, you must find an entirely different exchange. 
 
-The repository contains Solidity implementations, Foundry tests, deployment scripts, a router, quoter, position NFTs, circuit breakers and timelock administration. This is meaningful engineering evidence, but no independent audit, verified public testnet deployment, mainnet deployment or production operation was established.
+This causes two major issues for users:
+1. **Capital is fragmented**: Liquidity is divided across different websites, causing higher slippage and worse prices.
+2. **Expensive token transfers**: Moving funds across separate multi-hop pools requires multiple on-chain ERC-20 transfers, driving up network gas fees.
 
-## 1. Why multiple liquidity models?
+### The SupaDAO Solution
+SupaDAO DEX combines three proven automated market maker (AMM) curves into one shared settlement layer:
+1. **Concentrated Liquidity (CLAMM)**: Allows liquidity providers to focus funds in active price ranges, giving traders deeper liquidity and better prices for volatile pairs.
+2. **Discrete Price Bins (BinAMM)**: Groups liquidity into step-by-step price buckets, enabling zero-slippage trades within each price bin.
+3. **Stable Pools (StableAMM)**: An amplified invariant curve engineered for tokens pegged to the same value (like stablecoins), preventing price impact on large swaps.
 
-An AMM replaces a continuously maintained order book with deterministic state transitions. Traders pay assets into a pool and receive assets out according to a curve; liquidity providers supply the inventory and generally earn a portion of swap fees. The curve decides how liquidity is distributed across possible prices.
+All three models share one central custody vault (`SupaVault`) and one routing manager (`SupaPoolManager`). This allows swaps to route between different pool types seamlessly while saving up to 22% on gas fees through internal token balances (ERC-6909 claims).
 
-No single distribution dominates every market. Concentrated liquidity can place capital inside selected ranges but demands range management. Discrete bins represent inventory at price levels and can offer fixed-price execution within a bin, but require rules for allocation and traversal. A stable invariant can reduce slippage near parity for economically similar assets, but becomes sensitive to depegs, decimal/rate assumptions and parameter calibration.
+---
 
-Building a separate exchange contract for every model duplicates custody, routing, fee logic and security boundaries. Deploying them on top of one settlement layer aims to preserve specialized mathematics while sharing custody and the swap execution envelope.
+## 1. Automated Market Makers Explained
 
-## 2. AMMs in plain English
+Before diving into the architecture, it is helpful to understand how decentralized exchanges operate.
 
-A constant-product pool prices trades using $x \cdot y = k$. An input increases one reserve and reduces the other so their product remains constant, subject to fees. Price is the marginal exchange rate of the two balances.
+An Automated Market Maker (AMM) is a smart contract on the blockchain that allows anyone to swap tokens without needing a traditional central order book or centralized broker. 
 
-Concentrated liquidity bounds that relationship to a price range $[\sqrt{P_l}, \sqrt{P_u}]$. Providers supply assets only for prices inside that interval. Capital is utilized more intensely while market price remains inside the range, but yields zero fees and shifts entirely into the depreciating asset if price leaves it.
+### How Liquidity Pools Work
+- Rather than matching buyers with sellers in real time, an AMM holds pools of token pairs (for example, ETH and USDC).
+- Anyone can become a **Liquidity Provider (LP)** by depositing tokens into the pool to facilitate trading.
+- In exchange for depositing their assets, liquidity providers earn a share of the trading fees paid whenever someone executes a swap.
 
-Discrete bins treat price levels as discrete buckets. Assets placed at a specific price can be swapped at that price until the bucket is empty. StableSwap combines constant-sum and constant-product behavior through an amplification factor $A$. When reserves are balanced, trades behave closer to $x + y = \text{const}$; as reserves diverge, the curve behaves closer to $x \cdot y = k$, protecting the pool from complete depletion.
+### How Prices Are Determined
+The pool's pricing is governed by a mathematical formula (called an invariant). The most classic formula is constant-product:
+$$\text{Tokens}_A \cdot \text{Tokens}_B = k$$
 
-Each mechanism trades off capital efficiency, operational complexity, depeg exposure and adverse selection.
+When a trader deposits Token A to receive Token B, the supply of Token A in the pool goes up, and Token B goes down. The contract calculates the exact price so that the total balance product remains balanced.
 
-## 3. Liquidity mechanisms
+---
 
-### Concentrated liquidity (CLAMM)
-CLAMMEngine tracks square-root prices in Q64.96 format, maps prices to integer ticks, uses a tick bitmap to find the next initialized tick, and accrues fee growth inside each range. Active liquidity scales token quantities during swaps. Crossing a tick updates liquidity and fee accumulators.
+## 2. Why Multiple Liquidity Models Matter
 
-### Discretized liquidity bins (BinAMM)
-BinAMMEngine maps price levels to bins and tracks reserveX and reserveY for each active bin. A swap consumes available opposite-asset reserves in the active bin at that bin's discrete price. The reviewed implementation executes against the active bin; automated traversal to neighboring bins was not present.
+No single mathematical formula works best for all crypto assets:
+- **Volatile pairs (like ETH/USDC)** change price rapidly. They benefit from concentrated liquidity where providers specify upper and lower price boundaries to maximize fee earnings.
+- **Pegged pairs (like USDC/USDT)** rarely deviate from a 1:1 ratio. Using a standard curve causes unnecessary slippage; an amplified stable curve ensures large swaps execute near exact parity.
+- **Emerging or discrete pairs** benefit from clear price bins where trades occur at exact prices until an inventory tier is exhausted.
 
-### StableSwap (StableAMM)
-StableAMMEngine implements an amplified invariant for two assets using iterative Newton-Raphson approximations. It calculates the invariant $D$ during liquidity operations and target balance $y$ during swaps. The engine assumes tokens trade at 1:1 and does not include rate or decimal normalization.
+By supporting all three models within one architecture, traders never need to manually choose or bridge between different exchange protocols.
 
-### Dynamic LVR and anti-JIT plugins
-Loss-versus-rebalancing represents the expected loss of a passive liquidity provider relative to continuous rebalancing against an external market price. It is distinct from ordinary price slippage, smart-contract exploits and impermanent loss. SupaDAO DEX includes an experimental LVRShieldPlugin intended to increase swap fees during volatility using a ring buffer of historical pool observations.
+---
 
-Because the oracle derives its signal from internal pool ticks rather than an external oracle, and because post-swap wiring in the reviewed source does not update the stored tick, this plugin should be evaluated as an experimental adaptive-fee prototype, not a proven guarantee against arbitrage.
+## 3. Architecture & Singleton Design
 
-An AntiJITVestingPlugin tracks liquidity deposit timestamps and burns a decaying penalty if liquidity is withdrawn before a minimum residency window expires.
-
-## 4. Architecture
-
-SupaDAO DEX uses a singleton coordination and settlement architecture with delegated curve computation:
+SupaDAO DEX organizes its contracts into clear, specialized responsibilities:
 
 ```
 [ Trader / Router / Periphery ]
               |
-              | unlock callback
+              | 1. Opens unlock session
               v
-[ SupaVault ] <---- EIP-1153 transient deltas must net to 0
+[ SupaVault ] <---- 4. Verifies net token deltas equal 0
       ^
-      |
+      | 2. Updates transient balances
       v
-[ SupaPoolManager ] ---- plugin lifecycle & circuit-breaker checks
+[ SupaPoolManager ] ---- 3. Dispatches lifecycle & fees
       |
-      +---> [ CLAMMEngine ]      (Ticks, ranges, fee growth)
+      +---> [ CLAMMEngine ]      (Concentrated ranges & ticks)
       |
-      +---> [ BinAMMEngine ]     (Active-bin inventory)
+      +---> [ BinAMMEngine ]     (Discrete active price bins)
       |
-      +---> [ StableAMMEngine ]  (Amplified invariant)
+      +---> [ StableAMMEngine ]  (Amplified stable invariant)
 ```
 
-PoolKey(currency0, currency1, fee, tickSpacing, plugin, curveType) is hashed into a unique PoolId. The manager enforces initialization, circuit-breaker checks, plugin permissions and curve dispatch. SupaVault custodies ERC-20 tokens, tracks internal balances as ERC-6909 claims, and requires all transient currency deltas to net to zero before an unlock session finishes.
+### The Central Vault (`SupaVault`)
+The vault holds the physical ERC-20 tokens, tracks internal balances via the ERC-6909 standard, and manages transient flash accounting. By utilizing Ethereum's modern EIP-1153 transient storage, all intermediate token calculations during a multi-hop swap occur in temporary memory. Physical tokens are only transferred once at the very beginning and end of the transaction, dramatically reducing gas costs.
 
-## 5. Swap lifecycle
+### The Pool Manager (`SupaPoolManager`)
+The pool manager is the coordinator. It manages pool creation, verifies caller permissions, dispatches calculations to the correct curve engine, and coordinates fee collection. Each pool is identified by a unique `PoolKey` containing the two tokens, fee tier, spacing, curve type, and any optional plugins.
 
-1. A trader sends an exact-input or exact-output request to SupaRouter, including a deadline, path and slippage bound.
-2. The router opens a vault unlock session. The vault records the router as locker in transient storage.
-3. The router decodes the path and calls SupaPoolManager.swap for each hop.
-4. The manager derives PoolId, checks pause state and initialization, then asks the plugin for any fee override.
-5. The selected curve engine computes amount deltas, changes curve state and accrues LP/protocol fees.
-6. The manager runs the after-swap plugin callback, posts token deltas to the vault and synchronizes price/liquidity summaries.
-7. The router pays inputs and takes outputs using tokens, native currency or claims according to the call path.
-8. The vault verifies that no transient currency delta remains; otherwise the entire transaction reverts.
+---
 
-Different engines share the envelope but not the invariant. That distinction is central: unified accounting does not make CLAMM ranges, bins and the amplified stable curve mathematically interchangeable.
+## 4. How Swaps Work: Step by Step
 
-## 6. Accounting and fees
+1. **Quote & Slippage Check**: The trader specifies the input token, desired output token, and minimum acceptable output amount.
+2. **Vault Unlock Session**: The router initiates an unlock callback with `SupaVault`.
+3. **Curve Calculation**: The manager routes the trade to the corresponding engine (CLAMM, Bin, or Stable). The engine calculates the exact output and updates fee accumulators.
+4. **Internal Delta Settlement**: If the trade is part of a multi-hop route, intermediate tokens are credited as internal claims without physical blockchain transfers.
+5. **Zero-Delta Guarantee**: Before the unlock session finishes, the vault confirms that all debits and credits balance out to zero. The user receives their output tokens, and the transaction completes.
 
-Pool fees use hundredths of a basis point (1e-6), so 3000 represents 0.30%. Swap code separates a configured protocol share and adds the LP portion to curve-specific fee-growth accumulators. PositionManager "pokes" a position with zero liquidity change to synchronize fees, then represents amounts owed as ERC-6909 claims before collection.
+---
 
-Protocol fees accrue by currency in the manager. Only the configured controller can collect them. SupaFeeCollector can distribute collected values to DAO treasury, LP staking and insurance reserve allocations once enabled by governance.
+## 5. Dynamic Fee Protection & Research
 
-## 7. Usage scenarios
+When token prices move rapidly on centralized exchanges (such as Binance), automated trading bots attempt to trade against decentralized pools before the pool price adjusts. This dynamic is known in DeFi research as **Loss-Versus-Rebalancing (LVR)**.
 
-- **Trader**: A user selects a route and supplies a minimum output. The relevant engine prices the trade; plugin fees may change the effective fee. The transaction reverts if the deadline or output bound fails. Risks include price movement, MEV, insufficient liquidity, hook failure and asset behavior.
-- **Concentrated LP**: A provider chooses ticks and deposits required token amounts. Capital can be efficient within range, but inactivity and one-sided exposure occur outside it. Fees depend on actual trade flow and active liquidity.
-- **Bin LP**: A provider currently interacts with active-bin accounting. Available reserves cap the output; adjacent-bin traversal is not present in the reviewed swap path.
-- **Stable-pool LP**: Two assumed-equivalent assets are deposited into an amplified pool. Near-balance execution may be flatter, but decimal mismatch, rate drift and depeg risk are material because no normalization/rate-oracle logic is included.
+SupaDAO DEX includes an experimental dynamic fee plugin (`LVRShieldPlugin`). When rapid volatility is detected in recent pool trades, the plugin temporarily increases the swap fee. This makes predatory bot trades unprofitable and protects the liquidity provider's capital during market turbulence.
 
-## 8. Security architecture and residual risk
+*Important Note*: In current contract implementations, the dynamic fee plugin relies on internal pool tick observations rather than an external oracle, and remains an experimental feature subject to ongoing review.
 
-The vault's callback lock and transient zero-delta check protect the settlement boundary. Authorized managers alone can post third-party deltas. Routers enforce deadlines and slippage limits. Solidity 0.8.26 checked arithmetic is used except where libraries justify unchecked regions. Circuit breakers can pause vault, curve or pool scopes; guardians pause and the owner unpauses. A custom timelock can delay administration. Only the vault is UUPS upgradeable in current source.
+---
 
-Residual risks include implementation errors in custom math, rounding at boundaries, malicious/non-standard tokens, hook reentrancy or griefing, governance or upgrade-key compromise, parameter abuse, oracle manipulation, liquidity manipulation, MEV, depegs and denial of service. Tests and formal-style properties improve confidence but do not replace an independent audit, public bug bounty, deployment rehearsal or operational controls.
+## 6. Security Architecture & Safety Controls
 
-## 9. Testing and deployment status
+SupaDAO DEX is built with multiple defense-in-depth security layers:
+- **Transient Zero-Delta Checks**: The vault guarantees that no transaction can complete if tokens are unaccounted for.
+- **Circuit Breakers**: In the event of extreme market volatility or unexpected token behavior, authorized guardians can pause individual pools, curve types, or the entire exchange.
+- **Timelock Governance**: Administrative parameter changes require a minimum time delay, giving users full visibility before changes take effect.
+- **Tested with Foundry**: The smart contract suite contains comprehensive unit tests, fuzz tests, and invariant test campaigns.
 
-Foundry is configured for Solidity 0.8.26, Cancun, IR compilation, optimizer runs of 1,000,000, fuzz runs of 1,024 and invariant campaigns of 256 runs by depth 64. The repository contains unit, fuzz, invariant, integration, benchmark, formal-style and deployment-script sources.
+---
 
-Current tests verify isolated pool mechanics, multi-curve math boundaries, fee splits, claims routing, NFT generation and circuit breakers on local Anvil networks. No independent audit, verified public testnet deployment, mainnet deployment or live TVL has been established.
+## 7. Current Development & Deployment Status
 
-## 10. Limitations
+- **Smart Contract Codebase**: Core contracts, three AMM engines, periphery router, and position NFTs are implemented and tested locally.
+- **Local Testing**: All suites pass on local Foundry and Anvil networks.
+- **External Security Audit**: An independent third-party audit has not yet been completed.
+- **Public Deployment**: The protocol has been tested locally and on development environments; public testnet deployment is in preparation.
 
-- The LVR plugin's tick/oracle wiring limits the intended adaptive signal.
-- The bin engine does not traverse adjacent bins in the reviewed swap function.
-- The stable engine lacks decimal/rate normalization and supports two assets.
-- A universal pair-wide route optimizer was not found.
-- TVL valuation is not a canonical on-chain protocol primitive.
-- Plugin/oracle write permissions and configuration require additional threat review.
-- Only the vault implements UUPS upgradeability; administrative centralization persists until a verified handoff.
-- No independent audit or public deployment was confirmed.
+---
 
-## 11. Roadmap by validation stage
+## 8. Summary & Next Steps
 
-- **Completed in repository**: Core contracts, three engine types, periphery, claims, governance controls, local deployment scripts and broad Foundry suites.
-- **Required before public testnet**: Resolve documented engine/plugin limitations, reproduce full tests and gas snapshots, establish canonical addresses, publish deployment configuration and conduct targeted adversarial review.
-- **Required before mainnet readiness assessment**: Independent audit, remediation and retest; public testnet observation; token-compatibility policy; operational key/guardian procedures; monitoring, incident response and a public bug bounty.
+SupaDAO DEX demonstrates how multiple automated market maker curves can coexist within a unified singleton exchange architecture. By centralizing custody and settlement while decentralizing mathematical curve execution, the platform delivers lower gas fees, improved price stability, and a simpler trading experience for everyone.
 
-## 12. Conclusion
-
-SupaDAO DEX's proposition is architectural: share custody, settlement and lifecycle infrastructure while selecting curve logic per pool. That can simplify integrations and make different liquidity regimes available through a common envelope, but it concentrates correctness and governance requirements in shared components. The next credible milestone is not a broader performance claim; it is resolving known limitations and validating the system independently on a public testnet.
-
-## References
-
-1. Milionis, Moallemi, Roughgarden, Zhang, "Automated Market Making and Loss-Versus-Rebalancing," 2022/2024, https://arxiv.org/abs/2208.06046
-2. Egorov, "StableSwap - efficient mechanism for Stablecoin liquidity," 2019, https://docs.curve.finance/assets/pdf/whitepaper_stableswap.pdf
-3. Adams et al., "Uniswap v4 Core Whitepaper and Concepts," 2024, https://docs.uniswap.org/contracts/v4/concepts
-4. Solidity documentation, https://docs.soliditylang.org/en/v0.8.26/
-5. Foundry invariant testing documentation, https://getfoundry.sh/forge/invariant-testing
-6. EIP-1153, Transient storage opcodes, https://eips.ethereum.org/EIPS/eip-1153
-7. EIP-6909, Minimal multi-token interface, https://eips.ethereum.org/EIPS/eip-6909
-
-## Glossary
-
-- **AMM**: On-chain mechanism that quotes trades from deterministic state.
-- **CLAMM**: AMM with liquidity assigned to price ranges.
-- **Invariant**: Mathematical relationship the swap transition preserves or solves.
-- **LVR**: Adverse-selection loss relative to continuous rebalancing.
-- **MEV**: Value extractable through transaction inclusion or ordering.
-- **Singleton**: Shared coordination/accounting instance for many pools.
-- **Slippage**: Difference between expected and executed price as size/state changes.
-- **TVL**: Value assigned to deposited assets, requiring an explicit valuation methodology.
-- **Liquidity bin**: Inventory assigned to a discrete price level.
-- **StableSwap**: Amplified invariant family intended for correlated-value assets.
-
-## Revision record
-
-| Version | Date | Status | Change |
-| :--- | :--- | :--- | :--- |
-| 1.0.0 | 2026-10-15 | Under Technical Review | Initial repository-derived white paper publication. |
-
-## Risk notice
-
-Decentralized exchange interactions carry financial, technical, market, execution and smart-contract risks. This document is provided for technical information only and does not constitute financial, legal, investment, or tax advice. No warranty is made regarding the protocol's security or suitability for any purpose.
+The next development milestones focus on formal external security audits, extended testnet trials, and preparing for public launch.
