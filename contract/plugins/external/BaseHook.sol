@@ -93,14 +93,16 @@ abstract contract BaseHook is IPlugin {
         PoolKey calldata key,
         IPoolManager.ModifyLiquidityParams calldata params,
         BalanceDelta delta,
+        BalanceDelta feesAccrued,
         bytes calldata hookData
-    ) external virtual override onlyPoolManager returns (bytes4, BalanceDelta hookDelta) {
+    ) external virtual override onlyPoolManager returns (bytes4, BalanceDelta hookDelta, BalanceDelta feesHookDelta) {
         sender;
         key;
         params;
         delta;
+        feesAccrued;
         hookData;
-        return (this.afterModifyLiquidity.selector, BalanceDelta.wrap(0));
+        return (this.afterModifyLiquidity.selector, BalanceDelta.wrap(0), BalanceDelta.wrap(0));
     }
 
     /**

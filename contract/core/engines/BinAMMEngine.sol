@@ -22,6 +22,9 @@ contract BinAMMEngine is ICurveEngine {
     using Slot0Library for Slot0;
 
     uint256 internal constant Q128 = 1 << 128;
+    uint24 internal constant MAX_FEE_PIPS = 1_000_000;
+
+    address public immutable override poolManager;
 
     struct Bin {
         uint128 reserve0;
@@ -42,11 +45,27 @@ contract BinAMMEngine is ICurveEngine {
 
     mapping(PoolId => BinPoolState) internal pools;
 
-    function initialize(PoolKey memory key, uint160 sqrtPriceX96) external override returns (int24 tick) {
+    modifier onlyPoolManager() {
+        if (msg.sender != poolManager) revert PoolErrors.NotPoolManager();
+        _;
+    }
+
+    constructor(address _poolManager) {
+        if (_poolManager == address(0)) revert PoolErrors.NotPoolManager();
+        poolManager = _poolManager;
+    }
+
+    function initialize(PoolKey memory key, uint160 sqrtPriceX96)
+        external
+        override
+        onlyPoolManager
+        returns (int24 tick)
+    {
         PoolId id = key.toId();
         if (pools[id].slot0.isInitialized()) {
             revert PoolErrors.PoolAlreadyInitialized(id);
         }
+        if (key.fee >= MAX_FEE_PIPS) revert PoolErrors.InvalidFee(key.fee);
 
         uint16 binStep = uint16(uint24(key.tickSpacing > 0 ? key.tickSpacing : int24(10)));
         uint256 priceX128 = BinMathLib.getPriceX128FromSqrtPriceX96(sqrtPriceX96);
@@ -65,9 +84,10 @@ contract BinAMMEngine is ICurveEngine {
         tick = binTick;
     }
 
-    function modifyLiquidity(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params)
+    function modifyLiquidity(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params, address owner)
         external
         override
+        onlyPoolManager
         returns (BalanceDelta callerDelta, BalanceDelta feesAccrued)
     {
         PoolId id = key.toId();
@@ -81,23 +101,28 @@ contract BinAMMEngine is ICurveEngine {
         uint256 priceX128 = pool.activePriceX128;
         if (priceX128 == 0) priceX128 = BinMathLib.SCALE;
 
-        bytes32 posKey = keccak256(abi.encodePacked(params.tickLower, params.tickUpper, params.salt));
+        bytes32 posKey = Position.getKey(owner, params.tickLower, params.tickUpper, params.salt);
         Position.Info storage position = pool.positions[posKey];
 
         uint128 positionLiquidity = position.liquidity;
         uint256 fees0;
         uint256 fees1;
         if (positionLiquidity > 0) {
-            fees0 = FullMathLib.mulDiv(positionLiquidity, bin.feeGrowth0X128 - position.feeGrowthInside0LastX128, Q128);
-            fees1 = FullMathLib.mulDiv(positionLiquidity, bin.feeGrowth1X128 - position.feeGrowthInside1LastX128, Q128);
+            unchecked {
+                fees0 = FullMathLib.mulDiv(
+                    positionLiquidity, bin.feeGrowth0X128 - position.feeGrowthInside0LastX128, Q128
+                );
+                fees1 = FullMathLib.mulDiv(
+                    positionLiquidity, bin.feeGrowth1X128 - position.feeGrowthInside1LastX128, Q128
+                );
+            }
         }
 
-        uint256 amount0 =
-            uint256(params.liquidityDelta > 0 ? params.liquidityDelta : -params.liquidityDelta);
-        uint256 amount1 = (amount0 * priceX128) >> BinMathLib.SCALE_OFFSET;
-        if (amount0 > 0 && amount1 == 0 && priceX128 > 0) amount1 = 1;
-
         if (params.liquidityDelta > 0) {
+            uint256 amount0 = uint256(params.liquidityDelta);
+            uint256 amount1 = (amount0 * priceX128) >> BinMathLib.SCALE_OFFSET;
+            if (amount0 > 0 && amount1 == 0 && priceX128 > 0) amount1 = 1;
+
             bin.reserve0 += uint128(amount0);
             bin.reserve1 += uint128(amount1);
             bin.totalLiquidity += uint128(amount0);
@@ -106,13 +131,18 @@ contract BinAMMEngine is ICurveEngine {
                 SafeCastLib.toInt128(int256(amount0)), SafeCastLib.toInt128(int256(amount1))
             );
         } else if (params.liquidityDelta < 0) {
-            if (bin.reserve0 < amount0 || bin.reserve1 < amount1 || positionLiquidity < amount0) {
+            uint256 shares = uint256(-params.liquidityDelta);
+            if (positionLiquidity < shares || bin.totalLiquidity == 0) {
                 revert PoolErrors.LiquidityOverflow();
             }
+            // Pro-rata exit against current reserves
+            uint256 amount0 = FullMathLib.mulDiv(shares, bin.reserve0, bin.totalLiquidity);
+            uint256 amount1 = FullMathLib.mulDiv(shares, bin.reserve1, bin.totalLiquidity);
+
             bin.reserve0 -= uint128(amount0);
             bin.reserve1 -= uint128(amount1);
-            bin.totalLiquidity -= uint128(amount0);
-            position.liquidity = positionLiquidity - uint128(amount0);
+            bin.totalLiquidity -= uint128(shares);
+            position.liquidity = positionLiquidity - uint128(shares);
             callerDelta = toBalanceDelta(
                 -SafeCastLib.toInt128(int256(amount0)), -SafeCastLib.toInt128(int256(amount1))
             );
@@ -133,6 +163,7 @@ contract BinAMMEngine is ICurveEngine {
     function swap(PoolKey memory key, IPoolManager.SwapParams memory params, uint24 fee, uint24 protocolFee)
         external
         override
+        onlyPoolManager
         returns (BalanceDelta swapDelta, uint256 protocolFeeAmount)
     {
         PoolId id = key.toId();
@@ -141,41 +172,121 @@ contract BinAMMEngine is ICurveEngine {
             revert PoolErrors.PoolNotInitialized(id);
         }
         if (params.amountSpecified == 0) revert PoolErrors.ZeroSwapAmount();
+        if (fee >= MAX_FEE_PIPS) revert PoolErrors.InvalidFee(fee);
 
-        uint24 activeId = pool.activeBinId;
-        Bin storage activeBin = pool.bins[activeId];
+        Bin storage activeBin = pool.bins[pool.activeBinId];
         uint256 priceX128 = pool.activePriceX128;
         if (priceX128 == 0) priceX128 = BinMathLib.SCALE;
+        _enforcePriceLimit(priceX128, params.sqrtPriceLimitX96, params.zeroForOne);
 
-        uint256 amountIn = uint256(params.amountSpecified > 0 ? params.amountSpecified : -params.amountSpecified);
+        if (params.amountSpecified > 0) {
+            return _swapExactIn(activeBin, params, fee, protocolFee, priceX128);
+        }
+        return _swapExactOut(activeBin, params, fee, protocolFee, priceX128);
+    }
+
+    function _swapExactIn(
+        Bin storage activeBin,
+        IPoolManager.SwapParams memory params,
+        uint24 fee,
+        uint24 protocolFee,
+        uint256 priceX128
+    ) internal returns (BalanceDelta swapDelta, uint256 protocolFeeAmount) {
+        uint256 amountIn = uint256(params.amountSpecified);
         uint256 feeAmount = FullMathLib.mulDivRoundingUp(amountIn, fee, 1e6);
         uint256 amountInAfterFee = amountIn > feeAmount ? amountIn - feeAmount : 0;
-
         uint256 amountOut = BinMathLib.getSwapAmountInBin(amountInAfterFee, priceX128, params.zeroForOne);
 
         uint256 lpFee;
         (lpFee, protocolFeeAmount) = ProtocolFeeLib.splitFee(feeAmount, protocolFee);
+        _accrueBinFee(activeBin, lpFee, params.zeroForOne);
+        swapDelta = _applyBinSwap(activeBin, params.zeroForOne, amountIn, amountInAfterFee, amountOut, true);
+    }
 
-        // Accrue LP portion via fee growth (fee not added as free reserve)
+    function _swapExactOut(
+        Bin storage activeBin,
+        IPoolManager.SwapParams memory params,
+        uint24 fee,
+        uint24 protocolFee,
+        uint256 priceX128
+    ) internal returns (BalanceDelta swapDelta, uint256 protocolFeeAmount) {
+        uint256 amountOut = uint256(-params.amountSpecified);
+        if (params.zeroForOne) {
+            if (activeBin.reserve1 < amountOut) revert PoolErrors.InsufficientLiquidity();
+        } else if (activeBin.reserve0 < amountOut) {
+            revert PoolErrors.InsufficientLiquidity();
+        }
+
+        uint256 amountInAfterFee = params.zeroForOne
+            ? (amountOut << BinMathLib.SCALE_OFFSET) / priceX128
+            : (amountOut * priceX128) >> BinMathLib.SCALE_OFFSET;
+        if (amountInAfterFee == 0 && amountOut > 0) amountInAfterFee = 1;
+
+        uint256 amountIn = FullMathLib.mulDivRoundingUp(amountInAfterFee, 1e6, 1e6 - fee);
+        uint256 feeAmount = amountIn - amountInAfterFee;
+        uint256 lpFee;
+        (lpFee, protocolFeeAmount) = ProtocolFeeLib.splitFee(feeAmount, protocolFee);
+        _accrueBinFee(activeBin, lpFee, params.zeroForOne);
+        swapDelta = _applyBinSwap(activeBin, params.zeroForOne, amountIn, amountInAfterFee, amountOut, false);
+    }
+
+    function _applyBinSwap(
+        Bin storage activeBin,
+        bool zeroForOne,
+        uint256 amountIn,
+        uint256 amountInAfterFee,
+        uint256 amountOut,
+        bool checkLiquidity
+    ) internal returns (BalanceDelta) {
+        if (zeroForOne) {
+            if (checkLiquidity && activeBin.reserve1 < amountOut) revert PoolErrors.InsufficientLiquidity();
+            activeBin.reserve0 += uint128(amountInAfterFee);
+            activeBin.reserve1 -= uint128(amountOut);
+            return toBalanceDelta(SafeCastLib.toInt128(int256(amountIn)), -SafeCastLib.toInt128(int256(amountOut)));
+        }
+        if (checkLiquidity && activeBin.reserve0 < amountOut) revert PoolErrors.InsufficientLiquidity();
+        activeBin.reserve1 += uint128(amountInAfterFee);
+        activeBin.reserve0 -= uint128(amountOut);
+        return toBalanceDelta(-SafeCastLib.toInt128(int256(amountOut)), SafeCastLib.toInt128(int256(amountIn)));
+    }
+
+    function _accrueBinFee(Bin storage activeBin, uint256 lpFee, bool zeroForOne) internal {
         if (lpFee > 0 && activeBin.totalLiquidity > 0) {
             uint256 delta = FullMathLib.mulDiv(lpFee, Q128, activeBin.totalLiquidity);
-            if (params.zeroForOne) {
+            if (zeroForOne) {
                 activeBin.feeGrowth0X128 += delta;
             } else {
                 activeBin.feeGrowth1X128 += delta;
             }
         }
+    }
 
-        if (params.zeroForOne) {
-            if (activeBin.reserve1 < amountOut) amountOut = activeBin.reserve1;
-            activeBin.reserve0 += uint128(amountInAfterFee);
-            activeBin.reserve1 -= uint128(amountOut);
-            swapDelta = toBalanceDelta(SafeCastLib.toInt128(int256(amountIn)), -SafeCastLib.toInt128(int256(amountOut)));
-        } else {
-            if (activeBin.reserve0 < amountOut) amountOut = activeBin.reserve0;
-            activeBin.reserve1 += uint128(amountInAfterFee);
-            activeBin.reserve0 -= uint128(amountOut);
-            swapDelta = toBalanceDelta(-SafeCastLib.toInt128(int256(amountOut)), SafeCastLib.toInt128(int256(amountIn)));
+    function _enforcePriceLimit(uint256 priceX128, uint160 sqrtPriceLimitX96, bool zeroForOne) internal pure {
+        if (sqrtPriceLimitX96 == 0) return;
+        uint256 limitPriceX128 = BinMathLib.getPriceX128FromSqrtPriceX96(sqrtPriceLimitX96);
+        if (zeroForOne) {
+            if (limitPriceX128 >= priceX128) {
+                revert PoolErrors.PriceLimitAlreadyExceeded(uint160(priceX128 >> 32), sqrtPriceLimitX96);
+            }
+        } else if (limitPriceX128 <= priceX128) {
+            revert PoolErrors.PriceLimitAlreadyExceeded(uint160(priceX128 >> 32), sqrtPriceLimitX96);
+        }
+    }
+
+    /// @inheritdoc ICurveEngine
+    function donate(PoolKey memory key, uint256 amount0, uint256 amount1) external override onlyPoolManager {
+        PoolId id = key.toId();
+        BinPoolState storage pool = pools[id];
+        if (!pool.slot0.isInitialized()) revert PoolErrors.PoolNotInitialized(id);
+        if (amount0 == 0 && amount1 == 0) return;
+        Bin storage activeBin = pool.bins[pool.activeBinId];
+        uint128 liquidity = activeBin.totalLiquidity;
+        if (liquidity == 0) revert PoolErrors.NoLiquidityToDonate();
+        if (amount0 > 0) {
+            activeBin.feeGrowth0X128 += FullMathLib.mulDiv(amount0, Q128, liquidity);
+        }
+        if (amount1 > 0) {
+            activeBin.feeGrowth1X128 += FullMathLib.mulDiv(amount1, Q128, liquidity);
         }
     }
 

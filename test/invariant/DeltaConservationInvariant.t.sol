@@ -13,6 +13,7 @@ import {PoolKey, CurveType} from "../../contract/types/PoolKey.sol";
 import {IPoolManager} from "../../contract/interfaces/IPoolManager.sol";
 import {IUnlockCallback} from "../../contract/interfaces/IUnlockCallback.sol";
 import {BalanceDelta} from "../../contract/types/BalanceDelta.sol";
+import {SecurityTestSetup} from "../helpers/SecurityTestSetup.sol";
 
 contract MockInvariantToken {
     string public name;
@@ -119,12 +120,12 @@ contract DeltaConservationInvariantTest is StdInvariant, Test {
 
     function setUp() public {
         vault = new SupaVault(address(this));
-        CLAMMEngine clamm = new CLAMMEngine();
-        BinAMMEngine binAmm = new BinAMMEngine();
-        StableAMMEngine stableAmm = new StableAMMEngine();
-
-        manager = new SupaPoolManager(vault, clamm, binAmm, stableAmm);
+        (manager,,,) = SecurityTestSetup.deployManagerWithEngines(vault);
+        CLAMMEngine clamm = CLAMMEngine(address(manager.clammEngine()));
+        BinAMMEngine binAmm = BinAMMEngine(address(manager.binEngine()));
+        StableAMMEngine stableAmm = StableAMMEngine(address(manager.stableEngine()));
         vault.setPoolManager(address(manager), true);
+        SecurityTestSetup.installEmptyWhitelist(manager, address(this));
 
         MockInvariantToken tA = new MockInvariantToken("Token A", "TKNA");
         MockInvariantToken tB = new MockInvariantToken("Token B", "TKNB");

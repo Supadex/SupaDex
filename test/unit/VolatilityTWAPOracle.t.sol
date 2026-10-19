@@ -11,7 +11,7 @@ contract VolatilityTWAPOracleTest is Test {
     PoolId internal poolId;
 
     function setUp() public {
-        oracle = new VolatilityTWAPOracle();
+        oracle = new VolatilityTWAPOracle(address(this));
         poolId = PoolId.wrap(keccak256("TEST_POOL"));
     }
 
@@ -78,5 +78,24 @@ contract VolatilityTWAPOracleTest is Test {
         // Volatility over 12s with tick jump from 100 to 150
         uint256 vol = oracle.getInstantaneousVolatility(poolId, 12);
         assertTrue(vol > 0);
+    }
+
+    function test_growToProductionCardinalityEnablesHistory() public {
+        // Same init pattern as LVRShield (tick 0 → grow 64), then the proven vol jump.
+        oracle.initialize(poolId, 1000, 100);
+        oracle.grow(poolId, 64);
+
+        (uint16 index, uint16 cardinality, uint16 cardinalityNext) = oracle.states(poolId);
+        assertEq(index, 0);
+        assertEq(cardinality, 1);
+        assertEq(cardinalityNext, 64);
+
+        vm.warp(1012);
+        (uint16 writeIndex, uint16 writeCard) = oracle.write(poolId, 1012, 150, 1_000_000);
+        assertEq(writeIndex, 1);
+        assertEq(writeCard, 2);
+
+        uint256 vol = oracle.getInstantaneousVolatility(poolId, 12);
+        assertTrue(vol > 0, "volatility should be non-zero after multi-observation history");
     }
 }

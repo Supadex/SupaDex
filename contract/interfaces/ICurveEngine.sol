@@ -13,14 +13,20 @@ import {IPoolManager} from "./IPoolManager.sol";
  */
 interface ICurveEngine {
     /**
+     * @notice Returns the authorized pool manager (immutably bound at construction).
+     */
+    function poolManager() external view returns (address);
+
+    /**
      * @notice Initializes pool curve state.
      */
     function initialize(PoolKey memory key, uint160 sqrtPriceX96) external returns (int24 tick);
 
     /**
      * @notice Modifies liquidity for the curve.
+     * @param owner Position owner keyed into storage (must be manager's msg.sender).
      */
-    function modifyLiquidity(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params)
+    function modifyLiquidity(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params, address owner)
         external
         returns (BalanceDelta callerDelta, BalanceDelta feesAccrued);
 
@@ -33,6 +39,12 @@ interface ICurveEngine {
     function swap(PoolKey memory key, IPoolManager.SwapParams memory params, uint24 fee, uint24 protocolFee)
         external
         returns (BalanceDelta swapDelta, uint256 protocolFeeAmount);
+
+    /**
+     * @notice Credits donated tokens to active in-range LPs via fee growth.
+     * @dev Reverts if active liquidity is zero and either amount is non-zero.
+     */
+    function donate(PoolKey memory key, uint256 amount0, uint256 amount1) external;
 
     /**
      * @notice Returns current Slot0 state for a pool.

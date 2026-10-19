@@ -11,6 +11,11 @@ import {PluginErrors} from "../../errors/PluginErrors.sol";
  */
 contract VolatilityTWAPOracle is IVolatilityTWAPOracle {
     /**
+     * @dev Sole authorized writer (typically LVRShieldPlugin). Bound at construction.
+     */
+    address public immutable writer;
+
+    /**
      * @dev Observations ring buffer per pool: poolId => index => Observation
      */
     mapping(PoolId => mapping(uint256 => Observation)) public observations;
@@ -25,12 +30,26 @@ contract VolatilityTWAPOracle is IVolatilityTWAPOracle {
      */
     mapping(PoolId => int24) public latestTicks;
 
+    modifier onlyWriter() {
+        if (msg.sender != writer) revert PluginErrors.NotOracleWriter();
+        _;
+    }
+
+    /**
+     * @notice Binds the sole oracle writer immutably (pass predicted LVR address at deploy).
+     */
+    constructor(address _writer) {
+        if (_writer == address(0)) revert PluginErrors.NotOracleWriter();
+        writer = _writer;
+    }
+
     /**
      * @inheritdoc IVolatilityTWAPOracle
      */
     function initialize(PoolId poolId, uint32 blockTimestamp, int24 tick)
         external
         override
+        onlyWriter
         returns (uint16 index, uint16 cardinality)
     {
         OracleState storage state = states[poolId];
@@ -55,6 +74,7 @@ contract VolatilityTWAPOracle is IVolatilityTWAPOracle {
     function write(PoolId poolId, uint32 blockTimestamp, int24 tick, uint128 liquidity)
         external
         override
+        onlyWriter
         returns (uint16 indexUpdated, uint16 cardinalityUpdated)
     {
         OracleState storage state = states[poolId];
@@ -104,7 +124,12 @@ contract VolatilityTWAPOracle is IVolatilityTWAPOracle {
     /**
      * @inheritdoc IVolatilityTWAPOracle
      */
-    function grow(PoolId poolId, uint16 newCardinalityNext) external override returns (uint16 cardinalityNextUpdated) {
+    function grow(PoolId poolId, uint16 newCardinalityNext)
+        external
+        override
+        onlyWriter
+        returns (uint16 cardinalityNextUpdated)
+    {
         OracleState storage state = states[poolId];
         uint16 currentCardinality = state.cardinality;
         if (currentCardinality == 0) revert PluginErrors.OracleNotInitialized();

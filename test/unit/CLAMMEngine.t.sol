@@ -7,7 +7,7 @@ import {IPoolManager} from "../../contract/interfaces/IPoolManager.sol";
 import {PoolKey, CurveType} from "../../contract/types/PoolKey.sol";
 import {PoolId} from "../../contract/types/PoolId.sol";
 import {Currency} from "../../contract/types/Currency.sol";
-import {BalanceDelta, toBalanceDelta} from "../../contract/types/BalanceDelta.sol";
+import {BalanceDelta} from "../../contract/types/BalanceDelta.sol";
 import {TickMathLib} from "../../contract/libraries/TickMathLib.sol";
 
 contract CLAMMEngineTest is Test {
@@ -16,7 +16,7 @@ contract CLAMMEngineTest is Test {
     PoolId public poolId;
 
     function setUp() public {
-        engine = new CLAMMEngine();
+        engine = new CLAMMEngine(address(this));
         key = PoolKey({
             currency0: Currency.wrap(address(0x1)),
             currency1: Currency.wrap(address(0x2)),
@@ -43,7 +43,7 @@ contract CLAMMEngineTest is Test {
             tickLower: -120, tickUpper: 120, liquidityDelta: 1_000_000, salt: bytes32(0)
         });
 
-        (BalanceDelta delta,) = engine.modifyLiquidity(key, params);
+        (BalanceDelta delta,) = engine.modifyLiquidity(key, params, address(this));
         assertTrue(delta.amount0() > 0);
         assertTrue(delta.amount1() > 0);
 
@@ -55,5 +55,12 @@ contract CLAMMEngineTest is Test {
         (BalanceDelta swapDelta,) = engine.swap(key, swapParams, key.fee, 0);
         assertEq(swapDelta.amount0(), 1000);
         assertTrue(swapDelta.amount1() < 0);
+    }
+
+    function test_clammRejectsUnauthorizedCaller() public {
+        engine.initialize(key, 1 << 96);
+        vm.prank(address(0xBEEF));
+        vm.expectRevert();
+        engine.initialize(key, 1 << 96);
     }
 }

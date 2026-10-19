@@ -17,6 +17,7 @@ import {PoolKey, CurveType} from "../../contract/types/PoolKey.sol";
 import {Currency, CurrencyLibrary} from "../../contract/types/Currency.sol";
 import {BalanceDelta} from "../../contract/types/BalanceDelta.sol";
 import {PathKeyLib} from "../../contract/periphery/libraries/PathKeyLib.sol";
+import {SecurityTestSetup} from "../helpers/SecurityTestSetup.sol";
 
 contract MockQuoterToken {
     string public name;
@@ -125,12 +126,12 @@ contract SupaQuoterTest is Test {
 
     function setUp() public {
         vault = new SupaVault(address(this));
-        clammEngine = new CLAMMEngine();
-        binEngine = new BinAMMEngine();
-        stableEngine = new StableAMMEngine();
-
-        manager = new SupaPoolManager(vault, clammEngine, binEngine, stableEngine);
+        (manager,,,) = SecurityTestSetup.deployManagerWithEngines(vault);
+        clammEngine = CLAMMEngine(address(manager.clammEngine()));
+        binEngine = BinAMMEngine(address(manager.binEngine()));
+        stableEngine = StableAMMEngine(address(manager.stableEngine()));
         vault.setPoolManager(address(manager), true);
+        SecurityTestSetup.installEmptyWhitelist(manager, address(this));
 
         router = new SupaRouter(manager, vault);
         quoter = new SupaQuoter(manager, vault);

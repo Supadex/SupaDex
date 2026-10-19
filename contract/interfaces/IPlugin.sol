@@ -40,14 +40,19 @@ interface IPlugin {
 
     /**
      * @notice Hook called after modifying liquidity.
+     * @param delta Principal balance delta from the engine (excludes feesAccrued).
+     * @param feesAccrued Fees owed to the position from fee growth (non-negative legs).
+     * @return hookDelta Principal haircut (credit-only, non-negative on credit legs).
+     * @return feesHookDelta Unvested fee share to confiscate (0 <= feesHookDelta <= feesAccrued per leg).
      */
     function afterModifyLiquidity(
         address sender,
         PoolKey calldata key,
         IPoolManager.ModifyLiquidityParams calldata params,
         BalanceDelta delta,
+        BalanceDelta feesAccrued,
         bytes calldata hookData
-    ) external returns (bytes4, BalanceDelta hookDelta);
+    ) external returns (bytes4, BalanceDelta, BalanceDelta);
 
     /**
      * @notice Hook called before executing a swap.

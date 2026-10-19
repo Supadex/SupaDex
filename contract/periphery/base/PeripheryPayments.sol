@@ -90,13 +90,21 @@ abstract contract PeripheryPayments is IPeripheryPayments {
     }
 
     /**
+     * @dev Refunds all native ETH held by this periphery contract to `to`.
+     */
+    function _refundETH(address to) internal {
+        uint256 balance = address(this).balance;
+        if (balance > 0 && to != address(0)) {
+            SafeTransferLib.safeTransferETH(to, balance);
+        }
+    }
+
+    /**
      * @inheritdoc IPeripheryPayments
+     * @dev Permissionless sweep of stranded ETH to the caller. User-facing flows must use `_refundETH`.
      */
     function refundETH() external payable override {
-        uint256 balance = address(this).balance;
-        if (balance > 0) {
-            SafeTransferLib.safeTransferETH(msg.sender, balance);
-        }
+        _refundETH(msg.sender);
     }
 
     /**

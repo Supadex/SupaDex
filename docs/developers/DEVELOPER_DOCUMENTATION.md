@@ -29,4 +29,4 @@ Consume declarations from `contract/events/` and `contract/errors/`. Never scrap
 `DeploySupaDex.s.sol` orchestrates the contract suite and governance handoff; `VerifyDeployments.s.sol` checks deployment integrity. Validate constructor/proxy initialization, manager authorization, plugin whitelist, circuit breaker, fee controller, roles and timelock before broadcasting.
 
 ## Known integration constraints
-The stable engine assumes compatible token units, the bin engine remains in its active bin, the LVR plugin has a known tick update limitation, and no universal auto-router is bundled on-chain. Public addresses must come from a canonical signed manifest, not example configuration.
+The stable engine assumes compatible token units, the bin engine remains in its active bin, the LVR adaptive-fee plugin uses internal pool ticks (not external fair-price feeds), and no universal auto-router is bundled on-chain. Public addresses must come from a canonical signed manifest, not example configuration.

@@ -73,7 +73,7 @@ contract SupaRouter is ISupaRouter, IUnlockCallback, IPeripheryEvents, Periphery
 
         // Refund any residual native ETH remaining in contract
         if (address(this).balance > 0) {
-            this.refundETH();
+            _refundETH(msg.sender);
         }
     }
 
@@ -92,7 +92,7 @@ contract SupaRouter is ISupaRouter, IUnlockCallback, IPeripheryEvents, Periphery
 
         // Refund any residual native ETH remaining in contract
         if (address(this).balance > 0) {
-            this.refundETH();
+            _refundETH(msg.sender);
         }
     }
 
@@ -111,7 +111,7 @@ contract SupaRouter is ISupaRouter, IUnlockCallback, IPeripheryEvents, Periphery
 
         // Refund any residual native ETH remaining in contract
         if (address(this).balance > 0) {
-            this.refundETH();
+            _refundETH(msg.sender);
         }
     }
 
@@ -130,7 +130,7 @@ contract SupaRouter is ISupaRouter, IUnlockCallback, IPeripheryEvents, Periphery
 
         // Refund any residual native ETH remaining in contract
         if (address(this).balance > 0) {
-            this.refundETH();
+            _refundETH(msg.sender);
         }
     }
 

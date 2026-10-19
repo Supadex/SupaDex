@@ -5,7 +5,6 @@ import {Test} from "forge-std/Test.sol";
 import {BinAMMEngine} from "../../contract/core/engines/BinAMMEngine.sol";
 import {IPoolManager} from "../../contract/interfaces/IPoolManager.sol";
 import {PoolKey, CurveType} from "../../contract/types/PoolKey.sol";
-import {PoolId} from "../../contract/types/PoolId.sol";
 import {Currency} from "../../contract/types/Currency.sol";
 import {BalanceDelta} from "../../contract/types/BalanceDelta.sol";
 import {BinMathLib} from "../../contract/libraries/BinMathLib.sol";
@@ -15,7 +14,7 @@ contract BinAMMEngineTest is Test {
     PoolKey public key;
 
     function setUp() public {
-        engine = new BinAMMEngine();
+        engine = new BinAMMEngine(address(this));
         key = PoolKey({
             currency0: Currency.wrap(address(0x1)),
             currency1: Currency.wrap(address(0x2)),
@@ -37,7 +36,7 @@ contract BinAMMEngineTest is Test {
             salt: bytes32(0)
         });
 
-        (BalanceDelta delta,) = engine.modifyLiquidity(key, params);
+        (BalanceDelta delta,) = engine.modifyLiquidity(key, params, address(this));
         // At price = 1, amount0 == amount1
         assertEq(delta.amount0(), int128(int256(100_000 ether)));
         assertEq(delta.amount1(), int128(int256(100_000 ether)));
@@ -70,7 +69,7 @@ contract BinAMMEngineTest is Test {
             liquidityDelta: 20 ether,
             salt: bytes32(0)
         });
-        (BalanceDelta delta,) = engine.modifyLiquidity(key, params);
+        (BalanceDelta delta,) = engine.modifyLiquidity(key, params, address(this));
         assertEq(delta.amount0(), int128(int256(20 ether)));
         uint256 token1Pulled = uint256(int256(delta.amount1()));
         assertTrue(token1Pulled > 1e9, "must pull meaningful token1");

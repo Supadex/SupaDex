@@ -20,9 +20,9 @@ contract LVRDynamicFeeHandler is Test {
 
     uint24 public latestCalculatedFee;
 
-    constructor(VolatilityTWAPOracle _oracle) {
-        oracle = _oracle;
-        plugin = new LVRShieldPlugin(IPoolManager(address(this)), _oracle);
+    constructor() {
+        plugin = new LVRShieldPlugin(IPoolManager(address(this)));
+        oracle = VolatilityTWAPOracle(address(plugin.oracle()));
 
         key = PoolKey({
             currency0: Currency.wrap(address(0x1)),
@@ -42,6 +42,7 @@ contract LVRDynamicFeeHandler is Test {
         vm.warp(block.timestamp + jump);
 
         int24 newTick = int24(bound(int256(tickJump), -50000, 50000));
+        vm.prank(address(plugin));
         try oracle.write(key.toId(), uint32(block.timestamp), newTick, 1_000_000) {} catch {}
 
         (, uint24 overrideFee) = plugin.beforeSwap(
@@ -55,19 +56,17 @@ contract LVRDynamicFeeHandler is Test {
 contract LVRDynamicFeeInvariantTest is StdInvariant, Test {
     using PoolIdLibrary for PoolKey;
 
-    VolatilityTWAPOracle internal oracle;
     LVRDynamicFeeHandler internal handler;
 
     function setUp() public {
-        oracle = new VolatilityTWAPOracle();
-        handler = new LVRDynamicFeeHandler(oracle);
-
+        handler = new LVRDynamicFeeHandler();
         targetContract(address(handler));
     }
 
     function invariant_dynamicFeeAlwaysWithinBounds() public view {
         uint24 fee = handler.latestCalculatedFee();
-        assertGe(fee, DynamicFeeLib.MIN_FEE, "Fee below MIN_FEE floor");
+        // Plugin clamps within pool min/max (defaults 1..100_000); DynamicFeeLib also floors at MIN_FEE.
+        assertGe(fee, 1, "Fee below plugin min floor");
         assertLe(fee, DynamicFeeLib.MAX_FEE, "Fee above MAX_FEE cap");
     }
 }

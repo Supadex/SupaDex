@@ -34,8 +34,8 @@ contract VerifyDeployments is Script {
         require(vault.owner() == res.timelock, "Vault owner mismatch");
         require(address(vault.circuitBreaker()) == res.circuitBreaker, "Vault circuit breaker mismatch");
         require(vault.isPoolManager(res.poolManager), "PoolManager not authorized in Vault");
-        require(vault.isPoolManager(res.router), "Router not authorized in Vault");
-        require(vault.isPoolManager(res.positionManager), "PositionManager not authorized in Vault");
+        require(!vault.isPoolManager(res.router), "Router must not be vault pool manager");
+        require(!vault.isPoolManager(res.positionManager), "PositionManager must not be vault pool manager");
 
         // 4. Verify PoolManager
         SupaPoolManager pm = SupaPoolManager(res.poolManager);

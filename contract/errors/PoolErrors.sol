@@ -82,4 +82,44 @@ library PoolErrors {
      * @dev Thrown when a pool plugin is not on the whitelist.
      */
     error PluginNotWhitelisted(address plugin);
+
+    /**
+     * @dev Thrown when plugin whitelist is unset at initialize.
+     */
+    error PluginWhitelistRequired();
+
+    /**
+     * @dev Thrown when a non-manager calls a curve engine entrypoint.
+     */
+    error NotPoolManager();
+
+    /**
+     * @dev Legacy; engines bind `poolManager` immutably in constructors.
+     */
+    error PoolManagerAlreadySet();
+
+    /**
+     * @dev Thrown when a swap cannot fill the requested amount.
+     */
+    error InsufficientLiquidity();
+
+    /**
+     * @dev Thrown when a fee exceeds 1_000_000 pips.
+     */
+    error InvalidFee(uint24 fee);
+
+    /**
+     * @dev Thrown when a plugin returns a delta without permission.
+     */
+    error HookDeltaNotAllowed(address plugin);
+
+    /**
+     * @dev Thrown when a hook delta exceeds the per-operation cap.
+     */
+    error HookDeltaCapExceeded();
+
+    /**
+     * @dev Thrown when donate is attempted with no active liquidity to credit.
+     */
+    error NoLiquidityToDonate();
 }

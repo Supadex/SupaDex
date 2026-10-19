@@ -10,9 +10,10 @@ import {StableAMMEngine} from "../../contract/core/engines/StableAMMEngine.sol";
 import {IPoolManager} from "../../contract/interfaces/IPoolManager.sol";
 import {IUnlockCallback} from "../../contract/interfaces/IUnlockCallback.sol";
 import {PoolKey, CurveType} from "../../contract/types/PoolKey.sol";
-import {PoolId} from "../../contract/types/PoolId.sol";
+import {PoolId, PoolIdLibrary} from "../../contract/types/PoolId.sol";
 import {Currency, CurrencyLibrary} from "../../contract/types/Currency.sol";
 import {BalanceDelta, toBalanceDelta} from "../../contract/types/BalanceDelta.sol";
+import {SecurityTestSetup} from "../helpers/SecurityTestSetup.sol";
 
 contract MockToken {
     string public name;
@@ -121,12 +122,12 @@ contract SupaPoolManagerTest is Test {
 
     function setUp() public {
         vault = new SupaVault(address(this));
-        clamm = new CLAMMEngine();
-        binAmm = new BinAMMEngine();
-        stableAmm = new StableAMMEngine();
-
-        manager = new SupaPoolManager(vault, clamm, binAmm, stableAmm);
+        (manager,,,) = SecurityTestSetup.deployManagerWithEngines(vault);
+        clamm = CLAMMEngine(address(manager.clammEngine()));
+        binAmm = BinAMMEngine(address(manager.binEngine()));
+        stableAmm = StableAMMEngine(address(manager.stableEngine()));
         vault.setPoolManager(address(manager), true);
+        SecurityTestSetup.installEmptyWhitelist(manager, address(this));
 
         harness = new PoolManagerTestHarness(vault, manager);
 
@@ -199,7 +200,22 @@ contract SupaPoolManagerTest is Test {
     function test_donateEndToEnd() public {
         manager.initialize(clammKey, 1 << 96, "");
 
-        bytes memory donateData = abi.encode(PoolManagerTestHarness.Action.DONATE, clammKey, uint256(500 ether));
-        harness.execute(donateData);
+        // Active liquidity required for fee-growth credit.
+        harness.execute(abi.encode(PoolManagerTestHarness.Action.ADD_LIQUIDITY, clammKey, uint256(1_000_000)));
+
+        (uint256 g0Before, uint256 g1Before) = clamm.getFeeGrowthGlobal(clammKey.toId());
+
+        uint256 donateAmt = 500 ether;
+        harness.execute(abi.encode(PoolManagerTestHarness.Action.DONATE, clammKey, donateAmt));
+
+        (uint256 g0After, uint256 g1After) = clamm.getFeeGrowthGlobal(clammKey.toId());
+        assertGt(g0After, g0Before, "donate must bump feeGrowth0");
+        assertGt(g1After, g1Before, "donate must bump feeGrowth1");
+    }
+
+    function test_donateRevertsWithoutLiquidity() public {
+        manager.initialize(clammKey, 1 << 96, "");
+        vm.expectRevert();
+        harness.execute(abi.encode(PoolManagerTestHarness.Action.DONATE, clammKey, uint256(1 ether)));
     }
 }

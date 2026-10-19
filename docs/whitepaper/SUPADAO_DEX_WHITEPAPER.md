@@ -101,7 +101,7 @@ The pool manager is the coordinator. It manages pool creation, verifies caller p
 
 When token prices move rapidly on centralized exchanges (such as Binance), automated trading bots attempt to trade against decentralized pools before the pool price adjusts. This dynamic is known in DeFi research as **Loss-Versus-Rebalancing (LVR)**.
 
-SupaDAO DEX includes an experimental dynamic fee plugin (`LVRShieldPlugin`). When rapid volatility is detected in recent pool trades, the plugin temporarily increases the swap fee. This makes predatory bot trades unprofitable and protects the liquidity provider's capital during market turbulence.
+SupaDAO DEX includes a production adaptive-fee plugin (`LVRShieldPlugin`). When rapid volatility is detected in recent pool trades (via an internal tick TWAP oracle), the plugin temporarily increases the swap fee and decays it toward the base fee over a configurable half-life. This raises the cost of toxic order flow during pool turbulence. The signal is based on on-pool ticks rather than an external CEX fair-price feed, so it mitigates adverse selection under pool volatility and is not a guarantee of LVR elimination.
 
 *Important Note*: In current contract implementations, the dynamic fee plugin relies on internal pool tick observations rather than an external oracle, and remains an experimental feature subject to ongoing review.
 

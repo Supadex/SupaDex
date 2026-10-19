@@ -9,4 +9,5 @@ library PluginWhitelistErrors {
     error Unauthorized();
     error ZeroAddress();
     error PluginNotWhitelisted(address plugin);
+    error WhitelistAlreadySet();
 }

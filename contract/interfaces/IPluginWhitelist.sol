@@ -10,6 +10,8 @@ import {IPluginWhitelistEvents} from "../events/IPluginWhitelistEvents.sol";
 interface IPluginWhitelist is IPluginWhitelistEvents {
     function owner() external view returns (address);
     function isPluginWhitelisted(address plugin) external view returns (bool);
+    function canPluginReturnDelta(address plugin) external view returns (bool);
     function setPluginWhitelisted(address plugin, bool whitelisted) external;
+    function setPluginCanReturnDelta(address plugin, bool allowed) external;
     function transferOwnership(address newOwner) external;
 }

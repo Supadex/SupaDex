@@ -31,6 +31,18 @@ library TransientStorageLib {
         0x3d386d34b46c6fc3aa478672224da1c7fe68eb7810ecba14aa0fe77209353982;
 
     /**
+     * @dev Last non-zero unsettled currency: keccak256("supadex.vault.last.unsettled.currency")
+     */
+    bytes32 internal constant LAST_UNSETTLED_CURRENCY_SLOT =
+        0x8c0e6f3a1b2d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789ab;
+
+    /**
+     * @dev Last non-zero unsettled delta: keccak256("supadex.vault.last.unsettled.delta")
+     */
+    bytes32 internal constant LAST_UNSETTLED_DELTA_SLOT =
+        0x9d1f7e4b2c3a5d6e708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7;
+
+    /**
      * @notice Acquires transient reentrancy lock. Reverts if already locked.
      */
     function acquireLock() internal {
@@ -119,6 +131,9 @@ library TransientStorageLib {
         if (deltaChange == 0) return getDelta(account, currency);
         bytes32 deltaSlot = computeDeltaSlot(account, currency);
         bytes32 countSlot = NONZERO_DELTA_COUNT_SLOT;
+        bytes32 lastCurrencySlot = LAST_UNSETTLED_CURRENCY_SLOT;
+        bytes32 lastDeltaSlot = LAST_UNSETTLED_DELTA_SLOT;
+        address currencyAddr = Currency.unwrap(currency);
         assembly {
             let current := tload(deltaSlot)
             newDelta := add(current, deltaChange)
@@ -133,7 +148,25 @@ library TransientStorageLib {
             if and(iszero(iszero(current)), iszero(newDelta)) {
                 tstore(countSlot, sub(count, 1))
             }
+            if iszero(iszero(newDelta)) {
+                tstore(lastCurrencySlot, currencyAddr)
+                tstore(lastDeltaSlot, newDelta)
+            }
         }
+    }
+
+    /**
+     * @notice Returns the most recently updated non-zero unsettled currency and delta.
+     */
+    function getLastUnsettled() internal view returns (Currency currency, int256 delta) {
+        bytes32 lastCurrencySlot = LAST_UNSETTLED_CURRENCY_SLOT;
+        bytes32 lastDeltaSlot = LAST_UNSETTLED_DELTA_SLOT;
+        address currencyAddr;
+        assembly {
+            currencyAddr := tload(lastCurrencySlot)
+            delta := tload(lastDeltaSlot)
+        }
+        currency = Currency.wrap(currencyAddr);
     }
 
     /**

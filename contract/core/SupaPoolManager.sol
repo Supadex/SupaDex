@@ -26,6 +26,8 @@ import {CircuitBreakerErrors} from "../errors/CircuitBreakerErrors.sol";
 contract SupaPoolManager is IPoolManager {
     using Slot0Library for Slot0;
 
+    uint24 internal constant MAX_FEE_PIPS = 1_000_000;
+
     address public owner;
     ICircuitBreaker public circuitBreaker;
     IPluginWhitelist public pluginWhitelist;
@@ -50,12 +52,26 @@ contract SupaPoolManager is IPoolManager {
         _;
     }
 
-    constructor(IVault _vault, ICurveEngine _clammEngine, ICurveEngine _binEngine, ICurveEngine _stableEngine) {
+    /**
+     * @dev Engines are deployed in a prior tx (predicted CREATE address) and passed in so
+     * PoolManager initcode stays under EIP-3860 (49KB). Each engine must be immutably bound
+     * to `address(this)` — no permissionless setter.
+     */
+    constructor(IVault _vault, ICurveEngine _clamm, ICurveEngine _bin, ICurveEngine _stable) {
         owner = msg.sender;
         vault = _vault;
-        clammEngine = _clammEngine;
-        binEngine = _binEngine;
-        stableEngine = _stableEngine;
+        if (address(_clamm) == address(0) || address(_bin) == address(0) || address(_stable) == address(0)) {
+            revert PoolErrors.NotPoolManager();
+        }
+        if (
+            _clamm.poolManager() != address(this) || _bin.poolManager() != address(this)
+                || _stable.poolManager() != address(this)
+        ) {
+            revert PoolErrors.NotPoolManager();
+        }
+        clammEngine = _clamm;
+        binEngine = _bin;
+        stableEngine = _stable;
     }
 
     function setCircuitBreaker(ICircuitBreaker _circuitBreaker) external onlyOwner {
@@ -63,6 +79,8 @@ contract SupaPoolManager is IPoolManager {
     }
 
     function setPluginWhitelist(IPluginWhitelist _whitelist) external onlyOwner {
+        // Never allow disabling the whitelist once configured.
+        if (address(_whitelist) == address(0)) revert PoolErrors.PluginWhitelistRequired();
         pluginWhitelist = _whitelist;
     }
 
@@ -91,6 +109,66 @@ contract SupaPoolManager is IPoolManager {
         revert PoolErrors.CurrenciesOutOfOrderOrEqual();
     }
 
+    function _abs128(int128 x) internal pure returns (uint256) {
+        return uint256(uint128(x < 0 ? -x : x));
+    }
+
+    function _requirePluginAllowed(address plugin) internal view {
+        if (address(pluginWhitelist) == address(0)) revert PoolErrors.PluginWhitelistRequired();
+        if (!pluginWhitelist.isPluginWhitelisted(plugin)) {
+            revert PoolErrors.PluginNotWhitelisted(plugin);
+        }
+    }
+
+    /**
+     * @dev Hook deltas may only haircut user *credits* (negative reference):
+     * - `referenceAmount > 0` (user debit): any non-zero hook underpays while engine state advances → reject.
+     * - `referenceAmount < 0` (user credit): only non-negative haircuts with `hook <= |reference|`.
+     * - `referenceAmount == 0`: non-zero hooks create value from nothing → reject.
+     */
+    function _validateHookDelta(address plugin, int128 hookAmount, int128 referenceAmount) internal view {
+        if (hookAmount == 0) return;
+        if (!pluginWhitelist.canPluginReturnDelta(plugin)) {
+            revert PoolErrors.HookDeltaNotAllowed(plugin);
+        }
+        // Debits (and zero legs) cannot be reduced or invented by hooks.
+        if (referenceAmount >= 0) revert PoolErrors.HookDeltaCapExceeded();
+        // Credits: haircut must be non-negative and bounded by the credit magnitude.
+        if (hookAmount < 0 || uint256(uint128(hookAmount)) > _abs128(referenceAmount)) {
+            revert PoolErrors.HookDeltaCapExceeded();
+        }
+    }
+
+    /**
+     * @dev Fee hook deltas must be non-negative and bounded by accrued fees per leg.
+     */
+    function _validateFeesHookDelta(address plugin, int128 feesHookAmount, int128 feesAccruedAmount) internal view {
+        if (feesHookAmount == 0) return;
+        if (!pluginWhitelist.canPluginReturnDelta(plugin)) {
+            revert PoolErrors.HookDeltaNotAllowed(plugin);
+        }
+        if (feesHookAmount < 0 || feesAccruedAmount < 0) revert PoolErrors.HookDeltaCapExceeded();
+        if (uint256(uint128(feesHookAmount)) > uint256(uint128(feesAccruedAmount))) {
+            revert PoolErrors.HookDeltaCapExceeded();
+        }
+    }
+
+    /**
+     * @dev Credits confiscated fees to remaining LPs via fee growth, or protocol if no active liquidity.
+     * Tokens are already in the vault (from prior swaps); do not vault-debit again.
+     */
+    function _redistributeConfiscatedFees(PoolKey memory key, ICurveEngine engine, uint256 amount0, uint256 amount1)
+        internal
+    {
+        if (amount0 == 0 && amount1 == 0) return;
+        if (engine.getLiquidity(key.toId()) == 0) {
+            if (amount0 > 0) protocolFeesAccrued[key.currency0] += amount0;
+            if (amount1 > 0) protocolFeesAccrued[key.currency1] += amount1;
+            return;
+        }
+        engine.donate(key, amount0, amount1);
+    }
+
     /// @inheritdoc IPoolManager
     function initialize(PoolKey memory key, uint160 sqrtPriceX96, bytes calldata /* hookData */ )
         external
@@ -101,12 +179,9 @@ contract SupaPoolManager is IPoolManager {
             revert PoolErrors.CurrenciesOutOfOrderOrEqual();
         }
         if (key.tickSpacing <= 0) revert PoolErrors.InvalidTickSpacing(key.tickSpacing);
+        if (key.fee >= MAX_FEE_PIPS) revert PoolErrors.InvalidFee(key.fee);
 
-        if (address(pluginWhitelist) != address(0)) {
-            if (!pluginWhitelist.isPluginWhitelisted(key.plugin)) {
-                revert PoolErrors.PluginNotWhitelisted(key.plugin);
-            }
-        }
+        _requirePluginAllowed(key.plugin);
 
         if (address(circuitBreaker) != address(0)) {
             if (circuitBreaker.isVaultPaused()) revert CircuitBreakerErrors.VaultPaused();
@@ -139,17 +214,38 @@ contract SupaPoolManager is IPoolManager {
         PoolId id = key.toId();
         _checkCircuitBreaker(id, key.curveType);
         if (!poolSlot0[id].isInitialized()) revert PoolErrors.PoolNotInitialized(id);
+        // Delisting must disable hooks on already-initialized pools.
+        _requirePluginAllowed(key.plugin);
 
         PluginDispatcher.dispatchBeforeModifyLiquidity(key.plugin, msg.sender, key, params, hookData);
 
         ICurveEngine engine = getCurveEngine(key.curveType);
-        (callerDelta, feesAccrued) = engine.modifyLiquidity(key, params);
+        (callerDelta, feesAccrued) = engine.modifyLiquidity(key, params, msg.sender);
 
-        BalanceDelta hookDelta =
-            PluginDispatcher.dispatchAfterModifyLiquidity(key.plugin, msg.sender, key, params, callerDelta, hookData);
+        // Sync before after-hooks so plugins reading getSlot0/getLiquidity see post-edit state.
+        _syncSlot0FromEngine(id, engine, poolSlot0[id].protocolFee());
+        poolLiquidity[id] = engine.getLiquidity(id);
+
+        (BalanceDelta hookDelta, BalanceDelta feesHookDelta) = PluginDispatcher.dispatchAfterModifyLiquidity(
+            key.plugin, msg.sender, key, params, callerDelta, feesAccrued, hookData
+        );
 
         if (BalanceDelta.unwrap(hookDelta) != 0) {
+            _validateHookDelta(key.plugin, hookDelta.amount0(), callerDelta.amount0());
+            _validateHookDelta(key.plugin, hookDelta.amount1(), callerDelta.amount1());
             callerDelta = callerDelta.add(hookDelta);
+        }
+
+        if (BalanceDelta.unwrap(feesHookDelta) != 0) {
+            _validateFeesHookDelta(key.plugin, feesHookDelta.amount0(), feesAccrued.amount0());
+            _validateFeesHookDelta(key.plugin, feesHookDelta.amount1(), feesAccrued.amount1());
+            feesAccrued = feesAccrued.sub(feesHookDelta);
+            _redistributeConfiscatedFees(
+                key,
+                engine,
+                uint256(uint128(feesHookDelta.amount0())),
+                uint256(uint128(feesHookDelta.amount1()))
+            );
         }
 
         BalanceDelta netCallerDelta = callerDelta.sub(feesAccrued);
@@ -160,9 +256,6 @@ contract SupaPoolManager is IPoolManager {
         if (netCallerDelta.amount1() != 0) {
             vault.accountDelta(msg.sender, key.currency1, -netCallerDelta.amount1());
         }
-
-        poolSlot0[id] = engine.getSlot0(id);
-        poolLiquidity[id] = engine.getLiquidity(id);
 
         emit ModifyLiquidity(id, msg.sender, params.tickLower, params.tickUpper, params.liquidityDelta, params.salt);
     }
@@ -178,30 +271,29 @@ contract SupaPoolManager is IPoolManager {
         _checkCircuitBreaker(id, key.curveType);
         Slot0 slot0 = poolSlot0[id];
         if (!slot0.isInitialized()) revert PoolErrors.PoolNotInitialized(id);
+        // Delisting must disable hooks on already-initialized pools.
+        _requirePluginAllowed(key.plugin);
 
-        uint24 overrideFee = PluginDispatcher.dispatchBeforeSwap(key.plugin, msg.sender, key, params, hookData);
-        uint24 fee = overrideFee != 0 ? overrideFee : key.fee;
+        uint24 fee = PluginDispatcher.dispatchBeforeSwap(key.plugin, msg.sender, key, params, hookData);
+        if (fee == 0) fee = key.fee;
+        // 100% fee (1e6) bricks swaps in engines; reject equality as well as overflow.
+        if (fee >= MAX_FEE_PIPS) revert PoolErrors.InvalidFee(fee);
+
         uint24 protocolFee = slot0.protocolFee();
-
         ICurveEngine engine = getCurveEngine(key.curveType);
-        uint256 protocolFeeAmount;
-        (swapDelta, protocolFeeAmount) = engine.swap(key, params, fee, protocolFee);
-
-        if (protocolFeeAmount > 0) {
-            Currency feeCurrency = params.zeroForOne ? key.currency0 : key.currency1;
-            protocolFeesAccrued[feeCurrency] += protocolFeeAmount;
-        }
-
-        int128 hookDeltaSpecified =
-            PluginDispatcher.dispatchAfterSwap(key.plugin, msg.sender, key, params, swapDelta, hookData);
-
-        if (hookDeltaSpecified != 0) {
-            if (params.zeroForOne) {
-                swapDelta = toBalanceDelta(swapDelta.amount0() + hookDeltaSpecified, swapDelta.amount1());
-            } else {
-                swapDelta = toBalanceDelta(swapDelta.amount0(), swapDelta.amount1() + hookDeltaSpecified);
+        {
+            uint256 protocolFeeAmount;
+            (swapDelta, protocolFeeAmount) = engine.swap(key, params, fee, protocolFee);
+            if (protocolFeeAmount > 0) {
+                protocolFeesAccrued[params.zeroForOne ? key.currency0 : key.currency1] += protocolFeeAmount;
             }
         }
+
+        // Sync before afterSwap so plugins (e.g. LVR oracle) read post-swap tick/liquidity.
+        _syncSlot0FromEngine(id, engine, protocolFee);
+        poolLiquidity[id] = engine.getLiquidity(id);
+
+        swapDelta = _applySwapHookDelta(key, params, swapDelta, hookData);
 
         if (swapDelta.amount0() != 0) {
             vault.accountDelta(msg.sender, key.currency0, -swapDelta.amount0());
@@ -209,13 +301,6 @@ contract SupaPoolManager is IPoolManager {
         if (swapDelta.amount1() != 0) {
             vault.accountDelta(msg.sender, key.currency1, -swapDelta.amount1());
         }
-
-        // Preserve protocol fee bits when syncing price/tick from engine
-        Slot0 engineSlot0 = engine.getSlot0(id);
-        poolSlot0[id] = Slot0Library.pack(
-            engineSlot0.sqrtPriceX96(), engineSlot0.tick(), protocolFee, engineSlot0.dynamicFee(), true
-        );
-        poolLiquidity[id] = engine.getLiquidity(id);
 
         emit Swap(
             id,
@@ -226,6 +311,31 @@ contract SupaPoolManager is IPoolManager {
             poolLiquidity[id],
             poolSlot0[id].tick(),
             fee
+        );
+    }
+
+    function _applySwapHookDelta(
+        PoolKey memory key,
+        SwapParams memory params,
+        BalanceDelta swapDelta,
+        bytes calldata hookData
+    ) internal returns (BalanceDelta) {
+        int128 hookDeltaSpecified =
+            PluginDispatcher.dispatchAfterSwap(key.plugin, msg.sender, key, params, swapDelta, hookData);
+        if (hookDeltaSpecified == 0) return swapDelta;
+
+        int128 referenceAmount = params.zeroForOne ? swapDelta.amount0() : swapDelta.amount1();
+        _validateHookDelta(key.plugin, hookDeltaSpecified, referenceAmount);
+        if (params.zeroForOne) {
+            return toBalanceDelta(swapDelta.amount0() + hookDeltaSpecified, swapDelta.amount1());
+        }
+        return toBalanceDelta(swapDelta.amount0(), swapDelta.amount1() + hookDeltaSpecified);
+    }
+
+    function _syncSlot0FromEngine(PoolId id, ICurveEngine engine, uint24 protocolFee) internal {
+        Slot0 engineSlot0 = engine.getSlot0(id);
+        poolSlot0[id] = Slot0Library.pack(
+            engineSlot0.sqrtPriceX96(), engineSlot0.tick(), protocolFee, engineSlot0.dynamicFee(), true
         );
     }
 
@@ -267,6 +377,8 @@ contract SupaPoolManager is IPoolManager {
         PoolId id = key.toId();
         _checkCircuitBreaker(id, key.curveType);
         if (!poolSlot0[id].isInitialized()) revert PoolErrors.PoolNotInitialized(id);
+        // Delisting must disable donate hooks on already-initialized pools.
+        _requirePluginAllowed(key.plugin);
 
         PluginDispatcher.dispatchBeforeDonate(key.plugin, msg.sender, key, amount0, amount1, hookData);
 
@@ -276,6 +388,9 @@ contract SupaPoolManager is IPoolManager {
         if (amount1 != 0) {
             vault.accountDelta(msg.sender, key.currency1, -SafeCastLib.toInt256(amount1));
         }
+
+        ICurveEngine engine = getCurveEngine(key.curveType);
+        engine.donate(key, amount0, amount1);
 
         delta = toBalanceDelta(
             SafeCastLib.toInt128(SafeCastLib.toInt256(amount0)), SafeCastLib.toInt128(SafeCastLib.toInt256(amount1))

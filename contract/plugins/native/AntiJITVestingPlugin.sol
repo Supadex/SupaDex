@@ -6,26 +6,28 @@ import {IPoolManager} from "../../interfaces/IPoolManager.sol";
 import {IPluginEvents} from "../../events/IPluginEvents.sol";
 import {PluginDispatcher} from "../../core/PluginDispatcher.sol";
 import {PoolKey} from "../../types/PoolKey.sol";
-import {PoolId, PoolIdLibrary} from "../../types/PoolId.sol";
-import {BalanceDelta} from "../../types/BalanceDelta.sol";
+import {PoolId} from "../../types/PoolId.sol";
+import {BalanceDelta, toBalanceDelta} from "../../types/BalanceDelta.sol";
 
 /**
  * @title AntiJITVestingPlugin
- * @notice Native anti-MEV plugin preventing Just-In-Time (JIT) liquidity attacks via epoch-based residency verification.
+ * @notice Native anti-MEV plugin that linearly vests accrued swap fees over a minimum residency
+ *         window and redistributes unvested fees to remaining LPs via fee growth.
  */
 contract AntiJITVestingPlugin is BaseHook, IPluginEvents {
-    using PoolIdLibrary for PoolKey;
-
     /**
-     * @notice Minimum number of blocks liquidity must remain deposited before withdrawal without JIT penalty.
+     * @notice Minimum number of blocks liquidity must remain deposited for full fee vesting.
      */
     uint32 public immutable minResidencyBlocks;
 
+    uint24 public constant BPS_DENOMINATOR = 10_000;
+
     /**
-     * @notice Penalty rate in basis points (e.g. 5000 = 50%) applied to early JIT liquidity withdrawals.
+     * @dev Pending unvested fee bps for the in-flight modifyLiquidity call.
+     *      Single slot is safe: PoolManager is non-reentrant across unlock, and before/after
+     *      pair atomically. Cleared in afterModifyLiquidity.
      */
-    uint24 public constant PENALTY_BPS = 5000;
-    uint24 public constant BPS_DENOMINATOR = 10000;
+    uint24 private _pendingUnvestedBps;
 
     /**
      * @notice Position residency container.
@@ -63,38 +65,43 @@ contract AntiJITVestingPlugin is BaseHook, IPluginEvents {
     ) external override onlyPoolManager returns (bytes4) {
         hookData;
         PoolId poolId = key.toId();
+        // Align with engine Position.getKey(owner=sender, ticks, salt)
         bytes32 positionKey = keccak256(abi.encodePacked(sender, params.tickLower, params.tickUpper, params.salt));
 
         PositionResidency storage residency = residencies[poolId][positionKey];
 
         if (params.liquidityDelta > 0) {
-            // Addition of liquidity: record/refresh residency entry
-            residency.lastDepositBlock = uint32(block.number);
+            uint128 addLiq = uint128(uint256(int256(params.liquidityDelta)));
+            uint128 oldLiq = residency.liquidity;
+            uint32 currentBlock = uint32(block.number);
+
+            if (oldLiq == 0) {
+                residency.lastDepositBlock = currentBlock;
+            } else {
+                // Liquidity-weighted average deposit block (honest top-ups do not fully reset).
+                uint256 weighted =
+                    (uint256(oldLiq) * uint256(residency.lastDepositBlock) + uint256(addLiq) * uint256(currentBlock))
+                        / (uint256(oldLiq) + uint256(addLiq));
+                residency.lastDepositBlock = uint32(weighted);
+            }
             residency.lastDepositTimestamp = uint32(block.timestamp);
-            residency.liquidity += uint128(uint256(int256(params.liquidityDelta)));
+            residency.liquidity = oldLiq + addLiq;
+            _pendingUnvestedBps = 0;
 
             emit LiquidityResidencyRecorded(
-                poolId, sender, positionKey, uint32(block.number), uint32(block.timestamp), residency.liquidity
+                poolId, sender, positionKey, residency.lastDepositBlock, uint32(block.timestamp), residency.liquidity
             );
-        } else if (params.liquidityDelta < 0) {
-            // Removal of liquidity: evaluate block residency
-            uint32 currentBlock = uint32(block.number);
-            uint32 depositBlock = residency.lastDepositBlock;
-            uint32 elapsed = currentBlock >= depositBlock ? currentBlock - depositBlock : 0;
+        } else {
+            // Remove or fee-collect poke: evaluate vesting against current residency.
+            _pendingUnvestedBps = _computeUnvestedBps(residency);
 
-            uint128 deltaAbs = uint128(uint256(int256(-params.liquidityDelta)));
-
-            if (elapsed < minResidencyBlocks && residency.liquidity > 0) {
-                // JIT residency violation detected: calculate haircut penalty
-                uint256 penalty = (uint256(deltaAbs) * PENALTY_BPS) / BPS_DENOMINATOR;
-
-                emit JITPenaltyLevied(poolId, sender, positionKey, penalty, elapsed, minResidencyBlocks);
-            }
-
-            if (deltaAbs >= residency.liquidity) {
-                residency.liquidity = 0;
-            } else {
-                residency.liquidity -= deltaAbs;
+            if (params.liquidityDelta < 0) {
+                uint128 deltaAbs = uint128(uint256(int256(-params.liquidityDelta)));
+                if (deltaAbs >= residency.liquidity) {
+                    residency.liquidity = 0;
+                } else {
+                    residency.liquidity -= deltaAbs;
+                }
             }
         }
 
@@ -109,13 +116,65 @@ contract AntiJITVestingPlugin is BaseHook, IPluginEvents {
         PoolKey calldata key,
         IPoolManager.ModifyLiquidityParams calldata params,
         BalanceDelta delta,
+        BalanceDelta feesAccrued,
         bytes calldata hookData
-    ) external view override onlyPoolManager returns (bytes4, BalanceDelta hookDelta) {
-        sender;
-        key;
-        params;
-        delta;
+    ) external override onlyPoolManager returns (bytes4, BalanceDelta hookDelta, BalanceDelta feesHookDelta) {
         hookData;
-        return (this.afterModifyLiquidity.selector, BalanceDelta.wrap(0));
+        delta; // Principal is never haircut — fees only.
+        params;
+
+        uint24 unvestedBps = _pendingUnvestedBps;
+        _pendingUnvestedBps = 0;
+        if (unvestedBps == 0) {
+            return (this.afterModifyLiquidity.selector, BalanceDelta.wrap(0), BalanceDelta.wrap(0));
+        }
+
+        int128 f0 = feesAccrued.amount0();
+        int128 f1 = feesAccrued.amount1();
+        int128 h0;
+        int128 h1;
+        uint256 penaltyAmount;
+
+        if (f0 > 0) {
+            uint256 haircut0 = (uint256(uint128(f0)) * unvestedBps) / BPS_DENOMINATOR;
+            h0 = int128(uint128(haircut0));
+            penaltyAmount += haircut0;
+        }
+        if (f1 > 0) {
+            uint256 haircut1 = (uint256(uint128(f1)) * unvestedBps) / BPS_DENOMINATOR;
+            h1 = int128(uint128(haircut1));
+            penaltyAmount += haircut1;
+        }
+
+        if (penaltyAmount > 0) {
+            PoolId poolId = key.toId();
+            bytes32 positionKey = keccak256(abi.encodePacked(sender, params.tickLower, params.tickUpper, params.salt));
+            PositionResidency storage residency = residencies[poolId][positionKey];
+            uint32 elapsed = _elapsedBlocks(residency.lastDepositBlock);
+            emit JITPenaltyLevied(poolId, sender, positionKey, penaltyAmount, elapsed, minResidencyBlocks);
+        }
+
+        feesHookDelta = toBalanceDelta(h0, h1);
+        return (this.afterModifyLiquidity.selector, BalanceDelta.wrap(0), feesHookDelta);
+    }
+
+    /**
+     * @dev Linear unvested share: unvestedBps = BPS * (1 - min(elapsed/K, 1)).
+     */
+    function _computeUnvestedBps(PositionResidency storage residency) internal view returns (uint24) {
+        // Untouched / never deposited via this plugin → fully vested.
+        if (residency.lastDepositBlock == 0 && residency.liquidity == 0) return 0;
+
+        uint32 required = minResidencyBlocks;
+        uint32 elapsed = _elapsedBlocks(residency.lastDepositBlock);
+        if (elapsed >= required) return 0;
+
+        uint256 vestedBps = (uint256(elapsed) * BPS_DENOMINATOR) / uint256(required);
+        return uint24(BPS_DENOMINATOR - vestedBps);
+    }
+
+    function _elapsedBlocks(uint32 depositBlock) internal view returns (uint32) {
+        uint32 currentBlock = uint32(block.number);
+        return currentBlock >= depositBlock ? currentBlock - depositBlock : 0;
     }
 }

@@ -16,7 +16,15 @@ contract DeploySupaDexTest is Test {
 
     function test_deterministicDeploymentAndVerification() public {
         address testDeployer = address(0x9999);
-        DeploySupaDex.DeploymentResult memory res = deployer.deploy(testDeployer);
+        DeploySupaDex.RoleConfig memory rolesCfg = DeploySupaDex.RoleConfig({
+            governance: address(0xA011),
+            guardian: address(0xA012),
+            operator: address(0xA013),
+            dao: address(0xA014),
+            staking: address(0xA015),
+            insurance: address(0xA016)
+        });
+        DeploySupaDex.DeploymentResult memory res = deployer.deploy(testDeployer, rolesCfg);
 
         // Run full verification assertion suite
         verifier.verify(res);

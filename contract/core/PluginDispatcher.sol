@@ -101,6 +101,8 @@ library PluginDispatcher {
 
     /**
      * @notice Dispatches afterModifyLiquidity hook.
+     * @return hookDelta Principal haircut delta.
+     * @return feesHookDelta Unvested fee share to confiscate from feesAccrued.
      */
     function dispatchAfterModifyLiquidity(
         address plugin,
@@ -108,17 +110,19 @@ library PluginDispatcher {
         PoolKey memory key,
         IPoolManager.ModifyLiquidityParams memory params,
         BalanceDelta delta,
+        BalanceDelta feesAccrued,
         bytes memory hookData
-    ) internal returns (BalanceDelta hookDelta) {
-        if (plugin == address(0)) return hookDelta;
-        if (!hasPermission(plugin, AFTER_MODIFY_LIQUIDITY_FLAG)) return hookDelta;
+    ) internal returns (BalanceDelta hookDelta, BalanceDelta feesHookDelta) {
+        if (plugin == address(0)) return (hookDelta, feesHookDelta);
+        if (!hasPermission(plugin, AFTER_MODIFY_LIQUIDITY_FLAG)) return (hookDelta, feesHookDelta);
 
         bytes4 selector = IPlugin.afterModifyLiquidity.selector;
-        try IPlugin(plugin).afterModifyLiquidity{gas: HOOK_GAS_LIMIT}(sender, key, params, delta, hookData) returns (
-            bytes4 res, BalanceDelta returnedDelta
-        ) {
+        try IPlugin(plugin).afterModifyLiquidity{gas: HOOK_GAS_LIMIT}(
+            sender, key, params, delta, feesAccrued, hookData
+        ) returns (bytes4 res, BalanceDelta returnedDelta, BalanceDelta returnedFeesDelta) {
             if (res != selector) revert PluginErrors.PluginCallFailed(plugin, selector, "");
             hookDelta = returnedDelta;
+            feesHookDelta = returnedFeesDelta;
         } catch (bytes memory reason) {
             revert PluginErrors.PluginCallFailed(plugin, selector, reason);
         }

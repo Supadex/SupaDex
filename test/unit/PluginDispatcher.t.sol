@@ -68,11 +68,14 @@ contract MockPlugin is IPlugin {
         PoolKey calldata,
         IPoolManager.ModifyLiquidityParams calldata,
         BalanceDelta,
+        BalanceDelta,
         bytes calldata
-    ) external view override returns (bytes4, BalanceDelta) {
+    ) external view override returns (bytes4, BalanceDelta, BalanceDelta) {
         if (shouldRevert) revert("PluginRevert");
-        if (invalidReturnSelector != bytes4(0)) return (invalidReturnSelector, toBalanceDelta(0, 0));
-        return (IPlugin.afterModifyLiquidity.selector, toBalanceDelta(10, 20));
+        if (invalidReturnSelector != bytes4(0)) {
+            return (invalidReturnSelector, toBalanceDelta(0, 0), toBalanceDelta(0, 0));
+        }
+        return (IPlugin.afterModifyLiquidity.selector, toBalanceDelta(10, 20), toBalanceDelta(0, 0));
     }
 
     function beforeSwap(address, PoolKey calldata, IPoolManager.SwapParams calldata, bytes calldata)

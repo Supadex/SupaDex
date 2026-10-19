@@ -5,16 +5,26 @@ import {Test} from "forge-std/Test.sol";
 import {StableAMMEngine} from "../../contract/core/engines/StableAMMEngine.sol";
 import {IPoolManager} from "../../contract/interfaces/IPoolManager.sol";
 import {PoolKey, CurveType} from "../../contract/types/PoolKey.sol";
-import {PoolId} from "../../contract/types/PoolId.sol";
 import {Currency} from "../../contract/types/Currency.sol";
 import {BalanceDelta} from "../../contract/types/BalanceDelta.sol";
+import {PoolErrors} from "../../contract/errors/PoolErrors.sol";
+import {TickMathLib} from "../../contract/libraries/TickMathLib.sol";
+
+/// @dev Exposes StableAMM `_sqrtPriceX96` for M4 regression coverage.
+contract StableSqrtHarness is StableAMMEngine {
+    constructor(address pm) StableAMMEngine(pm) {}
+
+    function sqrtPriceX96(uint256 ratioX192) external pure returns (uint160) {
+        return _sqrtPriceX96(ratioX192);
+    }
+}
 
 contract StableAMMEngineTest is Test {
     StableAMMEngine public engine;
     PoolKey public key;
 
     function setUp() public {
-        engine = new StableAMMEngine();
+        engine = new StableAMMEngine(address(this));
         key = PoolKey({
             currency0: Currency.wrap(address(0x1)),
             currency1: Currency.wrap(address(0x2)),
@@ -33,7 +43,7 @@ contract StableAMMEngineTest is Test {
             tickLower: 0, tickUpper: 0, liquidityDelta: 1_000_000 ether, salt: bytes32(0)
         });
 
-        (BalanceDelta delta,) = engine.modifyLiquidity(key, params);
+        (BalanceDelta delta,) = engine.modifyLiquidity(key, params, address(this));
         assertEq(delta.amount0(), int128(int256(1_000_000 ether)));
         assertEq(delta.amount1(), int128(int256(1_000_000 ether)));
 
@@ -45,5 +55,22 @@ contract StableAMMEngineTest is Test {
         assertEq(swapDelta.amount0(), 10_000 ether);
         // Pegged curve with fee should yield close to 10_000 * (1 - 0.0004) = ~9,996
         assertTrue(-swapDelta.amount1() > 9_900 ether);
+    }
+
+    /// M4: out-of-bounds post-swap sqrt prices revert (no silent uint160 truncation / weak limits)
+    function test_M4_sqrtPriceX96RejectsOutOfBounds() public {
+        StableSqrtHarness h = new StableSqrtHarness(address(this));
+        // ratioX192 = 0 → invalid
+        vm.expectRevert(abi.encodeWithSelector(PoolErrors.PriceLimitOutOfBounds.selector, uint160(0)));
+        h.sqrtPriceX96(0);
+
+        // Extremely small ratio → sqrt below MIN_SQRT_RATIO
+        vm.expectRevert();
+        h.sqrtPriceX96(1);
+
+        // Pegged 1:1 → sqrtPriceX96 == 2^96 (in bounds)
+        uint160 mid = h.sqrtPriceX96(uint256(1) << 192);
+        assertEq(mid, uint160(1 << 96));
+        assertTrue(mid > TickMathLib.MIN_SQRT_RATIO && mid < TickMathLib.MAX_SQRT_RATIO);
     }
 }

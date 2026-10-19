@@ -141,7 +141,8 @@ contract SupaVault is IVault, UUPSUpgradeable {
         result = IUnlockCallback(msg.sender).unlockCallback(data);
 
         if (TransientStorageLib.getNonzeroDeltaCount() != 0) {
-            revert VaultErrors.CurrencyNotSettled(Currency.wrap(address(0)), 0);
+            (Currency unsettled, int256 unsettledDelta) = TransientStorageLib.getLastUnsettled();
+            revert VaultErrors.CurrencyNotSettled(unsettled, unsettledDelta);
         }
 
         TransientStorageLib.releaseLock();
@@ -170,7 +171,7 @@ contract SupaVault is IVault, UUPSUpgradeable {
         uint256 balance = currency.balanceOfSelf();
         uint256 reserves = reservesOf[currency];
         if (balance < reserves) {
-            revert VaultErrors.InsufficientBalance(currency, reserves, balance);
+            revert VaultErrors.NegativeRebaseUnsupported(currency, reserves, balance);
         }
         paid = balance - reserves;
         if (paid == 0) revert VaultErrors.ZeroAmount();

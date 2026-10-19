@@ -11,6 +11,7 @@ import {PluginWhitelistErrors} from "../errors/PluginWhitelistErrors.sol";
 contract PluginWhitelist is IPluginWhitelist {
     address public override owner;
     mapping(address => bool) private _whitelisted;
+    mapping(address => bool) private _canReturnDelta;
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert PluginWhitelistErrors.Unauthorized();
@@ -37,10 +38,24 @@ contract PluginWhitelist is IPluginWhitelist {
         return _whitelisted[plugin];
     }
 
+    function canPluginReturnDelta(address plugin) external view override returns (bool) {
+        if (plugin == address(0)) return false;
+        return _canReturnDelta[plugin];
+    }
+
     function setPluginWhitelisted(address plugin, bool whitelisted) external override onlyOwner {
         if (plugin == address(0)) revert PluginWhitelistErrors.ZeroAddress();
         _whitelisted[plugin] = whitelisted;
+        if (!whitelisted) {
+            _canReturnDelta[plugin] = false;
+        }
         emit PluginWhitelisted(plugin, whitelisted);
+    }
+
+    function setPluginCanReturnDelta(address plugin, bool allowed) external override onlyOwner {
+        if (plugin == address(0)) revert PluginWhitelistErrors.ZeroAddress();
+        if (allowed && !_whitelisted[plugin]) revert PluginWhitelistErrors.PluginNotWhitelisted(plugin);
+        _canReturnDelta[plugin] = allowed;
     }
 
     function transferOwnership(address newOwner) external override onlyOwner {

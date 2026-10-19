@@ -25,6 +25,19 @@ contract CLAMMEngine is ICurveEngine {
     using TickBitmapLib for mapping(int16 => uint256);
 
     uint256 internal constant Q128 = 1 << 128;
+    uint24 internal constant MAX_FEE_PIPS = 1_000_000;
+
+    address public immutable override poolManager;
+
+    modifier onlyPoolManager() {
+        if (msg.sender != poolManager) revert PoolErrors.NotPoolManager();
+        _;
+    }
+
+    constructor(address _poolManager) {
+        if (_poolManager == address(0)) revert PoolErrors.NotPoolManager();
+        poolManager = _poolManager;
+    }
 
     struct TickInfo {
         uint128 liquidityGross;
@@ -46,18 +59,20 @@ contract CLAMMEngine is ICurveEngine {
 
     mapping(PoolId => PoolState) internal pools;
 
-    function initialize(PoolKey memory key, uint160 sqrtPriceX96) external override returns (int24 tick) {
+    function initialize(PoolKey memory key, uint160 sqrtPriceX96)
+        external
+        override
+        onlyPoolManager
+        returns (int24 tick)
+    {
         PoolId id = key.toId();
         if (pools[id].slot0.isInitialized()) {
             revert PoolErrors.PoolAlreadyInitialized(id);
         }
+        if (key.fee >= MAX_FEE_PIPS) revert PoolErrors.InvalidFee(key.fee);
 
         tick = TickMathLib.getTickAtSqrtRatio(sqrtPriceX96);
         pools[id].slot0 = Slot0Library.pack(sqrtPriceX96, tick, 0, key.fee, true);
-    }
-
-    function _positionKey(int24 tickLower, int24 tickUpper, bytes32 salt) internal pure returns (bytes32) {
-        return keccak256(abi.encodePacked(tickLower, tickUpper, salt));
     }
 
     function _getFeeGrowthInside(
@@ -73,26 +88,25 @@ contract CLAMMEngine is ICurveEngine {
 
         uint256 feeGrowthBelow0;
         uint256 feeGrowthBelow1;
-        if (tickCurrent >= tickLower) {
-            feeGrowthBelow0 = lower.feeGrowthOutside0X128;
-            feeGrowthBelow1 = lower.feeGrowthOutside1X128;
-        } else {
-            feeGrowthBelow0 = feeGrowthGlobal0X128 - lower.feeGrowthOutside0X128;
-            feeGrowthBelow1 = feeGrowthGlobal1X128 - lower.feeGrowthOutside1X128;
-        }
+        unchecked {
+            if (tickCurrent >= tickLower) {
+                feeGrowthBelow0 = lower.feeGrowthOutside0X128;
+                feeGrowthBelow1 = lower.feeGrowthOutside1X128;
+            } else {
+                feeGrowthBelow0 = feeGrowthGlobal0X128 - lower.feeGrowthOutside0X128;
+                feeGrowthBelow1 = feeGrowthGlobal1X128 - lower.feeGrowthOutside1X128;
+            }
 
-        uint256 feeGrowthAbove0;
-        uint256 feeGrowthAbove1;
-        if (tickCurrent < tickUpper) {
-            feeGrowthAbove0 = upper.feeGrowthOutside0X128;
-            feeGrowthAbove1 = upper.feeGrowthOutside1X128;
-        } else {
-            feeGrowthAbove0 = feeGrowthGlobal0X128 - upper.feeGrowthOutside0X128;
-            feeGrowthAbove1 = feeGrowthGlobal1X128 - upper.feeGrowthOutside1X128;
+            if (tickCurrent < tickUpper) {
+                feeGrowthInside0X128 = feeGrowthGlobal0X128 - feeGrowthBelow0 - upper.feeGrowthOutside0X128;
+                feeGrowthInside1X128 = feeGrowthGlobal1X128 - feeGrowthBelow1 - upper.feeGrowthOutside1X128;
+            } else {
+                feeGrowthInside0X128 = feeGrowthGlobal0X128 - feeGrowthBelow0
+                    - (feeGrowthGlobal0X128 - upper.feeGrowthOutside0X128);
+                feeGrowthInside1X128 = feeGrowthGlobal1X128 - feeGrowthBelow1
+                    - (feeGrowthGlobal1X128 - upper.feeGrowthOutside1X128);
+            }
         }
-
-        feeGrowthInside0X128 = feeGrowthGlobal0X128 - feeGrowthBelow0 - feeGrowthAbove0;
-        feeGrowthInside1X128 = feeGrowthGlobal1X128 - feeGrowthBelow1 - feeGrowthAbove1;
     }
 
     function _updateTick(
@@ -154,9 +168,10 @@ contract CLAMMEngine is ICurveEngine {
         }
     }
 
-    function modifyLiquidity(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params)
+    function modifyLiquidity(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params, address owner)
         external
         override
+        onlyPoolManager
         returns (BalanceDelta callerDelta, BalanceDelta feesAccrued)
     {
         PoolId id = key.toId();
@@ -175,24 +190,9 @@ contract CLAMMEngine is ICurveEngine {
         uint256 feeGrowthGlobal0X128 = pool.feeGrowthGlobal0X128;
         uint256 feeGrowthGlobal1X128 = pool.feeGrowthGlobal1X128;
 
-        bytes32 posKey = _positionKey(params.tickLower, params.tickUpper, params.salt);
+        bytes32 posKey = Position.getKey(owner, params.tickLower, params.tickUpper, params.salt);
         Position.Info storage position = pool.positions[posKey];
-
-        (uint256 feeGrowthInside0X128, uint256 feeGrowthInside1X128) = _getFeeGrowthInside(
-            pool, params.tickLower, params.tickUpper, currentTick, feeGrowthGlobal0X128, feeGrowthGlobal1X128
-        );
-
-        uint128 positionLiquidity = position.liquidity;
-        uint256 fees0;
-        uint256 fees1;
-        if (positionLiquidity > 0) {
-            fees0 = FullMathLib.mulDiv(
-                positionLiquidity, feeGrowthInside0X128 - position.feeGrowthInside0LastX128, Q128
-            );
-            fees1 = FullMathLib.mulDiv(
-                positionLiquidity, feeGrowthInside1X128 - position.feeGrowthInside1LastX128, Q128
-            );
-        }
+        uint128 positionLiquidityBefore = position.liquidity;
 
         uint256 amount0;
         uint256 amount1;
@@ -200,6 +200,7 @@ contract CLAMMEngine is ICurveEngine {
         if (params.liquidityDelta != 0) {
             int128 delta128 = SafeCastLib.toInt128(params.liquidityDelta);
 
+            // Seed/update ticks before reading fee growth inside (Uniswap v3 order)
             _updateTick(
                 pool,
                 params.tickLower,
@@ -231,10 +232,27 @@ contract CLAMMEngine is ICurveEngine {
             }
 
             if (delta128 < 0) {
-                if (positionLiquidity < uint128(-delta128)) revert PoolErrors.LiquidityOverflow();
-                position.liquidity = positionLiquidity - uint128(-delta128);
+                if (positionLiquidityBefore < uint128(-delta128)) revert PoolErrors.LiquidityOverflow();
+                position.liquidity = positionLiquidityBefore - uint128(-delta128);
             } else {
-                position.liquidity = positionLiquidity + uint128(delta128);
+                position.liquidity = positionLiquidityBefore + uint128(delta128);
+            }
+        }
+
+        (uint256 feeGrowthInside0X128, uint256 feeGrowthInside1X128) = _getFeeGrowthInside(
+            pool, params.tickLower, params.tickUpper, currentTick, feeGrowthGlobal0X128, feeGrowthGlobal1X128
+        );
+
+        uint256 fees0;
+        uint256 fees1;
+        if (positionLiquidityBefore > 0) {
+            unchecked {
+                fees0 = FullMathLib.mulDiv(
+                    positionLiquidityBefore, feeGrowthInside0X128 - position.feeGrowthInside0LastX128, Q128
+                );
+                fees1 = FullMathLib.mulDiv(
+                    positionLiquidityBefore, feeGrowthInside1X128 - position.feeGrowthInside1LastX128, Q128
+                );
             }
         }
 
@@ -274,6 +292,7 @@ contract CLAMMEngine is ICurveEngine {
     function swap(PoolKey memory key, IPoolManager.SwapParams memory params, uint24 fee, uint24 protocolFee)
         external
         override
+        onlyPoolManager
         returns (BalanceDelta swapDelta, uint256 protocolFeeAmount)
     {
         PoolId id = key.toId();
@@ -281,6 +300,7 @@ contract CLAMMEngine is ICurveEngine {
         Slot0 slot0 = pool.slot0;
         if (!slot0.isInitialized()) revert PoolErrors.PoolNotInitialized(id);
         if (params.amountSpecified == 0) revert PoolErrors.ZeroSwapAmount();
+        if (fee >= MAX_FEE_PIPS) revert PoolErrors.InvalidFee(fee);
 
         SwapExecutionState memory state;
         state.sqrtPriceX96 = slot0.sqrtPriceX96();
@@ -292,7 +312,23 @@ contract CLAMMEngine is ICurveEngine {
         state.feeGrowthGlobal0X128 = pool.feeGrowthGlobal0X128;
         state.feeGrowthGlobal1X128 = pool.feeGrowthGlobal1X128;
 
-        while (state.amountSpecifiedRemaining > 0 && state.liquidity > 0) {
+        // 0 means no limit (periphery default); otherwise enforce against current price.
+        uint160 sqrtPriceLimitX96 = params.sqrtPriceLimitX96;
+        if (sqrtPriceLimitX96 == 0) {
+            sqrtPriceLimitX96 =
+                params.zeroForOne ? TickMathLib.MIN_SQRT_RATIO + 1 : TickMathLib.MAX_SQRT_RATIO - 1;
+        } else if (params.zeroForOne) {
+            if (sqrtPriceLimitX96 >= state.sqrtPriceX96 || sqrtPriceLimitX96 <= TickMathLib.MIN_SQRT_RATIO) {
+                revert PoolErrors.PriceLimitAlreadyExceeded(state.sqrtPriceX96, sqrtPriceLimitX96);
+            }
+        } else if (sqrtPriceLimitX96 <= state.sqrtPriceX96 || sqrtPriceLimitX96 >= TickMathLib.MAX_SQRT_RATIO) {
+            revert PoolErrors.PriceLimitAlreadyExceeded(state.sqrtPriceX96, sqrtPriceLimitX96);
+        }
+
+        while (
+            state.amountSpecifiedRemaining > 0 && state.liquidity > 0
+                && state.sqrtPriceX96 != sqrtPriceLimitX96
+        ) {
             (int24 nextTick, bool initialized) = pool.tickBitmap.nextInitializedTickWithinOneWord(
                 state.currentTick, key.tickSpacing, params.zeroForOne
             );
@@ -301,11 +337,17 @@ contract CLAMMEngine is ICurveEngine {
             if (nextTick > TickMathLib.MAX_TICK) nextTick = TickMathLib.MAX_TICK;
 
             uint160 sqrtPriceNextX96 = TickMathLib.getSqrtRatioAtTick(nextTick);
+            uint160 sqrtPriceTargetX96 = sqrtPriceNextX96;
+            if (params.zeroForOne) {
+                if (sqrtPriceNextX96 < sqrtPriceLimitX96) sqrtPriceTargetX96 = sqrtPriceLimitX96;
+            } else if (sqrtPriceNextX96 > sqrtPriceLimitX96) {
+                sqrtPriceTargetX96 = sqrtPriceLimitX96;
+            }
 
             (uint160 sqrtPriceAfterStepX96, uint256 amountInStep, uint256 amountOutStep, uint256 feeAmountStep) =
                 computeSwapStep(
                     state.sqrtPriceX96,
-                    sqrtPriceNextX96,
+                    sqrtPriceTargetX96,
                     state.liquidity,
                     state.amountSpecifiedRemaining,
                     fee,
@@ -341,11 +383,13 @@ contract CLAMMEngine is ICurveEngine {
             if (state.sqrtPriceX96 == sqrtPriceNextX96) {
                 if (initialized) {
                     TickInfo storage tickInfo = pool.ticks[nextTick];
-                    // Flip fee growth outside on cross
-                    tickInfo.feeGrowthOutside0X128 =
-                        state.feeGrowthGlobal0X128 - tickInfo.feeGrowthOutside0X128;
-                    tickInfo.feeGrowthOutside1X128 =
-                        state.feeGrowthGlobal1X128 - tickInfo.feeGrowthOutside1X128;
+                    // Flip fee growth outside on cross (unchecked wraparound)
+                    unchecked {
+                        tickInfo.feeGrowthOutside0X128 =
+                            state.feeGrowthGlobal0X128 - tickInfo.feeGrowthOutside0X128;
+                        tickInfo.feeGrowthOutside1X128 =
+                            state.feeGrowthGlobal1X128 - tickInfo.feeGrowthOutside1X128;
+                    }
 
                     int128 net = tickInfo.liquidityNet;
                     if (params.zeroForOne) net = -net;
@@ -390,6 +434,7 @@ contract CLAMMEngine is ICurveEngine {
         bool zeroForOne,
         bool exactInput
     ) internal pure returns (uint160 sqrtPriceNextX96, uint256 amountIn, uint256 amountOut, uint256 feeAmount) {
+        if (feePips >= MAX_FEE_PIPS) revert PoolErrors.InvalidFee(feePips);
         if (exactInput) {
             uint256 amountRemainingLessFee = FullMathLib.mulDiv(amountRemaining, 1e6 - feePips, 1e6);
             amountIn = zeroForOne
@@ -431,6 +476,22 @@ contract CLAMMEngine is ICurveEngine {
                 ? SqrtPriceMathLib.getAmount0Delta(sqrtPriceNextX96, sqrtPriceCurrentX96, liquidity, true)
                 : SqrtPriceMathLib.getAmount1Delta(sqrtPriceCurrentX96, sqrtPriceNextX96, liquidity, true);
             feeAmount = FullMathLib.mulDivRoundingUp(amountIn, feePips, 1e6 - feePips);
+        }
+    }
+
+    /// @inheritdoc ICurveEngine
+    function donate(PoolKey memory key, uint256 amount0, uint256 amount1) external override onlyPoolManager {
+        PoolId id = key.toId();
+        PoolState storage pool = pools[id];
+        if (!pool.slot0.isInitialized()) revert PoolErrors.PoolNotInitialized(id);
+        if (amount0 == 0 && amount1 == 0) return;
+        uint128 liquidity = pool.liquidity;
+        if (liquidity == 0) revert PoolErrors.NoLiquidityToDonate();
+        if (amount0 > 0) {
+            pool.feeGrowthGlobal0X128 += FullMathLib.mulDiv(amount0, Q128, liquidity);
+        }
+        if (amount1 > 0) {
+            pool.feeGrowthGlobal1X128 += FullMathLib.mulDiv(amount1, Q128, liquidity);
         }
     }
 

@@ -117,8 +117,10 @@
 
 ### 4.3 Anti-JIT Liquidity Vesting Shield
 - JIT attackers provide liquidity for single-block trades and extract fees with zero inventory risk.
-- SupaDex tracks liquidity addition block heights:
-  - Liquidity removed within the minimum residency epoch ($\Delta_{\text{blocks}} < K$) is subjected to a fee haircut that redistributes accrued fees to long-term passive LPs.
+- SupaDex tracks a liquidity-weighted average deposit block per position and linearly vests accrued swap fees:
+  - $\text{vestedBps} = \min(\lfloor \Delta_{\text{blocks}} \cdot 10\,000 / K \rfloor,\, 10\,000)$ where $K = \texttt{minResidencyBlocks}$.
+  - Unvested fee share is confiscated via `feesHookDelta` (principal is never haircut) and credited to remaining in-range LPs through engine fee-growth `donate` (or `protocolFeesAccrued` if active liquidity is zero after exit).
+  - Fee-collect pokes (`liquidityDelta = 0`) are subject to the same vesting schedule.
 
 ### 4.4 Multi-Curve Kernel Matrix
 1. **CLAMM (Concentrated Liquidity AMM)**:

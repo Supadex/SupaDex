@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, Vm} from "forge-std/Test.sol";
 import {SupaVault} from "../../contract/core/SupaVault.sol";
 import {SupaPoolManager} from "../../contract/core/SupaPoolManager.sol";
 import {CLAMMEngine} from "../../contract/core/engines/CLAMMEngine.sol";
@@ -17,6 +17,13 @@ import {PoolKey, CurveType} from "../../contract/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "../../contract/types/PoolId.sol";
 import {Currency} from "../../contract/types/Currency.sol";
 import {BalanceDelta} from "../../contract/types/BalanceDelta.sol";
+import {Slot0Library} from "../../contract/types/Slot0.sol";
+import {SecurityTestSetup} from "../helpers/SecurityTestSetup.sol";
+import {PluginWhitelist} from "../../contract/governance/PluginWhitelist.sol";
+import {IPluginWhitelist} from "../../contract/interfaces/IPluginWhitelist.sol";
+import {ISupaRoles} from "../../contract/interfaces/ISupaRoles.sol";
+import {SupaRoles} from "../../contract/governance/SupaRoles.sol";
+import {TickMathLib} from "../../contract/libraries/TickMathLib.sol";
 
 contract MockPluginToken {
     string public name;
@@ -83,17 +90,16 @@ contract PluginIntegrationHarness is IUnlockCallback {
                 tickLower: -120, tickUpper: 120, liquidityDelta: -int256(val), salt: bytes32(0)
             });
 
-            (BalanceDelta delta,) = manager.modifyLiquidity(key, params, "");
-
-            if (delta.amount0() < 0) {
-                vault.take(key.currency0, address(this), uint128(-delta.amount0()));
-            }
-            if (delta.amount1() < 0) {
-                vault.take(key.currency1, address(this), uint128(-delta.amount1()));
-            }
+            // PoolManager accounts principal + feesAccrued into vault deltas; settle via live deltas.
+            manager.modifyLiquidity(key, params, "");
+            _settleCurrency(key.currency0);
+            _settleCurrency(key.currency1);
         } else if (action == Action.SWAP) {
-            IPoolManager.SwapParams memory swapParams =
-                IPoolManager.SwapParams({zeroForOne: true, amountSpecified: int256(val), sqrtPriceLimitX96: 0});
+            IPoolManager.SwapParams memory swapParams = IPoolManager.SwapParams({
+                zeroForOne: true,
+                amountSpecified: int256(val),
+                sqrtPriceLimitX96: TickMathLib.MIN_SQRT_RATIO + 1
+            });
 
             BalanceDelta delta = manager.swap(key, swapParams, "");
 
@@ -107,6 +113,16 @@ contract PluginIntegrationHarness is IUnlockCallback {
         }
 
         return abi.encode(true);
+    }
+
+    function _settleCurrency(Currency currency) internal {
+        int256 d = vault.getCurrencyDelta(address(this), currency);
+        if (d > 0) {
+            vault.take(currency, address(this), uint256(d));
+        } else if (d < 0) {
+            MockPluginToken(Currency.unwrap(currency)).transfer(address(vault), uint256(-d));
+            vault.settle(currency);
+        }
     }
 }
 
@@ -134,16 +150,21 @@ contract NativePluginsIntegrationTest is Test, IPluginEvents {
 
     function setUp() public {
         vault = new SupaVault(address(this));
-        clamm = new CLAMMEngine();
-        binAmm = new BinAMMEngine();
-        stableAmm = new StableAMMEngine();
-
-        manager = new SupaPoolManager(vault, clamm, binAmm, stableAmm);
+        (manager,,,) = SecurityTestSetup.deployManagerWithEngines(vault);
+        clamm = CLAMMEngine(address(manager.clammEngine()));
+        binAmm = BinAMMEngine(address(manager.binEngine()));
+        stableAmm = StableAMMEngine(address(manager.stableEngine()));
         vault.setPoolManager(address(manager), true);
-
-        oracle = new VolatilityTWAPOracle();
-        lvrPlugin = new LVRShieldPlugin(manager, oracle);
+        lvrPlugin = new LVRShieldPlugin(manager);
+        oracle = VolatilityTWAPOracle(address(lvrPlugin.oracle()));
         jitPlugin = new AntiJITVestingPlugin(manager, 3); // 3 blocks residency
+
+        address[] memory plugins = new address[](2);
+        plugins[0] = address(lvrPlugin);
+        plugins[1] = address(jitPlugin);
+        PluginWhitelist wl = new PluginWhitelist(address(this), plugins);
+        wl.setPluginCanReturnDelta(address(jitPlugin), true);
+        manager.setPluginWhitelist(IPluginWhitelist(address(wl)));
 
         harness = new PluginIntegrationHarness(vault, manager);
 
@@ -181,50 +202,128 @@ contract NativePluginsIntegrationTest is Test, IPluginEvents {
     }
 
     function test_endToEndLVRShieldDynamicSwap() public {
-        manager.initialize(lvrPoolKey, 1 << 96, "");
+        // Wire roles so operator can calibrate alpha for a deterministic fee spike.
+        SupaRoles roles = new SupaRoles(address(this), address(this));
+        lvrPlugin.setRoles(ISupaRoles(address(roles)));
 
-        // 1. Add Liquidity
+        manager.initialize(lvrPoolKey, 1 << 96, "");
+        PoolId poolId = lvrPoolKey.toId();
+
+        (,, uint16 cardinalityNext) = oracle.states(poolId);
+        assertEq(cardinalityNext, 64, "oracle ring grown at init");
+
         harness.execute(abi.encode(PluginIntegrationHarness.Action.ADD_LIQUIDITY, lvrPoolKey, uint256(10_000_000)));
 
-        // 2. Perform Swap 1 (elevates volatility state)
-        harness.execute(abi.encode(PluginIntegrationHarness.Action.SWAP, lvrPoolKey, uint256(1000)));
+        // Swap moves pool tick; afterSwap must persist the post-swap tick.
+        harness.execute(abi.encode(PluginIntegrationHarness.Action.SWAP, lvrPoolKey, uint256(100_000)));
+        int24 tickAfterSwap1 = Slot0Library.tick(manager.getSlot0(poolId));
+        assertEq(oracle.latestTicks(poolId), tickAfterSwap1, "oracle tick must match post-swap slot0");
 
-        // 3. Perform Rapid Follow-up Swap 2 in same timestamp
-        harness.execute(abi.encode(PluginIntegrationHarness.Action.SWAP, lvrPoolKey, uint256(500)));
+        // Amplify sensitivity, then inject a sharp oracle tick jump over the TWAP window.
+        lvrPlugin.setVolatilityAlpha(lvrPoolKey, 10_000);
+        vm.warp(block.timestamp + 12);
+        int24 spikedTick = tickAfterSwap1 + 200;
+        vm.prank(address(lvrPlugin));
+        oracle.write(poolId, uint32(block.timestamp), spikedTick, 1_000_000);
 
-        // 4. Advance time by 60 seconds (fee decays back to base fee)
-        vm.warp(block.timestamp + 60);
+        vm.recordLogs();
+        harness.execute(abi.encode(PluginIntegrationHarness.Action.SWAP, lvrPoolKey, uint256(50_000)));
+        Vm.Log[] memory entries = vm.getRecordedLogs();
+        uint24 observedFee = _feeFromDynamicFeeUpdated(entries, poolId);
+        assertGt(observedFee, 3000, "adaptive fee should elevate under rapid tick volatility");
 
-        harness.execute(abi.encode(PluginIntegrationHarness.Action.SWAP, lvrPoolKey, uint256(200)));
+        // Calm the signal (alpha=0 ⇒ no vol surcharge) and wait ≥16 half-lives for full decay.
+        lvrPlugin.setVolatilityAlpha(lvrPoolKey, 0);
+        vm.warp(block.timestamp + 192);
+        vm.prank(address(lvrPlugin));
+        oracle.write(poolId, uint32(block.timestamp), spikedTick, 1_000_000);
+
+        vm.recordLogs();
+        harness.execute(abi.encode(PluginIntegrationHarness.Action.SWAP, lvrPoolKey, uint256(10_000)));
+        entries = vm.getRecordedLogs();
+        uint24 decayedFee = _feeFromDynamicFeeUpdated(entries, poolId);
+        assertLe(decayedFee, observedFee, "fee should not increase after idle half-lives");
+        assertEq(decayedFee, 3000, "fee decays back to base after long idle");
+    }
+
+    function _feeFromDynamicFeeUpdated(Vm.Log[] memory entries, PoolId poolId) internal pure returns (uint24 fee) {
+        // PoolId underlying type is bytes32 in the event ABI.
+        bytes32 topic0 = keccak256("DynamicFeeUpdated(bytes32,uint24,uint24,uint24,uint32)");
+        for (uint256 i; i < entries.length; ++i) {
+            if (
+                entries[i].topics.length > 1 && entries[i].topics[0] == topic0
+                    && entries[i].topics[1] == PoolId.unwrap(poolId)
+            ) {
+                (, uint24 newFee,,) = abi.decode(entries[i].data, (uint24, uint24, uint24, uint32));
+                return newFee;
+            }
+        }
+        revert("DynamicFeeUpdated not found");
     }
 
     function test_endToEndAntiJITLifecycle() public {
         manager.initialize(jitPoolKey, 1 << 96, "");
 
-        // 1. Add Liquidity
+        // Passive LP stays in-range so confiscated fees redistribute via fee growth.
+        PluginIntegrationHarness passive = new PluginIntegrationHarness(vault, manager);
+        MockPluginToken(Currency.unwrap(currency0)).mint(address(passive), 100_000_000 ether);
+        MockPluginToken(Currency.unwrap(currency1)).mint(address(passive), 100_000_000 ether);
+        passive.execute(abi.encode(PluginIntegrationHarness.Action.ADD_LIQUIDITY, jitPoolKey, uint256(20_000_000)));
+
+        // JIT attacker adds tight liquidity
         harness.execute(abi.encode(PluginIntegrationHarness.Action.ADD_LIQUIDITY, jitPoolKey, uint256(5_000_000)));
 
-        // Verify residency tracking
         bytes32 posKey = keccak256(abi.encodePacked(address(harness), int24(-120), int24(120), bytes32(0)));
         (uint32 lastBlock,, uint128 liq) = jitPlugin.residencies(jitPoolKey.toId(), posKey);
         assertEq(lastBlock, uint32(block.number));
         assertEq(liq, 5_000_000);
 
-        // 2. Immediate Removal (Same block JIT attempt) - should trigger penalty event
-        vm.expectEmit(true, true, true, false);
-        emit JITPenaltyLevied(
-            jitPoolKey.toId(),
-            address(harness),
-            posKey,
-            2_500_000, // 50% haircut
-            0,
-            3
-        );
+        // Accrue fees against both LPs
+        harness.execute(abi.encode(PluginIntegrationHarness.Action.SWAP, jitPoolKey, uint256(100_000)));
+
+        (uint256 g0Before,) = clamm.getFeeGrowthGlobal(jitPoolKey.toId());
+
+        // Same-block remove: principal returned, fees fully unvested → feeGrowth bump
+        uint256 bal0Before = MockPluginToken(Currency.unwrap(currency0)).balanceOf(address(harness));
+        uint256 bal1Before = MockPluginToken(Currency.unwrap(currency1)).balanceOf(address(harness));
 
         harness.execute(abi.encode(PluginIntegrationHarness.Action.REMOVE_LIQUIDITY, jitPoolKey, uint256(5_000_000)));
 
-        // Verify position liquidity reduced to 0
+        uint256 bal0After = MockPluginToken(Currency.unwrap(currency0)).balanceOf(address(harness));
+        uint256 bal1After = MockPluginToken(Currency.unwrap(currency1)).balanceOf(address(harness));
+        // Principal returned (balances increase); fees confiscated so growth rises for remaining LP.
+        assertTrue(bal0After > bal0Before || bal1After > bal1Before, "principal must be returned");
+
+        (uint256 g0After,) = clamm.getFeeGrowthGlobal(jitPoolKey.toId());
+        assertGt(g0After, g0Before, "unvested JIT fees must redistribute via fee growth");
+
         (,, uint128 remainingLiq) = jitPlugin.residencies(jitPoolKey.toId(), posKey);
         assertEq(remainingLiq, 0);
+    }
+
+    function test_endToEndAntiJITFullVestKeepsFees() public {
+        manager.initialize(jitPoolKey, 1 << 96, "");
+
+        // Keep a residual passive LP so remove doesn't leave unsettled fee-growth edge cases.
+        PluginIntegrationHarness passive = new PluginIntegrationHarness(vault, manager);
+        MockPluginToken(Currency.unwrap(currency0)).mint(address(passive), 100_000_000 ether);
+        MockPluginToken(Currency.unwrap(currency1)).mint(address(passive), 100_000_000 ether);
+        passive.execute(abi.encode(PluginIntegrationHarness.Action.ADD_LIQUIDITY, jitPoolKey, uint256(20_000_000)));
+
+        harness.execute(abi.encode(PluginIntegrationHarness.Action.ADD_LIQUIDITY, jitPoolKey, uint256(5_000_000)));
+        harness.execute(abi.encode(PluginIntegrationHarness.Action.SWAP, jitPoolKey, uint256(50_000)));
+
+        vm.roll(block.number + 3); // minResidencyBlocks = 3
+
+        (uint256 g0Before,) = clamm.getFeeGrowthGlobal(jitPoolKey.toId());
+        uint256 proto0Before = manager.protocolFeesAccrued(currency0);
+        uint256 proto1Before = manager.protocolFeesAccrued(currency1);
+
+        harness.execute(abi.encode(PluginIntegrationHarness.Action.REMOVE_LIQUIDITY, jitPoolKey, uint256(5_000_000)));
+
+        (uint256 g0After,) = clamm.getFeeGrowthGlobal(jitPoolKey.toId());
+        assertEq(g0After, g0Before, "fully vested exit must not redistribute fees");
+        assertEq(manager.protocolFeesAccrued(currency0), proto0Before);
+        assertEq(manager.protocolFeesAccrued(currency1), proto1Before);
     }
 }

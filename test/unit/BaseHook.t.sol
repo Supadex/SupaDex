@@ -51,7 +51,12 @@ contract BaseHookTest is Test {
         vm.prank(address(0xDEAD));
         vm.expectRevert(PluginErrors.NotPoolManager.selector);
         hook.afterModifyLiquidity(
-            address(this), key, IPoolManager.ModifyLiquidityParams(0, 0, 0, bytes32(0)), BalanceDelta.wrap(0), ""
+            address(this),
+            key,
+            IPoolManager.ModifyLiquidityParams(0, 0, 0, bytes32(0)),
+            BalanceDelta.wrap(0),
+            BalanceDelta.wrap(0),
+            ""
         );
 
         vm.prank(address(0xDEAD));
@@ -84,11 +89,17 @@ contract BaseHookTest is Test {
             hook.beforeModifyLiquidity(address(this), key, IPoolManager.ModifyLiquidityParams(0, 0, 0, bytes32(0)), "");
         assertEq(selBeforeMod, hook.beforeModifyLiquidity.selector);
 
-        (bytes4 selAfterMod, BalanceDelta hookDelta) = hook.afterModifyLiquidity(
-            address(this), key, IPoolManager.ModifyLiquidityParams(0, 0, 0, bytes32(0)), BalanceDelta.wrap(0), ""
+        (bytes4 selAfterMod, BalanceDelta hookDelta, BalanceDelta feesHookDelta) = hook.afterModifyLiquidity(
+            address(this),
+            key,
+            IPoolManager.ModifyLiquidityParams(0, 0, 0, bytes32(0)),
+            BalanceDelta.wrap(0),
+            BalanceDelta.wrap(0),
+            ""
         );
         assertEq(selAfterMod, hook.afterModifyLiquidity.selector);
         assertEq(BalanceDelta.unwrap(hookDelta), 0);
+        assertEq(BalanceDelta.unwrap(feesHookDelta), 0);
 
         (bytes4 selBeforeSwap, uint24 fee) =
             hook.beforeSwap(address(this), key, IPoolManager.SwapParams(true, 100, 0), "");

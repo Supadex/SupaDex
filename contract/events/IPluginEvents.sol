@@ -35,7 +35,9 @@ interface IPluginEvents {
     );
 
     /**
-     * @notice Emitted when a JIT liquidity provider suffers a fee haircut due to early withdrawal.
+     * @notice Emitted when unvested swap fees are confiscated from an early-exit (or poke) and
+     *         redistributed to remaining LPs via fee growth (or protocol fees if no active liquidity).
+     * @param penaltyAmount Combined unvested fee token amounts (amount0 + amount1 units).
      */
     event JITPenaltyLevied(
         PoolId indexed poolId,

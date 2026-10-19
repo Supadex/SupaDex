@@ -16,6 +16,7 @@ import {Currency} from "../../contract/types/Currency.sol";
 import {IPoolManager} from "../../contract/interfaces/IPoolManager.sol";
 import {ISupaRouter} from "../../contract/interfaces/ISupaRouter.sol";
 import {CircuitBreakerErrors} from "../../contract/errors/CircuitBreakerErrors.sol";
+import {SecurityTestSetup} from "../helpers/SecurityTestSetup.sol";
 
 contract MockERC20 {
     string public name;
@@ -129,12 +130,12 @@ contract EmergencyShutdownIntegrationTest is Test {
 
         // Deploy Vault & Core
         vault = new SupaVault(address(this));
-        clamm = new CLAMMEngine();
-        bin = new BinAMMEngine();
-        stable = new StableAMMEngine();
-
-        manager = new SupaPoolManager(vault, clamm, bin, stable);
+        (manager,,,) = SecurityTestSetup.deployManagerWithEngines(vault);
+        clamm = CLAMMEngine(address(manager.clammEngine()));
+        bin = BinAMMEngine(address(manager.binEngine()));
+        stable = StableAMMEngine(address(manager.stableEngine()));
         vault.setPoolManager(address(manager), true);
+        SecurityTestSetup.installEmptyWhitelist(manager, address(this));
 
         // Configure Circuit Breaker on Vault & Manager
         vault.setCircuitBreaker(circuitBreaker);
@@ -142,7 +143,7 @@ contract EmergencyShutdownIntegrationTest is Test {
 
         // Deploy Periphery Router
         router = new SupaRouter(manager, vault);
-        vault.setPoolManager(address(router), true);
+        // Periphery must not hold accountDelta privilege
 
         // Initialize CLAMM Pool (A/B)
         clammKey = PoolKey({

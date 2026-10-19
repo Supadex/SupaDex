@@ -8,7 +8,7 @@ import {IPoolManager} from "../../contract/interfaces/IPoolManager.sol";
 import {PoolKey, CurveType} from "../../contract/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "../../contract/types/PoolId.sol";
 import {Currency} from "../../contract/types/Currency.sol";
-import {BalanceDelta} from "../../contract/types/BalanceDelta.sol";
+import {BalanceDelta, toBalanceDelta} from "../../contract/types/BalanceDelta.sol";
 
 contract AntiJITVestingPluginTest is Test {
     using PoolIdLibrary for PoolKey;
@@ -19,7 +19,7 @@ contract AntiJITVestingPluginTest is Test {
 
     function setUp() public {
         manager = IPoolManager(address(this));
-        plugin = new AntiJITVestingPlugin(manager, 3); // 3 blocks residency
+        plugin = new AntiJITVestingPlugin(manager, 4); // 4 blocks → mid-vest easy to assert
 
         key = PoolKey({
             currency0: Currency.wrap(address(0x1)),
@@ -51,8 +51,34 @@ contract AntiJITVestingPluginTest is Test {
         assertEq(liq, 10_000);
     }
 
-    function test_sameBlockWithdrawalTriggersJITPenaltyEvent() public {
-        // Add liquidity
+    function test_weightedAverageDepositBlockOnTopUp() public {
+        uint32 start = uint32(block.number);
+        plugin.beforeModifyLiquidity(
+            address(0xA),
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: -120, tickUpper: 120, liquidityDelta: 1000, salt: bytes32(0)
+            }),
+            ""
+        );
+
+        vm.roll(start + 10);
+        plugin.beforeModifyLiquidity(
+            address(0xA),
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: -120, tickUpper: 120, liquidityDelta: 1000, salt: bytes32(0)
+            }),
+            ""
+        );
+
+        bytes32 posKey = keccak256(abi.encodePacked(address(0xA), int24(-120), int24(120), bytes32(0)));
+        (uint32 lastBlock,, uint128 liq) = plugin.residencies(key.toId(), posKey);
+        assertEq(lastBlock, start + 5);
+        assertEq(liq, 2000);
+    }
+
+    function test_sameBlockRemovalHaircutsAllFees_notPrincipal() public {
         plugin.beforeModifyLiquidity(
             address(0xA),
             key,
@@ -62,32 +88,46 @@ contract AntiJITVestingPluginTest is Test {
             ""
         );
 
-        // Immediate removal in the same block (JIT attack)
-        // Should trigger JITPenaltyLevied event
-        vm.expectEmit(true, true, true, false);
+        plugin.beforeModifyLiquidity(
+            address(0xA),
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: -120, tickUpper: 120, liquidityDelta: -10_000, salt: bytes32(0)
+            }),
+            ""
+        );
+
+        BalanceDelta principal = toBalanceDelta(-1000, -2000);
+        BalanceDelta fees = toBalanceDelta(100, 50);
+
+        vm.expectEmit(true, true, true, true);
         emit IPluginEvents.JITPenaltyLevied(
             key.toId(),
             address(0xA),
             keccak256(abi.encodePacked(address(0xA), int24(-120), int24(120), bytes32(0))),
-            5000, // 50% penalty on 10,000
+            150,
             0,
-            3
+            4
         );
 
-        bytes4 sel = plugin.beforeModifyLiquidity(
+        (bytes4 sel, BalanceDelta hookDelta, BalanceDelta feesHook) = plugin.afterModifyLiquidity(
             address(0xA),
             key,
             IPoolManager.ModifyLiquidityParams({
                 tickLower: -120, tickUpper: 120, liquidityDelta: -10_000, salt: bytes32(0)
             }),
+            principal,
+            fees,
             ""
         );
 
-        assertEq(sel, plugin.beforeModifyLiquidity.selector);
+        assertEq(sel, plugin.afterModifyLiquidity.selector);
+        assertEq(BalanceDelta.unwrap(hookDelta), 0, "principal must not be haircut");
+        assertEq(feesHook.amount0(), 100);
+        assertEq(feesHook.amount1(), 50);
     }
 
-    function test_honestLPWithdrawalAfterResidencyPasses() public {
-        // Add liquidity at block N
+    function test_midResidencyPartialFeeVest() public {
         plugin.beforeModifyLiquidity(
             address(0xA),
             key,
@@ -97,11 +137,8 @@ contract AntiJITVestingPluginTest is Test {
             ""
         );
 
-        // Advance 5 blocks (> 3 min blocks)
-        vm.roll(block.number + 5);
-
-        // Withdraw liquidity - no penalty event expected
-        bytes4 sel = plugin.beforeModifyLiquidity(
+        vm.roll(block.number + 2); // elapsed=2, K=4 → 50% unvested
+        plugin.beforeModifyLiquidity(
             address(0xA),
             key,
             IPoolManager.ModifyLiquidityParams({
@@ -110,6 +147,85 @@ contract AntiJITVestingPluginTest is Test {
             ""
         );
 
-        assertEq(sel, plugin.beforeModifyLiquidity.selector);
+        (,, BalanceDelta feesHook) = plugin.afterModifyLiquidity(
+            address(0xA),
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: -120, tickUpper: 120, liquidityDelta: -10_000, salt: bytes32(0)
+            }),
+            toBalanceDelta(-1000, 0),
+            toBalanceDelta(1000, 0),
+            ""
+        );
+
+        assertEq(feesHook.amount0(), 500);
+        assertEq(feesHook.amount1(), 0);
+    }
+
+    function test_fullResidencyNoFeeHaircut() public {
+        plugin.beforeModifyLiquidity(
+            address(0xA),
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: -120, tickUpper: 120, liquidityDelta: 10_000, salt: bytes32(0)
+            }),
+            ""
+        );
+
+        vm.roll(block.number + 4);
+        plugin.beforeModifyLiquidity(
+            address(0xA),
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: -120, tickUpper: 120, liquidityDelta: -10_000, salt: bytes32(0)
+            }),
+            ""
+        );
+
+        (,, BalanceDelta feesHook) = plugin.afterModifyLiquidity(
+            address(0xA),
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: -120, tickUpper: 120, liquidityDelta: -10_000, salt: bytes32(0)
+            }),
+            toBalanceDelta(-1000, 0),
+            toBalanceDelta(1000, 0),
+            ""
+        );
+
+        assertEq(BalanceDelta.unwrap(feesHook), 0);
+    }
+
+    function test_pokeAlsoAppliesVesting() public {
+        plugin.beforeModifyLiquidity(
+            address(0xA),
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: -120, tickUpper: 120, liquidityDelta: 10_000, salt: bytes32(0)
+            }),
+            ""
+        );
+
+        plugin.beforeModifyLiquidity(
+            address(0xA),
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: -120, tickUpper: 120, liquidityDelta: 0, salt: bytes32(0)
+            }),
+            ""
+        );
+
+        (,, BalanceDelta feesHook) = plugin.afterModifyLiquidity(
+            address(0xA),
+            key,
+            IPoolManager.ModifyLiquidityParams({
+                tickLower: -120, tickUpper: 120, liquidityDelta: 0, salt: bytes32(0)
+            }),
+            toBalanceDelta(0, 0),
+            toBalanceDelta(200, 0),
+            ""
+        );
+
+        assertEq(feesHook.amount0(), 200);
     }
 }

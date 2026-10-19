@@ -139,7 +139,7 @@ contract SupaPositionManager is
         (liquidity, amount0, amount1) = abi.decode(result, (uint128, uint256, uint256));
 
         if (address(this).balance > 0) {
-            this.refundETH();
+            _refundETH(msg.sender);
         }
     }
 
@@ -161,7 +161,7 @@ contract SupaPositionManager is
         (liquidity, amount0, amount1) = abi.decode(result, (uint128, uint256, uint256));
 
         if (address(this).balance > 0) {
-            this.refundETH();
+            _refundETH(msg.sender);
         }
     }
 
@@ -183,7 +183,7 @@ contract SupaPositionManager is
         (amount0, amount1) = abi.decode(result, (uint256, uint256));
 
         if (address(this).balance > 0) {
-            this.refundETH();
+            _refundETH(msg.sender);
         }
     }
 
@@ -205,7 +205,7 @@ contract SupaPositionManager is
         (amount0, amount1) = abi.decode(result, (uint256, uint256));
 
         if (address(this).balance > 0) {
-            this.refundETH();
+            _refundETH(msg.sender);
         }
     }
 
@@ -219,7 +219,7 @@ contract SupaPositionManager is
         (fees0, fees1) = abi.decode(result, (uint256, uint256));
 
         if (address(this).balance > 0) {
-            this.refundETH();
+            _refundETH(msg.sender);
         }
     }
 
@@ -436,9 +436,11 @@ contract SupaPositionManager is
 
         pos.liquidity -= params.liquidity;
 
-        // Deliver withdrawn principal liquidity to caller
-        _take(pos.poolKey.currency0, payer, amount0, false);
-        _take(pos.poolKey.currency1, payer, amount1, false);
+        // Deliver withdrawn principal to NFT owner (not an approved operator).
+        address owner_ = ownerOf(params.tokenId);
+        payer; // authorization already checked at entry
+        _take(pos.poolKey.currency0, owner_, amount0, false);
+        _take(pos.poolKey.currency1, owner_, amount1, false);
 
         emit LiquidityDecreased(params.tokenId, params.liquidity, amount0, amount1);
     }

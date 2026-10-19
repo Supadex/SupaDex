@@ -55,4 +55,30 @@ library PluginErrors {
      * @dev Thrown when a hook address does not conform to required permission bitmask.
      */
     error InvalidHookPermissions();
+
+    /**
+     * @dev Thrown when an unauthorized caller attempts an oracle write/init/grow.
+     */
+    error NotOracleWriter();
+
+    /**
+     * @dev Thrown when oracle writer is already configured.
+     */
+    /// @dev Legacy; oracle `writer` is immutably bound in the constructor.
+    error OracleWriterAlreadySet();
+
+    /**
+     * @dev Thrown when fee parameter exceeds 1e6 pips.
+     */
+    error InvalidFeeParameter(uint24 fee);
+
+    /**
+     * @dev Thrown when min fee exceeds max fee.
+     */
+    error InvalidFeeBounds(uint24 minFee, uint24 maxFee);
+
+    /**
+     * @dev Thrown when decay half-life is zero (division / decay periods undefined).
+     */
+    error InvalidDecayHalfLife();
 }

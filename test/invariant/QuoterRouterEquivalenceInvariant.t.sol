@@ -18,6 +18,7 @@ import {Currency, CurrencyLibrary} from "../../contract/types/Currency.sol";
 import {PoolKey, CurveType} from "../../contract/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "../../contract/types/PoolId.sol";
 import {BalanceDelta} from "../../contract/types/BalanceDelta.sol";
+import {SecurityTestSetup} from "../helpers/SecurityTestSetup.sol";
 
 contract MockQuoterInvToken {
     string public name;
@@ -235,12 +236,12 @@ contract QuoterRouterEquivalenceInvariantTest is StdInvariant, Test {
 
     function setUp() public {
         vault = new SupaVault(address(this));
-        CLAMMEngine clamm = new CLAMMEngine();
-        BinAMMEngine binAmm = new BinAMMEngine();
-        StableAMMEngine stableAmm = new StableAMMEngine();
-
-        manager = new SupaPoolManager(vault, clamm, binAmm, stableAmm);
+        (manager,,,) = SecurityTestSetup.deployManagerWithEngines(vault);
+        CLAMMEngine clamm = CLAMMEngine(address(manager.clammEngine()));
+        BinAMMEngine binAmm = BinAMMEngine(address(manager.binEngine()));
+        StableAMMEngine stableAmm = StableAMMEngine(address(manager.stableEngine()));
         vault.setPoolManager(address(manager), true);
+        SecurityTestSetup.installEmptyWhitelist(manager, address(this));
 
         router = new SupaRouter(manager, vault);
         quoter = new SupaQuoter(manager, vault);

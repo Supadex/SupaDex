@@ -165,7 +165,13 @@ contract SupaTimelock is ISupaTimelock {
         }
 
         bytes32 id = hashOperation(target, value, data, predecessor, salt);
-        if (_timestamps[id] != 0) revert GovernanceErrors.ProposalAlreadyQueued();
+        uint256 existing = _timestamps[id];
+        if (existing != 0) {
+            // Allow reschedule only when the prior op expired (not Done, past grace period).
+            if (existing == 1 || block.timestamp <= existing + GRACE_PERIOD) {
+                revert GovernanceErrors.ProposalAlreadyQueued();
+            }
+        }
 
         uint256 eta = block.timestamp + delay;
         _timestamps[id] = eta;

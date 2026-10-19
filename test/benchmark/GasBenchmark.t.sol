@@ -21,6 +21,9 @@ import {Currency, CurrencyLibrary} from "../../contract/types/Currency.sol";
 import {PoolKey, CurveType} from "../../contract/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "../../contract/types/PoolId.sol";
 import {BalanceDelta} from "../../contract/types/BalanceDelta.sol";
+import {SecurityTestSetup} from "../helpers/SecurityTestSetup.sol";
+import {PluginWhitelist} from "../../contract/governance/PluginWhitelist.sol";
+import {IPluginWhitelist} from "../../contract/interfaces/IPluginWhitelist.sol";
 
 contract MockBenchmarkToken {
     string public name;
@@ -137,19 +140,22 @@ contract GasBenchmarkTest is Test {
 
     function setUp() public {
         vault = new SupaVault(address(this));
-        CLAMMEngine clamm = new CLAMMEngine();
-        BinAMMEngine binAmm = new BinAMMEngine();
-        StableAMMEngine stableAmm = new StableAMMEngine();
-
-        manager = new SupaPoolManager(vault, clamm, binAmm, stableAmm);
+        (manager,,,) = SecurityTestSetup.deployManagerWithEngines(vault);
+        CLAMMEngine clamm = CLAMMEngine(address(manager.clammEngine()));
+        BinAMMEngine binAmm = BinAMMEngine(address(manager.binEngine()));
+        StableAMMEngine stableAmm = StableAMMEngine(address(manager.stableEngine()));
         vault.setPoolManager(address(manager), true);
-
         router = new SupaRouter(manager, vault);
         PositionNFTDescriptor nftDescriptor = new PositionNFTDescriptor();
         posManager = new SupaPositionManager(manager, vault, address(nftDescriptor));
 
-        oracle = new VolatilityTWAPOracle();
-        lvrPlugin = new LVRShieldPlugin(IPoolManager(address(manager)), IVolatilityTWAPOracle(address(oracle)));
+        lvrPlugin = new LVRShieldPlugin(IPoolManager(address(manager)));
+        oracle = VolatilityTWAPOracle(address(lvrPlugin.oracle()));
+
+        address[] memory plugins = new address[](1);
+        plugins[0] = address(lvrPlugin);
+        PluginWhitelist wl = new PluginWhitelist(address(this), plugins);
+        manager.setPluginWhitelist(IPluginWhitelist(address(wl)));
 
         MockBenchmarkToken[3] memory rawTokens;
         rawTokens[0] = new MockBenchmarkToken("Token A", "TKNA");

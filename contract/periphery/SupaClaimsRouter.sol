@@ -57,7 +57,7 @@ contract SupaClaimsRouter is ISupaClaimsRouter, IUnlockCallback, IPeripheryEvent
 
         // Refund dust ETH
         if (address(this).balance > 0) {
-            this.refundETH();
+            _refundETH(msg.sender);
         }
     }
 
