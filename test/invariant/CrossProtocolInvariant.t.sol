@@ -15,6 +15,8 @@ import {PoolKey, CurveType} from "../../contract/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "../../contract/types/PoolId.sol";
 import {Currency} from "../../contract/types/Currency.sol";
 import {PoolErrors} from "../../contract/errors/PoolErrors.sol";
+import {Slot0} from "../../contract/types/Slot0.sol";
+import {FullMathLib} from "../../contract/libraries/FullMathLib.sol";
 import {SecurityTestSetup} from "../helpers/SecurityTestSetup.sol";
 import {JFlashActor, JToken} from "../unit/security/JexiRegression.t.sol";
 
@@ -136,29 +138,44 @@ contract CrossProtocolHandler is Test {
         }
     }
 
-    /// Same-block A->B->A round trip by a dedicated arbitrageur: must never end with more of either token.
+    /// Same-block A->B->A round trip by a dedicated arbitrageur. "Profit" means (a) a free lunch: one token up and
+    /// the other not down, or (b) a positive net value at the pool's pre-trade marginal price beyond 1 wei of each
+    /// token (exact-input steps may leave <= 1 wei unconsumed, which is returned to the trader and is not a gain).
     function roundTrip(uint256 poolSeed, bool z, uint256 amt) external {
         uint256 p = poolSeed % 3;
         amt = bound(amt, 1e9, 1e22);
         calls["roundTrip"]++;
-        JToken tin = z ? t0 : t1;
-        JToken tout = z ? t1 : t0;
-        uint256 in0 = tin.balanceOf(address(arb));
-        uint256 out0 = tout.balanceOf(address(arb));
+        uint256 sqrtP = uint256(uint160(uint256(Slot0.unwrap(pm.getSlot0(keys[p].toId())))));
+        uint256 b0 = t0.balanceOf(address(arb));
+        uint256 b1 = t1.balanceOf(address(arb));
         try arb.exec(_one(_op(1, p, int256(amt), z))) {}
         catch (bytes memory err) {
             _classify(err);
             return;
         }
-        uint256 got = tout.balanceOf(address(arb)) - out0;
+        JToken tout = z ? t1 : t0;
+        uint256 got = tout.balanceOf(address(arb)) - (z ? b1 : b0);
         if (got == 0) return;
         try arb.exec(_one(_op(1, p, int256(got), !z))) {}
         catch (bytes memory err) {
             _classify(err);
             return;
         }
-        if (tin.balanceOf(address(arb)) > in0 || tout.balanceOf(address(arb)) > out0) roundTripProfits++;
+        int256 g0 = int256(t0.balanceOf(address(arb))) - int256(b0);
+        int256 g1 = int256(t1.balanceOf(address(arb))) - int256(b1);
+        if ((g0 > 0 && g1 >= 0) || (g1 > 0 && g0 >= 0)) {
+            roundTripProfits++; // free lunch
+            return;
+        }
+        // value in token1 units at the pre-trade price P = sqrtP^2 / 2^192
+        uint256 v0 = FullMathLib.mulDiv(FullMathLib.mulDiv(uint256(g0 < 0 ? -g0 : g0), sqrtP, 1 << 96), sqrtP, 1 << 96);
+        uint256 tol = FullMathLib.mulDiv(FullMathLib.mulDiv(1, sqrtP, 1 << 96), sqrtP, 1 << 96) + 2;
+        int256 value = (g0 < 0 ? -int256(v0) : int256(v0)) + g1;
+        if (value > int256(tol)) roundTripProfits++;
+        if (g0 > 0 || g1 > 0) dustReturned++;
     }
+
+    uint256 public dustReturned;
 
     /// Unauthorized caller tries every privileged entry point; any success is a violation.
     function unauthorized(address caller, uint256 which) external {
@@ -282,5 +299,6 @@ contract CrossProtocolInvariantTest is StdInvariant, Test {
         console2.log("calls add/remove/swap:", h.calls("add"), h.calls("remove"), h.calls("swap"));
         console2.log("calls roundTrip/unauthorized:", h.calls("roundTrip"), h.calls("unauthorized"));
         console2.log("expected reverts:", h.expectedReverts(), "unexpected:", h.unexpectedReverts());
+        console2.log("round trips returning <=1 wei unconsumed input:", h.dustReturned());
     }
 }

@@ -168,21 +168,23 @@ contract StableAMMEngineTest is Test {
         engine.rampA(key, 200, block.timestamp + 1 days);
     }
 
+    /// Timestamps via vm.getBlockTimestamp(): under via-IR `block.timestamp` may be cached across vm.warp in one frame.
     function test_rampA_linearAndBounded() public {
         _seed(key, SQRT_1_1, 1_000_000 ether);
+        uint256 start = vm.getBlockTimestamp();
         // too soon after init
-        vm.expectRevert(abi.encodeWithSelector(PoolErrors.StableInvalidRamp.selector, 200, block.timestamp + 1 days));
-        engine.rampA(key, 200, block.timestamp + 1 days);
+        vm.expectRevert(abi.encodeWithSelector(PoolErrors.StableInvalidRamp.selector, 200, start + 1 days));
+        engine.rampA(key, 200, start + 1 days);
 
-        vm.warp(block.timestamp + 1 days);
+        uint256 t0 = start + 1 days;
+        vm.warp(t0);
         // ramp shorter than MIN_RAMP_TIME
-        vm.expectRevert();
-        engine.rampA(key, 200, block.timestamp + 1 hours);
+        vm.expectRevert(abi.encodeWithSelector(PoolErrors.StableInvalidRamp.selector, 200, t0 + 1 hours));
+        engine.rampA(key, 200, t0 + 1 hours);
         // more than 10x change
-        vm.expectRevert();
-        engine.rampA(key, 1001, block.timestamp + 1 days);
+        vm.expectRevert(abi.encodeWithSelector(PoolErrors.StableInvalidRamp.selector, 1001, t0 + 1 days));
+        engine.rampA(key, 1001, t0 + 1 days);
 
-        uint256 t0 = block.timestamp;
         engine.rampA(key, 300, t0 + 2 days);
         vm.warp(t0 + 1 days);
         assertEq(engine.getA(key.toId()), 200, "halfway");
@@ -194,8 +196,8 @@ contract StableAMMEngineTest is Test {
 
     function test_stopRampA_guardianOrGovernance() public {
         _seed(key, SQRT_1_1, 1_000_000 ether);
-        vm.warp(block.timestamp + 1 days);
-        uint256 t0 = block.timestamp;
+        uint256 t0 = vm.getBlockTimestamp() + 1 days;
+        vm.warp(t0);
         engine.rampA(key, 1000, t0 + 4 days);
         vm.warp(t0 + 2 days);
         vm.prank(address(0xBAD));
