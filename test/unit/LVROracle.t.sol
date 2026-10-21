@@ -357,8 +357,30 @@ contract LVROracleTest is Test, IPluginEvents {
     function test_fallback_deviationAboveMax() public {
         _configure();
         _setPrice(115, 100); // 15% > 10%
-        _expectFallback(6);
-        assertEq(_fee(false), FALLBACK, "fallback applies to both directions");
+        // APUS-SUPADEX-023: beyond maxDeviation the arbitrage direction (pool above feed => zeroForOne) pays at least
+        // base + the surcharge capped at maxDeviation. The non-arbitrage direction pays max(endogenous, fallback).
+        uint256 capped = 3000 + ((uint256(MAXDEV) - DEADBAND) * 100 * ALPHA) / 10_000;
+        vm.expectEmit(true, false, false, true, address(plugin));
+        emit LVROracleFallback(key.toId(), 6);
+        assertEq(_fee(true), capped > FALLBACK ? capped : FALLBACK, "arb direction: >= capped surcharge");
+        vm.expectEmit(true, false, false, true, address(plugin));
+        emit LVROracleFallback(key.toId(), 6);
+        assertEq(_fee(false), FALLBACK, "non-arb direction: fallback");
+    }
+
+    /// APUS-SUPADEX-023 regression: push past maxDeviation, then return. The return leg must pay >= the fee of a direct
+    /// arbitrage at any in-band deviation (surcharge monotone in deviation).
+    function test_023_pushPastMaxDeviation_returnPaysAtLeastDirectArbFee() public {
+        _configure();
+        uint256 maxInBand;
+        for (uint256 p = 101; p <= 110; p++) {
+            _setPrice(p, 100); // pool above feed: arb direction is zeroForOne
+            uint24 f = _fee(true);
+            if (f > maxInBand) maxInBand = f;
+        }
+        _setPrice(150, 100); // beyond maxDeviation
+        uint24 ret = _fee(true);
+        assertGe(ret, maxInBand, "return leg beyond maxDeviation must not be cheaper than direct arbitrage");
     }
 
     function test_fallback_neverBelowEndogenous() public {
