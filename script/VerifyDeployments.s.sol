@@ -17,6 +17,13 @@ import {SupaQuoter} from "../contract/periphery/SupaQuoter.sol";
 import {SupaFeeCollector} from "../contract/periphery/SupaFeeCollector.sol";
 import {DeploySupaDex} from "./DeploySupaDex.s.sol";
 import {DeployEnvironment} from "./DeployEnvironment.sol";
+import {StableAMMEngine} from "../contract/core/engines/StableAMMEngine.sol";
+
+/// @dev Minimal Safe (Gnosis Safe) surface used to recognise a multisig role holder.
+interface ISafeLike {
+    function getThreshold() external view returns (uint256);
+    function getOwners() external view returns (address[] memory);
+}
 
 /**
  * @title VerifyDeployments
@@ -117,7 +124,53 @@ contract VerifyDeployments is Script {
         _ownershipChecks(r, res);
         _wiringChecks(r, res);
         _pluginChecks(r, res);
+        _valueBearingChecks(r, res, cfg, DeployEnvironment.valueBearing(kind, block.chainid));
         if (r.failures == before) console2.log(DeployEnvironment.CONFIGURATION_VALIDATED);
+    }
+
+    /// @notice Multisig recogniser (Edith 10-C): deployed code + Safe interface + threshold >= 2 <= owners.
+    function isMultisig(address a) public view returns (bool) {
+        if (a.code.length == 0) return false;
+        (bool ok, bytes memory ret) = a.staticcall{gas: 50_000}(abi.encodeCall(ISafeLike.getThreshold, ()));
+        if (!ok || ret.length != 32) return false;
+        uint256 threshold = abi.decode(ret, (uint256));
+        (ok, ret) = a.staticcall{gas: 200_000}(abi.encodeCall(ISafeLike.getOwners, ()));
+        if (!ok || ret.length < 64) return false;
+        address[] memory owners = abi.decode(ret, (address[]));
+        return threshold >= 2 && owners.length >= threshold;
+    }
+
+    /// @dev Conditions 3 / 10 / 11 (Edith 6-B, 10-A, 10-C) — only on value-bearing deployments.
+    function _valueBearingChecks(
+        Report memory r,
+        DeploySupaDex.DeploymentResult memory res,
+        DeploySupaDex.RoleConfig memory cfg,
+        bool valueBearing
+    ) internal view {
+        SupaTimelock tl = SupaTimelock(payable(res.timelock));
+        CircuitBreaker cb = CircuitBreaker(res.circuitBreaker);
+        _req(r, tl.minDelay() >= tl.delayFloor(), "timelock delay >= on-chain delayFloor");
+        _req(r, cb.isGuardian(cfg.guardian), "GUARDIAN holds circuit-breaker guardian role");
+        LVRShieldPlugin lvr = LVRShieldPlugin(res.lvrShieldPlugin);
+        if (address(lvr.sequencerUptimeFeed()) != address(0)) {
+            _req(r, lvr.sequencerGracePeriod() >= lvr.MIN_SEQUENCER_GRACE(), "sequencer grace >= 1 h");
+        }
+        if (!valueBearing) return;
+        console2.log("Value-bearing deployment: BIN pause, 48 h delay floor and multisig role holders enforced");
+        _req(r, cb.isCurvePaused(uint8(1)), "BIN_AMM curve paused (until Jexi review + external audit)");
+        _req(r, tl.delayFloor() >= 48 hours, "timelock on-chain delayFloor >= 48 h");
+        _req(r, tl.minDelay() >= 48 hours, "timelock delay >= 48 h");
+        _req(r, isMultisig(cfg.proposer), "PROPOSER is a multisig (Safe, threshold >= 2)");
+        _req(r, isMultisig(cfg.executor), "EXECUTOR is a multisig (Safe, threshold >= 2)");
+        _req(r, isMultisig(cfg.canceller), "CANCELLER is a multisig (Safe, threshold >= 2)");
+        _req(r, isMultisig(cfg.guardian), "GUARDIAN is a multisig (Safe, threshold >= 2)");
+        _req(r, isMultisig(cfg.operator), "OPERATOR is a multisig (Safe, threshold >= 2)");
+        _req(r, cfg.guardian != cfg.proposer, "GUARDIAN != PROPOSER");
+        StableAMMEngine se = StableAMMEngine(res.stableEngine);
+        _req(r, se.minA() >= se.MIN_A() && se.maxA() <= se.MAX_A(), "stable A creator range within hard bounds");
+        if (lvr.isKnownL2(block.chainid)) {
+            _req(r, address(lvr.sequencerUptimeFeed()) != address(0), "L2: sequencer-uptime feed configured");
+        }
     }
 
     function _req(Report memory r, bool ok, string memory what) internal pure {
@@ -211,7 +264,7 @@ contract VerifyDeployments is Script {
         _req(r, address(pm.clammEngine()) == res.clammEngine, "CLAMM engine");
         _req(r, address(pm.binEngine()) == res.binEngine, "Bin engine");
         _req(r, address(pm.stableEngine()) == res.stableEngine, "Stable engine");
-        _req(r, pm.binAmmEnabled(), "BIN_AMM enabled (ADR-0006)");
+        _req(r, pm.binAmmEnabled(), "BIN_AMM engine wired (ADR-0006; runtime gate = circuit breaker)");
         _req(r, CLAMMEngine(res.clammEngine).poolManager() == res.poolManager, "CLAMM bound to pool manager");
         _req(r, CLAMMEngine(res.binEngine).poolManager() == res.poolManager, "Bin bound to pool manager");
         _req(r, CLAMMEngine(res.stableEngine).poolManager() == res.poolManager, "Stable bound to pool manager");

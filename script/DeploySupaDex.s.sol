@@ -122,7 +122,7 @@ contract DeploySupaDex is Script {
     }
 
     function _requireDeployableChain() internal view {
-        DeployEnvironment.Kind kind = resolved ? resolvedKind : DeployEnvironment.classify(block.chainid);
+        DeployEnvironment.Kind kind = _kind();
         console2.log("Chain id:", block.chainid);
         console2.log("Environment:", DeployEnvironment.label(kind));
         if (!DeployEnvironment.deploymentAllowed(kind)) {
@@ -130,6 +130,16 @@ contract DeploySupaDex is Script {
             revert(DeployEnvironment.DEPLOYMENT_BLOCKED);
         }
         console2.log(DeployEnvironment.ENVIRONMENT_VERIFIED);
+    }
+
+    function _kind() internal view returns (DeployEnvironment.Kind) {
+        return resolved ? resolvedKind : DeployEnvironment.classify(block.chainid);
+    }
+
+    /// @notice ADR-0006 / Edith 6-B: BIN stays paused on any value-bearing deployment until Jexi review AND an
+    /// external audit sign off (unpausing is a timelock action). Optional on test chains via BIN_PAUSED=true.
+    function binPausedAtGenesis() public view returns (bool) {
+        return DeployEnvironment.valueBearing(_kind(), block.chainid) || vm.envOr("BIN_PAUSED", false);
     }
 
     function validateConfig(address deployer, RoleConfig memory c) public pure {
@@ -183,8 +193,13 @@ contract DeploySupaDex is Script {
 
         address[] memory guardians = new address[](1);
         guardians[0] = c.guardian;
-        res.circuitBreaker = address(new CircuitBreaker(res.timelock, guardians));
+        // Deployer owns the breaker only until _handOff (needed to pause BIN at genesis), then the timelock.
+        res.circuitBreaker = address(new CircuitBreaker(deployer, guardians));
         console2.log("2. CircuitBreaker:", res.circuitBreaker);
+        if (binPausedAtGenesis()) {
+            CircuitBreaker(res.circuitBreaker).pauseCurve(uint8(1)); // CurveType.BIN_AMM
+            console2.log("2b. BIN_AMM curve PAUSED at genesis (value-bearing; unpause needs Jexi + external audit)");
+        }
     }
 
     function _deployCore(address deployer, DeploymentResult memory res) internal {
@@ -253,6 +268,9 @@ contract DeploySupaDex is Script {
         SupaRoles(res.roles).transferOwnership(res.timelock);
         PluginWhitelist(res.pluginWhitelist).transferOwnership(res.timelock);
         SupaFeeCollector(payable(res.feeCollector)).transferOwnership(res.timelock);
-        console2.log("8. Ownership of vault, pool manager, roles, whitelist, fee collector -> SupaTimelock");
+        CircuitBreaker(res.circuitBreaker).transferOwnership(res.timelock);
+        console2.log(
+            "8. Ownership of vault, pool manager, roles, whitelist, fee collector, circuit breaker -> SupaTimelock"
+        );
     }
 }

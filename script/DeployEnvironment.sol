@@ -71,6 +71,21 @@ library DeployEnvironment {
         return "unknown chain";
     }
 
+    /**
+     * @notice Is this deployment value-bearing (or simulating one)? PRODUCTION and UNKNOWN (fail closed), and a FORK
+     * of any chain that is not itself a local/test chain (e.g. an anvil fork of Ethereum mainnet). On value-bearing
+     * deployments: BIN paused at genesis (ADR-0006 / Edith 6-B), timelock delay >= 48 h (10-A), every role holder a
+     * multisig (10-C).
+     */
+    function valueBearing(Kind kind, uint256 chainId) internal pure returns (bool) {
+        if (kind == Kind.LOCAL || kind == Kind.TESTNET) return false;
+        if (kind == Kind.FORK) {
+            Kind base = classify(chainId);
+            return !(base == Kind.LOCAL || base == Kind.TESTNET);
+        }
+        return true;
+    }
+
     /// @notice Only LOCAL, FORK and TESTNET may be deployed to. UNKNOWN and PRODUCTION fail closed.
     function deploymentAllowed(Kind kind) internal pure returns (bool) {
         return kind == Kind.LOCAL || kind == Kind.FORK || kind == Kind.TESTNET;
