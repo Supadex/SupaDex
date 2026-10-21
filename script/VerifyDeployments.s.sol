@@ -169,7 +169,11 @@ contract VerifyDeployments is Script {
         StableAMMEngine se = StableAMMEngine(res.stableEngine);
         _req(r, se.minA() >= se.MIN_A() && se.maxA() <= se.MAX_A(), "stable A creator range within hard bounds");
         if (lvr.requiresSequencerFeed(block.chainid)) {
-            _req(r, address(lvr.sequencerUptimeFeed()) != address(0), "sequencer-required chain: sequencer-uptime feed configured");
+            _req(
+                r,
+                address(lvr.sequencerUptimeFeed()) != address(0),
+                "sequencer-required chain: sequencer-uptime feed configured"
+            );
         }
     }
 

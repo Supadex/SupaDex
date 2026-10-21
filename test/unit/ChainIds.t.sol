@@ -32,8 +32,34 @@ contract ChainIdsTest is Test {
     /// Exhaustive over every id either list has ever named, plus the removed ones.
     function test_timelockAndDeployScriptAgree_knownIds() public view {
         uint256[28] memory ids = [
-            uint256(1), 10, 56, 97, 100, 137, 250, 324, 1101, 1337, 5000, 8453, 10143, 17000, 31337, 42161, 43114,
-            59144, 80002, 81457, 84532, 421614, 534352, 560048, 11155111, 11155420, 5, 999_999_999
+            uint256(1),
+            10,
+            56,
+            97,
+            100,
+            137,
+            250,
+            324,
+            1101,
+            1337,
+            5000,
+            8453,
+            10143,
+            17000,
+            31337,
+            42161,
+            43114,
+            59144,
+            80002,
+            81457,
+            84532,
+            421614,
+            534352,
+            560048,
+            11155111,
+            11155420,
+            5,
+            999_999_999
         ];
         for (uint256 i; i < ids.length; ++i) {
             assertEq(tl.isTestChain(ids[i]), _deployTestChain(ids[i]), "lists disagree");
@@ -51,7 +77,8 @@ contract ChainIdsTest is Test {
 
     /// No production chain is a test chain; no test chain is classified production.
     function test_productionAndTestDisjoint() public view {
-        uint256[15] memory prod = [uint256(1), 10, 56, 137, 8453, 42161, 43114, 324, 59144, 534352, 100, 250, 1101, 5000, 81457];
+        uint256[15] memory prod =
+            [uint256(1), 10, 56, 137, 8453, 42161, 43114, 324, 59144, 534352, 100, 250, 1101, 5000, 81457];
         for (uint256 i; i < prod.length; ++i) {
             assertEq(uint8(DeployEnvironment.classify(prod[i])), uint8(DeployEnvironment.Kind.PRODUCTION));
             assertFalse(tl.isTestChain(prod[i]));
@@ -76,8 +103,8 @@ contract ChainIdsTest is Test {
     /// Any id outside the 12-entry exemption allowlist requires a feed (fail closed for unknown chains).
     function testFuzz_sequencer_unknownRequiresFeed(uint256 id) public pure {
         vm.assume(
-            id != 1 && id != 11155111 && id != 17000 && id != 560048 && id != 56 && id != 97 && id != 43114
-                && id != 100 && id != 250 && id != 137 && id != 80002 && id != 31337
+            id != 1 && id != 11155111 && id != 17000 && id != 560048 && id != 56 && id != 97 && id != 43114 && id != 100
+                && id != 250 && id != 137 && id != 80002 && id != 31337
         );
         assertTrue(ChainIds.requiresSequencerFeed(id));
     }
