@@ -251,17 +251,32 @@ contract LVRShieldPlugin is BaseHook, IPluginEvents {
         }
         if (reason != 0) {
             emit LVROracleFallback(poolId, reason);
-            return _clamp(endogenousFee > cfg.fallbackFeePips ? endogenousFee : cfg.fallbackFeePips, state);
+            uint256 floorFee = cfg.fallbackFeePips;
+            // APUS-SUPADEX-023: beyond maxDeviation the feed is still valid and the direction is known. A trade back
+            // toward the feed must pay at least the surcharge capped at maxDeviation. Otherwise an arbitrageur could push the
+            // pool past maxDeviation (paying only the base fee in the non-arbitrage direction) and return through the
+            // cheaper fallback, avoiding most of the surcharge. Surcharge is monotone in deviation, so push-then-return
+            // now always pays >= the direct arbitrage fee.
+            if (reason == 6 && zeroForOne == poolAbove) {
+                uint256 capped = uint256(state.baseFee) + _surcharge(cfg, cfg.maxDeviationBps);
+                if (capped > floorFee) floorFee = capped;
+            }
+            return _clamp(endogenousFee > floorFee ? endogenousFee : floorFee, state);
         }
         // Arbitrage direction: pool above feed ⇒ selling token0 (zeroForOne) pushes it down toward the feed.
         if (deviationBps <= cfg.deadbandBps || zeroForOne != poolAbove) return endogenousFee;
 
-        uint256 surcharge = ((deviationBps - cfg.deadbandBps) * 100 * cfg.deviationAlphaBps) / 10_000;
-        if (surcharge > FEE_CAP_PIPS) surcharge = FEE_CAP_PIPS;
+        uint256 surcharge = _surcharge(cfg, deviationBps);
         uint256 oracleFee = uint256(state.baseFee) + surcharge;
         uint24 fee = _clamp(oracleFee > endogenousFee ? oracleFee : endogenousFee, state);
         emit LVROracleSurcharge(poolId, deviationBps, uint24(surcharge), zeroForOne);
         return fee;
+    }
+
+    /// @dev Oracle surcharge in pips at `deviationBps` (> deadband), capped at FEE_CAP_PIPS.
+    function _surcharge(OracleConfig memory cfg, uint256 deviationBps) internal pure returns (uint256 surcharge) {
+        surcharge = ((deviationBps - cfg.deadbandBps) * 100 * cfg.deviationAlphaBps) / 10_000;
+        if (surcharge > FEE_CAP_PIPS) surcharge = FEE_CAP_PIPS;
     }
 
     /// @dev Pool price (token1 per token0, raw units) in Q96. sqrtP < 2^160 ⇒ no overflow.

@@ -254,6 +254,10 @@ contract SupaPoolManager is IPoolManager {
 
         ICurveEngine engine = getCurveEngine(key.curveType);
         tick = engine.initialize(key, sqrtPriceX96, initParams);
+        if (key.curveType == CurveType.STABLE_AMM) {
+            // APUS-SUPADEX-026: STABLE pools always start at the engine's normalised peg; the caller's price is ignored.
+            sqrtPriceX96 = engine.getSlot0(id).sqrtPriceX96();
+        }
 
         Slot0 initialSlot0 = Slot0Library.pack(sqrtPriceX96, tick, 0, key.fee, true);
         poolSlot0[id] = initialSlot0;
@@ -342,6 +346,13 @@ contract SupaPoolManager is IPoolManager {
             _validateHookDelta(key.plugin, hookDelta.amount0(), callerDelta.amount0());
             _validateHookDelta(key.plugin, hookDelta.amount1(), callerDelta.amount1());
             callerDelta = callerDelta.add(hookDelta);
+            // APUS-SUPADEX-024: a principal haircut retained by a delta-returning plugin used to stay in the vault's
+            // reservesOf, owned by no one and not sweepable. It is now redistributed like confiscated fees: donated
+            // to in-range LPs, or booked as protocol fees when the pool has no active liquidity. The amounts are
+            // validated above as non-negative and bounded by the LP's credit.
+            _redistributeConfiscatedFees(
+                key, engine, uint256(uint128(hookDelta.amount0())), uint256(uint128(hookDelta.amount1()))
+            );
         }
 
         if (BalanceDelta.unwrap(feesHookDelta) != 0) {

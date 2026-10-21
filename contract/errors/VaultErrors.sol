@@ -43,7 +43,6 @@ library VaultErrors {
      */
     error ETHTransferFailed();
 
-
     /**
      * @notice Thrown when an ERC-20 settle is attempted without a prior `sync` of that currency.
      */

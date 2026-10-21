@@ -40,7 +40,8 @@ import {TickMathLib} from "../../libraries/TickMathLib.sol";
  *  - Price (slot0): `sqrtPriceX96` is the exact marginal price dy/dx of the invariant at the current reserves (raw
  *    token1 per raw token0), and `tick` is its TickMath tick. Price limits are checked against this marginal price.
  *  - `liquidityDelta` is denominated in LP shares. For the first deposit, `liquidityDelta` is in 18-decimal
- *    normalised token0 units: amount0 = ceil(shares / rate0) and amount1 is set by the pool's initial price.
+ *    normalised units per side: amount0 = ceil(shares / rate0), amount1 = ceil(shares / rate1). The pool always
+ *    starts at the normalised 1:1 peg; the creator's sqrtPriceX96 is ignored (APUS-SUPADEX-026).
  */
 contract StableAMMEngine is ICurveEngine {
     using Slot0Library for Slot0;
@@ -116,7 +117,12 @@ contract StableAMMEngine is ICurveEngine {
 
     // ------------------------------------------------------------------ initialize
 
-    function initialize(PoolKey memory key, uint160 sqrtPriceX96, bytes memory initParams)
+    /// @dev APUS-SUPADEX-026: the caller's `sqrtPriceX96` is IGNORED. Every STABLE pool starts at the 1:1 peg in
+    ///      normalised (18-decimal) units, i.e. raw price 10^(d1 - d0), and the first deposit is balanced at that peg.
+    ///      A permissionless creator can therefore no longer pick a hostile price that makes the first deposit
+    ///      violate the imbalance bound and bricks the canonical key. The PoolManager reads the effective price back
+    ///      via `getSlot0` for its own slot0 and the `Initialize` event.
+    function initialize(PoolKey memory key, uint160, bytes memory initParams)
         external
         override
         onlyPoolManager
@@ -126,9 +132,6 @@ contract StableAMMEngine is ICurveEngine {
         StablePoolState storage pool = pools[id];
         if (pool.slot0.isInitialized()) revert PoolErrors.PoolAlreadyInitialized(id);
         if (key.fee >= MAX_FEE_PIPS) revert PoolErrors.InvalidFee(key.fee);
-        if (sqrtPriceX96 <= TickMathLib.MIN_SQRT_RATIO || sqrtPriceX96 >= TickMathLib.MAX_SQRT_RATIO) {
-            revert PoolErrors.PriceLimitOutOfBounds(sqrtPriceX96);
-        }
 
         uint8 d0 = _decimals(key.currency0);
         uint8 d1 = _decimals(key.currency1);
@@ -142,8 +145,9 @@ contract StableAMMEngine is ICurveEngine {
         pool.initialATime = uint40(block.timestamp);
         pool.futureATime = uint40(block.timestamp);
 
-        tick = TickMathLib.getTickAtSqrtRatio(sqrtPriceX96);
-        pool.slot0 = Slot0Library.pack(sqrtPriceX96, tick, 0, key.fee, true);
+        uint160 pegSqrtP = _marginalSqrtPriceX96(1e18, 1e18, aPrecise, 2e18, pool.rate0, pool.rate1);
+        tick = TickMathLib.getTickAtSqrtRatio(pegSqrtP);
+        pool.slot0 = Slot0Library.pack(pegSqrtP, tick, 0, key.fee, true);
     }
 
     /**
@@ -235,11 +239,10 @@ contract StableAMMEngine is ICurveEngine {
             if (shares <= MINIMUM_LIQUIDITY) {
                 revert PoolErrors.InsufficientInitialLiquidity(shares, MINIMUM_LIQUIDITY);
             }
+            // APUS-SUPADEX-026: the first deposit is balanced at the peg in normalised units (each side
+            // ceil(shares / rate)), independent of any creator-supplied price.
             amount0 = _divUp(shares, pool.rate0);
-            uint160 sqrtP = pool.slot0.sqrtPriceX96();
-            uint256 priceX96 = FullMathLib.mulDiv(uint256(sqrtP), uint256(sqrtP), 1 << 96);
-            amount1 = FullMathLib.mulDivRoundingUp(amount0, priceX96, 1 << 96);
-            if (amount1 == 0) revert PoolErrors.InsufficientLiquidity();
+            amount1 = _divUp(shares, pool.rate1);
             pool.totalLiquidity = shares;
             // MINIMUM_LIQUIDITY shares are owned by nobody and can never be withdrawn.
             position.liquidity += shares - MINIMUM_LIQUIDITY;
