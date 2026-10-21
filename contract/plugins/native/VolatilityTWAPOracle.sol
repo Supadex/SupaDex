@@ -180,7 +180,10 @@ contract VolatilityTWAPOracle is IVolatilityTWAPOracle {
     }
 
     /**
-     * @inheritdoc IVolatilityTWAPOracle
+     * @notice Realised tick movement over the trailing window: |latestTick − tick prevailing at (now − window)|,
+     * normalised to a 12-second block (`|Δtick| · 12 / window`).
+     * @dev ADR-0003. A constant tick yields 0 regardless of idle time. Returns 0 (neutral) when the oracle
+     * has no history covering the window start.
      */
     function getInstantaneousVolatility(PoolId poolId, uint32 windowSeconds)
         external
@@ -190,29 +193,56 @@ contract VolatilityTWAPOracle is IVolatilityTWAPOracle {
     {
         OracleState memory state = states[poolId];
         if (state.cardinality == 0) return 0;
-        if (windowSeconds == 0) windowSeconds = 12; // 1 block default
+        if (windowSeconds == 0) windowSeconds = 12;
+        uint32 nowTs = uint32(block.timestamp);
+        if (nowTs < windowSeconds) return 0;
 
-        uint32[] memory secondsAgos = new uint32[](2);
-        secondsAgos[0] = windowSeconds;
-        secondsAgos[1] = 0;
+        (bool ok, int24 startTick) = _prevailingTickAt(poolId, nowTs - windowSeconds, state);
+        if (!ok) return 0;
 
-        try this.observe(poolId, secondsAgos) returns (int56[] memory tickCumulatives, uint112[] memory) {
-            unchecked {
-                int56 tickDelta = tickCumulatives[1] - tickCumulatives[0];
-                int256 averageTick = tickDelta / int56(uint56(windowSeconds));
-                int256 currentTick = int256(latestTicks[poolId]);
-
-                int256 diff = currentTick > averageTick ? currentTick - averageTick : averageTick - currentTick;
-                return uint256(diff);
-            }
-        } catch {
-            return 0;
-        }
+        int256 diff = int256(latestTicks[poolId]) - int256(startTick);
+        if (diff < 0) diff = -diff;
+        volatility = (uint256(diff) * 12) / windowSeconds;
     }
 
     /**
-     * @dev Binary searches circular buffer and interpolates values for target timestamp.
+     * @dev Tick that prevailed at `targetTime`. Between observations i and i+1 the prevailing tick is exactly
+     * (cum[i+1] − cum[i]) / (t[i+1] − t[i]) because `write` accumulates the PREVIOUS latest tick.
+     * At or after the newest observation the prevailing tick is `latestTicks` (correct extrapolation).
      */
+    function _prevailingTickAt(PoolId poolId, uint32 targetTime, OracleState memory state)
+        internal
+        view
+        returns (bool ok, int24 tick)
+    {
+        uint16 cardinality = state.cardinality;
+        Observation memory newest = observations[poolId][state.index];
+        if (targetTime >= newest.blockTimestamp) return (true, latestTicks[poolId]);
+
+        uint16 oldestIndex = cardinality == 1 ? 0 : uint16((uint256(state.index) + 1) % cardinality);
+        if (!observations[poolId][oldestIndex].initialized) oldestIndex = 0;
+        if (targetTime < observations[poolId][oldestIndex].blockTimestamp) return (false, 0);
+
+        // Largest logical index k (from oldest) with t[k] <= targetTime; k < last because target < newest.
+        uint256 count = (uint256(state.index) + cardinality - oldestIndex) % cardinality + 1;
+        uint256 lo = 0;
+        uint256 hi = count - 1;
+        while (lo + 1 < hi) {
+            uint256 mid = (lo + hi) / 2;
+            if (observations[poolId][(oldestIndex + mid) % cardinality].blockTimestamp <= targetTime) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        Observation memory a = observations[poolId][(oldestIndex + lo) % cardinality];
+        Observation memory b = observations[poolId][(oldestIndex + lo + 1) % cardinality];
+        uint32 dt = b.blockTimestamp - a.blockTimestamp;
+        if (dt == 0) return (false, 0);
+        int56 dc = b.tickCumulative - a.tickCumulative;
+        return (true, int24(dc / int56(uint56(dt))));
+    }
+
     function _binarySearchAndInterpolate(PoolId poolId, uint32 targetTime, OracleState memory state)
         internal
         view
@@ -231,7 +261,12 @@ contract VolatilityTWAPOracle is IVolatilityTWAPOracle {
 
         if (targetTime < oldest.blockTimestamp) revert PluginErrors.ObservationWindowTooOld();
         if (targetTime >= newest.blockTimestamp) {
-            return (newest.tickCumulative, newest.secondsPerLiquidityCumulativeX128);
+            // Extrapolate past the newest observation with the tick that has prevailed since (ADR-0003).
+            unchecked {
+                tickCumulative = newest.tickCumulative + int56(latestTicks[poolId])
+                    * int56(uint56(targetTime - newest.blockTimestamp));
+            }
+            return (tickCumulative, newest.secondsPerLiquidityCumulativeX128);
         }
 
         // Binary search
