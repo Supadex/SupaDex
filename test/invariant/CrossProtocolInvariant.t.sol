@@ -234,9 +234,10 @@ contract CrossProtocolInvariantTest is StdInvariant, Test {
         Currency c1 = Currency.wrap(address(b));
         keys[0] = PoolKey(c0, c1, 3000, 60, address(0), CurveType.CLAMM);
         keys[1] = PoolKey(c0, c1, 2000, 10, address(0), CurveType.BIN_AMM);
-        keys[2] = PoolKey(c0, c1, 400, 100, address(0), CurveType.STABLE_AMM);
+        keys[2] = PoolKey(c0, c1, 400, 1, address(0), CurveType.STABLE_AMM); // A = 100 via init params
         for (uint256 i; i < 3; i++) {
-            pm.initialize(keys[i], 1 << 96, "");
+            if (i == 2) pm.initializeWithParams(keys[i], 1 << 96, abi.encode(uint256(100)), "");
+            else pm.initialize(keys[i], 1 << 96, "");
         }
         PoolKey[3] memory km = [keys[0], keys[1], keys[2]];
         h = new CrossProtocolHandler(vault, pm, t0, t1, km);

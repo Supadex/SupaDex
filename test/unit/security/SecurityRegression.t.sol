@@ -323,7 +323,7 @@ contract SecurityRegressionTest is Test {
         other.fee = 500;
         // Direct initialize grief blocked
         vm.expectRevert(PoolErrors.NotPoolManager.selector);
-        clamm.initialize(other, 1 << 96);
+        clamm.initialize(other, 1 << 96, "");
     }
 
     /// F3: protocol fee survives modifyLiquidity

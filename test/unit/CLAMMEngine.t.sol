@@ -31,13 +31,13 @@ contract CLAMMEngineTest is Test {
 
     function test_clammInitialize() public {
         uint160 initialSqrtPriceX96 = 1 << 96; // Price = 1.0 (Tick = 0)
-        int24 tick = engine.initialize(key, initialSqrtPriceX96);
+        int24 tick = engine.initialize(key, initialSqrtPriceX96, "");
         assertEq(tick, 0);
     }
 
     function test_clammModifyLiquidityAndSwap() public {
         uint160 initialSqrtPriceX96 = 1 << 96; // Price = 1.0
-        engine.initialize(key, initialSqrtPriceX96);
+        engine.initialize(key, initialSqrtPriceX96, "");
 
         // Add liquidity around tick 0: [-120, 120]
         IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
@@ -59,10 +59,10 @@ contract CLAMMEngineTest is Test {
     }
 
     function test_clammRejectsUnauthorizedCaller() public {
-        engine.initialize(key, 1 << 96);
+        engine.initialize(key, 1 << 96, "");
         vm.prank(address(0xBEEF));
         vm.expectRevert();
-        engine.initialize(key, 1 << 96);
+        engine.initialize(key, 1 << 96, "");
     }
 
     // ------------------------------------------------------------------ Issue 4: maxLiquidityPerTick
@@ -83,7 +83,7 @@ contract CLAMMEngineTest is Test {
     }
 
     function test_maxLiquidityPerTick_capEnforcedCumulatively() public {
-        engine.initialize(key, 1 << 96);
+        engine.initialize(key, 1 << 96, "");
         uint128 cap = engine.maxLiquidityPerTick(60);
         uint128 half = cap / 2;
         _mod(-120, 120, int128(half));
@@ -101,7 +101,7 @@ contract CLAMMEngineTest is Test {
     }
 
     function test_tickNotSpaced() public {
-        engine.initialize(key, 1 << 96);
+        engine.initialize(key, 1 << 96, "");
         vm.expectRevert(abi.encodeWithSelector(PoolErrors.TickNotSpaced.selector, int24(-61), int24(60)));
         _mod(-61, 120, 1000);
         vm.expectRevert(abi.encodeWithSelector(PoolErrors.TickNotSpaced.selector, int24(121), int24(60)));
@@ -111,7 +111,7 @@ contract CLAMMEngineTest is Test {
     /// Issue 7: crossing a huge empty gap costs O(1) per bitmap level, not O(gap / spacing).
     function test_gas_emptyGapCrossingBounded() public {
         key.tickSpacing = 1;
-        engine.initialize(key, 1 << 96);
+        engine.initialize(key, 1 << 96, "");
         _mod(-10, 10, 1e18);
         _mod(-800_000 + 0, -799_000, 1e18); // ~800k empty ticks away (spacing 1)
         uint256 g = gasleft();

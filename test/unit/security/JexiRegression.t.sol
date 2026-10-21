@@ -328,8 +328,8 @@ contract JexiRegressionTest is Test {
     /// Jexi 018: no try/catch. The dust swap must revert with the SPECIFIC error, the pool state must be unchanged,
     /// and a positive control proves the same actor/path executes normal swaps.
     function test_001_dustSwapsCannotDrainStablePool() public {
-        PoolKey memory k = _key(CurveType.STABLE_AMM, 500, 100, address(0));
-        pm.initialize(k, SQRT_1_1, "");
+        PoolKey memory k = _key(CurveType.STABLE_AMM, 500, 1, address(0));
+        pm.initializeWithParams(k, SQRT_1_1, abi.encode(uint256(100)), "");
         _actor(1e24).exec(_one(_op(0, k, 0, 0, int256(1000e18), false)));
         JFlashActor attacker = new JFlashActor(vault, pm);
         t0.mint(address(attacker), 1e18);
@@ -367,8 +367,8 @@ contract JexiRegressionTest is Test {
     /// zero of both tokens and pool reserves are unchanged. A funded positive control shows the round trip is
     /// executable and never profitable; the fuzz below covers sizes where rounding leaves an unpayable debt.
     function test_002_zeroCapitalAddRemoveExtractsNothing() public {
-        PoolKey memory k = _key(CurveType.STABLE_AMM, 500, 100, address(0));
-        pm.initialize(k, SQRT_1_1, "");
+        PoolKey memory k = _key(CurveType.STABLE_AMM, 500, 1, address(0));
+        pm.initializeWithParams(k, SQRT_1_1, abi.encode(uint256(100)), "");
         _actor(1e24).exec(_one(_op(0, k, 0, 0, int256(1000e18), false)));
         _swap(k, true, 100e18);
         (uint256 r0, uint256 r1) = stable.getReserves(k.toId());
@@ -409,8 +409,8 @@ contract JexiRegressionTest is Test {
     function test_fuzz_prop_stableAddRemoveNotProfitable(uint96 tradeIn, uint96 dep) public {
         tradeIn = uint96(bound(tradeIn, 1e15, 400e18));
         dep = uint96(bound(dep, 1e15, 1e24));
-        PoolKey memory k = _key(CurveType.STABLE_AMM, 500, 100, address(0));
-        pm.initialize(k, SQRT_1_1, "");
+        PoolKey memory k = _key(CurveType.STABLE_AMM, 500, 1, address(0));
+        pm.initializeWithParams(k, SQRT_1_1, abi.encode(uint256(100)), "");
         _actor(1e26).exec(_one(_op(0, k, 0, 0, int256(1000e18), false)));
         _swap(k, true, tradeIn);
         JFlashActor attacker = _actor(1e26);
@@ -685,7 +685,7 @@ contract JexiRegressionTest is Test {
     function test_012_binSharesProportionalRoundTrip() public {
         BinAMMEngine e = new BinAMMEngine(address(this));
         PoolKey memory k = _key(CurveType.BIN_AMM, 3000, 10, address(0));
-        e.initialize(k, SQRT_1_1);
+        e.initialize(k, SQRT_1_1, "");
         e.modifyLiquidity(k, IPoolManager.ModifyLiquidityParams(0, 0, int256(1000e18), bytes32(0)), address(1));
         e.swap(k, IPoolManager.SwapParams(true, 300e18, 0), 3000, 0);
         (BalanceDelta add,) =
@@ -700,7 +700,7 @@ contract JexiRegressionTest is Test {
         seed = uint96(bound(seed, 1e6, 1e24));
         BinAMMEngine e = new BinAMMEngine(address(this));
         PoolKey memory k = _key(CurveType.BIN_AMM, 3000, 10, address(0));
-        e.initialize(k, SQRT_1_1);
+        e.initialize(k, SQRT_1_1, "");
         e.modifyLiquidity(k, IPoolManager.ModifyLiquidityParams(0, 0, int256(uint256(seed)), bytes32(0)), address(1));
         tradeIn = uint96(bound(tradeIn, 0, seed / 2));
         if (tradeIn > 1000) {

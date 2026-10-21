@@ -217,7 +217,14 @@ contract BaselineRegressionTest is Test, IUnlockCallback {
     // ------------------------------------------------------------------ helpers
 
     function _key(CurveType ct) internal view returns (PoolKey memory) {
-        return PoolKey({currency0: c0, currency1: c1, fee: 3000, tickSpacing: 60, plugin: address(0), curveType: ct});
+        // STABLE: tickSpacing must be 1 and A (= 60, the A these baselines were written against) is an init param.
+        int24 spacing = ct == CurveType.STABLE_AMM ? int24(1) : int24(60);
+        return PoolKey({currency0: c0, currency1: c1, fee: 3000, tickSpacing: spacing, plugin: address(0), curveType: ct});
+    }
+
+    function _initPool(PoolKey memory k) internal {
+        if (k.curveType == CurveType.STABLE_AMM) manager.initializeWithParams(k, SQRT_1_1, abi.encode(uint256(60)), "");
+        else manager.initialize(k, SQRT_1_1, "");
     }
 
     function _actor(uint256 fund) internal returns (Actor act) {
@@ -251,7 +258,7 @@ contract BaselineRegressionTest is Test, IUnlockCallback {
     function _stablePool(uint256 shares) internal returns (PoolKey memory key) {
         key = _key(CurveType.STABLE_AMM);
         key.fee = 400;
-        manager.initialize(key, SQRT_1_1, "");
+        _initPool(key);
         _actor(type(uint128).max).run(key, _one(int256(shares)), 0, 0);
     }
 
@@ -260,7 +267,7 @@ contract BaselineRegressionTest is Test, IUnlockCallback {
     /// PoC-1 inverted: a stray 1-wei donation no longer bricks router swaps.
     function test_PoC1_strayDonationDoesNotBrickSwaps() public {
         PoolKey memory key = _key(CurveType.CLAMM);
-        manager.initialize(key, SQRT_1_1, "");
+        _initPool(key);
         _actor(1_000_000 ether).run(key, _one(int256(100_000 ether)), -1200, 1200);
         assertGt(_swap(key, true, 1 ether), 0);
 
@@ -302,7 +309,7 @@ contract BaselineRegressionTest is Test, IUnlockCallback {
             plugin: address(0),
             curveType: CurveType.CLAMM
         });
-        manager.initialize(key, SQRT_1_1, "");
+        _initPool(key);
         Actor act = new Actor(vault, manager);
         rb.mint(address(act), 1_000_000 ether);
         other.mint(address(act), 1_000_000 ether);
@@ -335,7 +342,7 @@ contract BaselineRegressionTest is Test, IUnlockCallback {
     /// PoC-3 inverted: the vault owner can no longer mint itself credit via accountDelta.
     function test_PoC3_ownerCannotAccountDelta() public {
         PoolKey memory key = _key(CurveType.CLAMM);
-        manager.initialize(key, SQRT_1_1, "");
+        _initPool(key);
         _actor(1_000_000 ether).run(key, _one(int256(100_000 ether)), -1200, 1200);
         uint256 lpFunds = vault.reservesOf(c0);
         vm.expectRevert(VaultErrors.Unauthorized.selector);
@@ -405,7 +412,7 @@ contract BaselineRegressionTest is Test, IUnlockCallback {
         vault.setCircuitBreaker(cb);
 
         PoolKey memory key = _key(CurveType.CLAMM);
-        manager.initialize(key, SQRT_1_1, "");
+        _initPool(key);
         Actor lp = _actor(1_000_000 ether);
         lp.run(key, _one(int256(100_000 ether)), -1200, 1200);
         _swap(key, true, 1 ether);
@@ -433,7 +440,7 @@ contract BaselineRegressionTest is Test, IUnlockCallback {
 
         PoolKey memory key = _key(CurveType.CLAMM);
         key.plugin = address(p);
-        manager.initialize(key, SQRT_1_1, "");
+        _initPool(key);
         assertEq(manager.pluginPermissions(key.toId()), 0);
 
         p.setPerms(0xFF); // every hook now reverts if dispatched
@@ -450,7 +457,7 @@ contract BaselineRegressionTest is Test, IUnlockCallback {
         PoolKey memory key = _key(CurveType.CLAMM);
         key.plugin = address(p);
         vm.expectRevert();
-        manager.initialize(key, SQRT_1_1, "");
+        _initPool(key);
     }
 
     // ------------------------------------------------------------------ SDX-004 CLAMM gap crossing
@@ -458,7 +465,7 @@ contract BaselineRegressionTest is Test, IUnlockCallback {
     /// PoC-4 inverted: price crosses an empty range to reach out-of-range liquidity.
     function test_PoC4_clammCrossesLiquidityGap() public {
         PoolKey memory key = _key(CurveType.CLAMM);
-        manager.initialize(key, SQRT_1_1, "");
+        _initPool(key);
         _actor(1_000_000 ether).run(key, _one(int256(100_000 ether)), 600, 1200);
         uint256 out = _swap(key, false, 1 ether);
         assertGt(out, 0, "swap fills from liquidity above the gap");
@@ -469,7 +476,7 @@ contract BaselineRegressionTest is Test, IUnlockCallback {
     /// Gap on both sides: liquidity below and above, empty middle; swaps in both directions fill.
     function test_clammGapCrossingBothDirections() public {
         PoolKey memory key = _key(CurveType.CLAMM);
-        manager.initialize(key, SQRT_1_1, "");
+        _initPool(key);
         _actor(10_000_000 ether).run(key, _one(int256(100_000 ether)), 600, 1200);
         _actor(10_000_000 ether).run(key, _one(int256(100_000 ether)), -1200, -600);
         assertGt(_swap(key, false, 1 ether), 0);
@@ -484,7 +491,7 @@ contract BaselineRegressionTest is Test, IUnlockCallback {
     function test_PoC5_binPriceMovesAcrossBins() public {
         assertTrue(manager.binAmmEnabled());
         PoolKey memory key = _key(CurveType.BIN_AMM); // tickSpacing 60 = 0.6% bin step
-        manager.initialize(key, SQRT_1_1, "");
+        _initPool(key);
         _actor(10_000_000 ether).run(key, _one(int256(1000 ether)), -10, 10);
         uint160 p0 = Slot0Library.sqrtPriceX96(manager.getSlot0(key.toId()));
         assertGt(_swap(key, true, 3000 ether), 0);
@@ -618,7 +625,7 @@ contract BaselineRegressionTest is Test, IUnlockCallback {
 
     function test_stableFirstDepositLocksMinimumLiquidity() public {
         PoolKey memory key = _key(CurveType.STABLE_AMM);
-        manager.initialize(key, SQRT_1_1, "");
+        _initPool(key);
         Actor a = _actor(1 ether);
         vm.expectRevert(
             abi.encodeWithSelector(PoolErrors.InsufficientInitialLiquidity.selector, uint256(1000), uint256(1000))

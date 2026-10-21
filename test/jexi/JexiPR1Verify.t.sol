@@ -5,7 +5,7 @@ pragma solidity ^0.8.26;
 // JexiSupaDexTest (proxy vault, timelock owner, circuit breaker, whitelist with real plugins).
 //
 // Ported into the repo by remediation-2 (Jexi 018). Port changes (each marked "PORT:"):
-//  - STABLE keys use tickSpacing 100: tickSpacing now carries the amplification A (ADR-0007) and 100 is the old
+//  - STABLE keys use tickSpacing 1 and pass A = 100 at initialize (ADR-0007 rev. 2); 100 is the old
 //    fixed production A that these tests were written against.
 //  - Tests that DOCUMENTED a bug (BIN frozen price 005, StableSwap freeze 015, gap-walk gas 016) are inverted to
 //    assert the fixed behaviour; the original observation is kept in the comment.
@@ -131,8 +131,8 @@ contract JexiPR1VerifyTest is JexiSupaDexTest {
 
     // ================================================================ Stable swap round trips
     function _stablePool(uint24 fee, uint256 seed, uint256 skew, bool skewDir) internal returns (PoolKey memory k) {
-        k = _key(CurveType.STABLE_AMM, fee, 100, address(0)); // PORT: A = 100
-        pm.initialize(k, SQRT_1_1, "");
+        k = _key(CurveType.STABLE_AMM, fee, 1, address(0)); // PORT: A = 100 via init params (ADR-0007 rev. 2)
+        pm.initializeWithParams(k, SQRT_1_1, abi.encode(uint256(100)), "");
         _actor(1e30).exec(_one(_op(0, k, 0, 0, int256(seed), false)));
         if (skew >= 1e4) _actor(1e30).exec(_one(_op(1, k, 0, 0, int256(skew), skewDir)));
     }
@@ -176,8 +176,8 @@ contract JexiPR1VerifyTest is JexiSupaDexTest {
     ) public {
         seed = bound(seed, 1e6, 1e24);
         uint256 skew = seed * bound(skewMul, 1, 20);
-        PoolKey memory k = _key(CurveType.STABLE_AMM, 0, 100, address(0)); // PORT: A = 100
-        pm.initialize(k, SQRT_1_1, "");
+        PoolKey memory k = _key(CurveType.STABLE_AMM, 0, 1, address(0)); // PORT: A = 100 via init params (ADR-0007 rev. 2)
+        pm.initializeWithParams(k, SQRT_1_1, abi.encode(uint256(100)), "");
         _actor(1e30).exec(_one(_op(0, k, 0, 0, int256(seed), false)));
         // PORT (015/ADR-0008): skews beyond MAX_IMBALANCE_RATIO are now rejected with the explicit bound error; such
         // states are unreachable, so the round-trip property only applies to reachable skews.
@@ -245,8 +245,8 @@ contract JexiPR1VerifyTest is JexiSupaDexTest {
         seedShares = bound(seedShares, 1001, 1e6);
         spam = uint8(bound(spam, 0, 80));
         victim = bound(victim, 1e3, 1e24);
-        PoolKey memory k = _key(CurveType.STABLE_AMM, 3000, 100, address(0)); // PORT: A = 100
-        pm.initialize(k, SQRT_1_1, "");
+        PoolKey memory k = _key(CurveType.STABLE_AMM, 3000, 1, address(0)); // PORT: A = 100 via init params (ADR-0007 rev. 2)
+        pm.initializeWithParams(k, SQRT_1_1, abi.encode(uint256(100)), "");
         JFlashActor att = _actor(1e30);
         att.exec(_one(_op(0, k, 0, 0, int256(seedShares), false)));
         att.exec(_one(_op(0, k, 0, 0, -int256(seedShares - 1000), false))); // only locked 1000 remain
@@ -530,8 +530,8 @@ contract JexiPR1VerifyTest is JexiSupaDexTest {
     }
 
     function test_lvr_onStablePool_baseFeeOnly() public {
-        PoolKey memory k = _key(CurveType.STABLE_AMM, 500, 100, address(lvr)); // PORT: A = 100
-        pm.initialize(k, SQRT_1_1, "");
+        PoolKey memory k = _key(CurveType.STABLE_AMM, 500, 1, address(lvr)); // PORT: A = 100 via init params (ADR-0007 rev. 2)
+        pm.initializeWithParams(k, SQRT_1_1, abi.encode(uint256(100)), "");
         _actor(1e24).exec(_one(_op(0, k, 0, 0, int256(1000e18), false)));
         vm.warp(block.timestamp + 600);
         uint256 out = _swap(k, true, 1e18);

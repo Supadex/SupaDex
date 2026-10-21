@@ -207,6 +207,27 @@ contract SupaPoolManager is IPoolManager {
         override
         returns (int24 tick)
     {
+        return _initialize(key, sqrtPriceX96, "");
+    }
+
+    /// @inheritdoc IPoolManager
+    function initializeWithParams(
+        PoolKey memory key,
+        uint160 sqrtPriceX96,
+        bytes calldata initParams,
+        bytes calldata /* hookData */
+    )
+        external
+        override
+        returns (int24 tick)
+    {
+        return _initialize(key, sqrtPriceX96, initParams);
+    }
+
+    function _initialize(PoolKey memory key, uint160 sqrtPriceX96, bytes memory initParams)
+        internal
+        returns (int24 tick)
+    {
         if (Currency.unwrap(key.currency0) >= Currency.unwrap(key.currency1)) {
             revert PoolErrors.CurrenciesOutOfOrderOrEqual();
         }
@@ -232,7 +253,7 @@ contract SupaPoolManager is IPoolManager {
         PluginDispatcher.dispatchBeforeInitialize(key.plugin, permissions, msg.sender, key, sqrtPriceX96);
 
         ICurveEngine engine = getCurveEngine(key.curveType);
-        tick = engine.initialize(key, sqrtPriceX96);
+        tick = engine.initialize(key, sqrtPriceX96, initParams);
 
         Slot0 initialSlot0 = Slot0Library.pack(sqrtPriceX96, tick, 0, key.fee, true);
         poolSlot0[id] = initialSlot0;

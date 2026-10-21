@@ -191,6 +191,21 @@ library PoolErrors {
     error StableInvariantViolated(uint256 dBefore, uint256 dAfter);
 
     /**
+     * @notice STABLE: stopRampA called while no amplification ramp is active (Edith 7-B).
+     */
+    error StableNoActiveRamp(uint256 futureATime);
+
+    /**
+     * @notice Curve-specific pool creation parameters are malformed (CLAMM/BIN: must be empty; STABLE: abi.encode(A)).
+     */
+    error InvalidInitParams();
+
+    /**
+     * @notice STABLE: governance amplification range invalid (must satisfy MIN_A <= minA <= maxA <= MAX_A).
+     */
+    error StableInvalidARange(uint256 minA, uint256 maxA);
+
+    /**
      * @notice Caller is not the governance owner of the PoolManager (timelock).
      */
     error NotGovernance();

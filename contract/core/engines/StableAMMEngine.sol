@@ -27,7 +27,8 @@ import {TickMathLib} from "../../libraries/TickMathLib.sol";
  *  - Decimals (Issue 2): each token's balance is normalised to 18 decimals with an exact integer multiplier
  *    `rate = 10^(18 - decimals)` (tokens with > 18 decimals are rejected). All invariant math runs on normalised
  *    balances; raw amounts are rounded against the trader when converted back (outputs down, inputs up).
- *  - Amplification (Issue 2): the initial A is `PoolKey.tickSpacing` (bounded to [MIN_A, MAX_A]); governance
+ *  - Amplification (Issue 2, ADR-0007 rev. 2): the creator passes the initial A in `initParams` (tickSpacing must be 1),
+ *    within the governance range [minA, maxA] (hard bounds [MIN_A, MAX_A]); governance
  *    (PoolManager owner = timelock) can ramp A linearly over >= MIN_RAMP_TIME by at most MAX_A_CHANGE x, Curve-style;
  *    governance or a circuit-breaker guardian can stop a ramp. A uses A_PRECISION = 100 internally.
  *  - Imbalance (Issue 6 / APUS-SUPADEX-015): a swap may not leave the normalised reserves more imbalanced than
@@ -44,10 +45,14 @@ import {TickMathLib} from "../../libraries/TickMathLib.sol";
 contract StableAMMEngine is ICurveEngine {
     using Slot0Library for Slot0;
 
-    /// @notice Kept for compatibility: the A used by tests/tools that do not specify one.
+    /// @notice Recommended creator default for USD-stable pairs (frontend default; not enforced).
     uint256 public constant DEFAULT_A = 100;
+    /// @notice Hard protocol outer bounds for any A (initial, range or ramp target).
     uint256 public constant MIN_A = 1;
     uint256 public constant MAX_A = 10_000;
+    /// @notice Initial governance creator range [minA, maxA] (timelock can change within [MIN_A, MAX_A]).
+    uint256 public constant INITIAL_MIN_A = 10;
+    uint256 public constant INITIAL_MAX_A = 5_000;
     uint256 public constant A_PRECISION = 100;
     uint256 public constant MIN_RAMP_TIME = 1 days;
     uint256 public constant MAX_A_CHANGE = 10;
@@ -55,6 +60,10 @@ contract StableAMMEngine is ICurveEngine {
     uint256 public constant MAX_IMBALANCE_RATIO = 10_000;
     /// @notice Per-side cap on normalised reserves (keeps every intermediate product far below 2^256).
     uint256 public constant MAX_NORMALIZED_RESERVE = 1e34;
+    /// @notice Largest D / x the y-solver accepts. Supported states have D / lo <= MAX_IMBALANCE_RATIO + 1, so this is a
+    /// 5x margin; beyond it the Newton iterates (~D^2 / (16 A x)) could overflow, so we revert with the classified
+    /// `StableImbalanceExceeded` instead of panicking (Edith G-1 / 8-A).
+    uint256 internal constant SOLVER_DOMAIN_RATIO = 50_000;
     /// @notice D may come out a few wei lower after a swap purely from solver rounding.
     uint256 internal constant D_TOLERANCE = 16;
     uint256 internal constant N_COINS = 2;
@@ -84,8 +93,14 @@ contract StableAMMEngine is ICurveEngine {
 
     mapping(PoolId => StablePoolState) internal pools;
 
+    /// @notice Creator-selectable amplification range (human units). Timelock-only via setAmplificationRange.
+    uint256 public minA;
+    uint256 public maxA;
+
     event RampA(PoolId indexed id, uint256 oldAPrecise, uint256 newAPrecise, uint256 initialTime, uint256 futureTime);
     event StopRampA(PoolId indexed id, uint256 currentAPrecise, uint256 time);
+    event StableAInitialized(PoolId indexed id, uint256 aPrecise);
+    event AmplificationRangeSet(uint256 minA, uint256 maxA);
 
     modifier onlyPoolManager() {
         if (msg.sender != poolManager) revert PoolErrors.NotPoolManager();
@@ -95,11 +110,13 @@ contract StableAMMEngine is ICurveEngine {
     constructor(address _poolManager) {
         if (_poolManager == address(0)) revert PoolErrors.NotPoolManager();
         poolManager = _poolManager;
+        minA = INITIAL_MIN_A;
+        maxA = INITIAL_MAX_A;
     }
 
     // ------------------------------------------------------------------ initialize
 
-    function initialize(PoolKey memory key, uint160 sqrtPriceX96)
+    function initialize(PoolKey memory key, uint160 sqrtPriceX96, bytes memory initParams)
         external
         override
         onlyPoolManager
@@ -119,15 +136,44 @@ contract StableAMMEngine is ICurveEngine {
         pool.rate0 = uint64(10 ** (18 - d0));
         pool.rate1 = uint64(10 ** (18 - d1));
 
-        uint256 a = uint256(int256(key.tickSpacing));
-        if (a < MIN_A || a > MAX_A) revert PoolErrors.StableInvalidAmplification(a);
-        pool.initialAPrecise = uint64(a * A_PRECISION);
-        pool.futureAPrecise = uint64(a * A_PRECISION);
+        uint256 aPrecise = _initialAPrecise(key, initParams);
+        pool.initialAPrecise = uint64(aPrecise);
+        pool.futureAPrecise = uint64(aPrecise);
         pool.initialATime = uint40(block.timestamp);
         pool.futureATime = uint40(block.timestamp);
 
         tick = TickMathLib.getTickAtSqrtRatio(sqrtPriceX96);
         pool.slot0 = Slot0Library.pack(sqrtPriceX96, tick, 0, key.fee, true);
+    }
+
+    /**
+     * @dev Initial amplification (ADR-0007 rev. 2, Edith 7-A; Curve-factory style, decided 2026-10-21):
+     *  - A is NOT part of the pool identity: STABLE pools require `key.tickSpacing == 1` (one canonical pool per
+     *    pair / fee / plugin) and the creator passes A in `initParams = abi.encode(uint256 A)`;
+     *  - A must lie in the governance range [minA, maxA] (timelock-set; hard outer bounds MIN_A / MAX_A);
+     *  - after creation A only changes through the timelocked, bounded `rampA`. Read it via `getAmplification`.
+     */
+    function _initialAPrecise(PoolKey memory key, bytes memory initParams) internal returns (uint256) {
+        if (key.tickSpacing != 1) revert PoolErrors.InvalidTickSpacing(key.tickSpacing);
+        if (initParams.length != 32) revert PoolErrors.InvalidInitParams();
+        uint256 a = abi.decode(initParams, (uint256));
+        if (a < minA || a > maxA) revert PoolErrors.StableInvalidAmplification(a);
+        emit StableAInitialized(key.toId(), a * A_PRECISION);
+        return a * A_PRECISION;
+    }
+
+    /**
+     * @notice Set the A range pool creators may choose from. Only the PoolManager owner (timelock).
+     * @dev Does not affect existing pools; ramps stay bounded by the hard MIN_A / MAX_A constants and MAX_A_CHANGE.
+     */
+    function setAmplificationRange(uint256 newMinA, uint256 newMaxA) external {
+        if (msg.sender != _governance()) revert PoolErrors.NotGovernance();
+        if (newMinA < MIN_A || newMinA > newMaxA || newMaxA > MAX_A) {
+            revert PoolErrors.StableInvalidARange(newMinA, newMaxA);
+        }
+        minA = newMinA;
+        maxA = newMaxA;
+        emit AmplificationRangeSet(newMinA, newMaxA);
     }
 
     // ------------------------------------------------------------------ liquidity
@@ -242,6 +288,8 @@ contract StableAMMEngine is ICurveEngine {
         uint256 amountIn;
         uint256 amountInAfterFee;
         uint256 amountOut;
+        uint256 xp0Before;
+        uint256 xp1Before;
     }
 
     function swap(PoolKey memory key, IPoolManager.SwapParams memory params, uint24 fee, uint24 protocolFee)
@@ -259,6 +307,7 @@ contract StableAMMEngine is ICurveEngine {
         SwapVars memory v;
         (uint256 xp0, uint256 xp1) = _xp(pool);
         if (xp0 == 0 || xp1 == 0) revert PoolErrors.InsufficientLiquidity();
+        (v.xp0Before, v.xp1Before) = (xp0, xp1);
         (v.xpIn, v.xpOut) = params.zeroForOne ? (xp0, xp1) : (xp1, xp0);
         (v.rateIn, v.rateOut) = params.zeroForOne ? (pool.rate0, pool.rate1) : (pool.rate1, pool.rate0);
         v.aPrecise = _currentAPrecise(pool);
@@ -297,6 +346,10 @@ contract StableAMMEngine is ICurveEngine {
         uint256 feeAmount = FullMathLib.mulDivRoundingUp(amountIn, fee, MAX_FEE_PIPS);
         if (feeAmount >= amountIn) revert PoolErrors.ZeroSwapAmount();
         v.amountInAfterFee = amountIn - feeAmount;
+        // The input side can never exceed the per-side cap; reject before `amount * rate` can overflow.
+        if (v.amountInAfterFee > (MAX_NORMALIZED_RESERVE - _min(v.xpIn, MAX_NORMALIZED_RESERVE)) / v.rateIn) {
+            revert PoolErrors.StableImbalanceExceeded(type(uint256).max, v.xpOut, MAX_IMBALANCE_RATIO);
+        }
 
         uint256 newOut = _getY(v.xpIn + v.amountInAfterFee * v.rateIn, v.d, v.aPrecise);
         // Measure from min(xpOut, solved y at the CURRENT x) so solver error in D cannot be paid out.
@@ -310,8 +363,21 @@ contract StableAMMEngine is ICurveEngine {
     /// @dev Exact output: input rounded up (2 wei normalised safety margin), fee grossed up on top.
     function _quoteExactOut(SwapVars memory v, uint256 amountOut, uint24 fee) internal pure {
         v.amountOut = amountOut;
+        // amountOut * rateOut < xpOut  <=>  amountOut <= (xpOut - 1) / rateOut  (checked before multiplying).
+        if (amountOut > (v.xpOut - 1) / v.rateOut) revert PoolErrors.InsufficientLiquidity();
         uint256 outNorm = amountOut * v.rateOut;
-        if (outNorm >= v.xpOut) revert PoolErrors.InsufficientLiquidity();
+        uint256 outAfter = v.xpOut - outNorm;
+        // Edith G-1 / 8-A: the input side only grows on exact-out, so the result is at least xpIn : outAfter.
+        // Classify a trade that necessarily leaves the pool beyond the bound BEFORE solving (the solver would
+        // otherwise run far outside its domain). Condition 7: allowed only if it strictly reduces an existing breach.
+        if (v.xpIn / MAX_IMBALANCE_RATIO > outAfter) {
+            (uint256 hiB, uint256 loB) = v.xpIn >= v.xpOut ? (v.xpIn, v.xpOut) : (v.xpOut, v.xpIn);
+            bool preBreach = hiB / MAX_IMBALANCE_RATIO > loB;
+            // post ratio >= xpIn / outAfter; strictly reducing requires xpIn / outAfter < hiB / loB.
+            if (!preBreach || v.xpIn * loB >= hiB * outAfter) {
+                revert PoolErrors.StableImbalanceExceeded(v.xpIn, outAfter, MAX_IMBALANCE_RATIO);
+            }
+        }
         uint256 newIn = _getY(v.xpOut - outNorm, v.d, v.aPrecise) + 2;
         uint256 baseIn = _getY(v.xpOut, v.d, v.aPrecise);
         if (baseIn > v.xpIn) baseIn = v.xpIn;
@@ -325,7 +391,7 @@ contract StableAMMEngine is ICurveEngine {
         internal
     {
         (uint256 xp0, uint256 xp1) = _xp(pool);
-        _checkReserveBounds(xp0, xp1);
+        _checkSwapBounds(v.xp0Before, v.xp1Before, xp0, xp1);
         uint256 dAfter = _computeD(xp0, xp1, v.aPrecise);
         if (dAfter + D_TOLERANCE < v.d) revert PoolErrors.StableInvariantViolated(v.d, dAfter);
 
@@ -341,10 +407,13 @@ contract StableAMMEngine is ICurveEngine {
         // totalLiquidity >= MINIMUM_LIQUIDITY whenever reserves are non-zero, so fees are never orphaned.
         if (lpFee > 0 && pool.totalLiquidity > 0) {
             uint256 delta = FullMathLib.mulDiv(lpFee, Q128, pool.totalLiquidity);
-            if (zeroForOne) {
-                pool.feeGrowthGlobal0X128 += delta;
-            } else {
-                pool.feeGrowthGlobal1X128 += delta;
+            // mod-2^256 accumulator (Uniswap semantics); positions take wrapping differences.
+            unchecked {
+                if (zeroForOne) {
+                    pool.feeGrowthGlobal0X128 += delta;
+                } else {
+                    pool.feeGrowthGlobal1X128 += delta;
+                }
             }
         }
     }
@@ -360,6 +429,26 @@ contract StableAMMEngine is ICurveEngine {
         if (hi > MAX_NORMALIZED_RESERVE || lo == 0 || hi / MAX_IMBALANCE_RATIO > lo) {
             revert PoolErrors.StableImbalanceExceeded(hi, lo, MAX_IMBALANCE_RATIO);
         }
+    }
+
+    /**
+     * @dev Swap bound (Edith 8-B / condition 7). A swap must leave the pool inside the fixed, ungoverned bound —
+     * EXCEPT when the pool is already outside it (only reachable through proportional-remove rounding at the
+     * boundary): then a swap is allowed iff it STRICTLY reduces the imbalance ratio (and respects the per-side cap).
+     * MAX_IMBALANCE_RATIO stays a compile-time constant.
+     */
+    function _checkSwapBounds(uint256 pre0, uint256 pre1, uint256 post0, uint256 post1) internal pure {
+        (uint256 hi, uint256 lo) = post0 >= post1 ? (post0, post1) : (post1, post0);
+        if (hi <= MAX_NORMALIZED_RESERVE && lo != 0 && hi / MAX_IMBALANCE_RATIO <= lo) return;
+        (uint256 hiB, uint256 loB) = pre0 >= pre1 ? (pre0, pre1) : (pre1, pre0);
+        bool preBreach = hiB / MAX_IMBALANCE_RATIO > loB;
+        // ratios compared by cross-multiplication; both sides <= ~1e34 so products fit in 256 bits.
+        if (preBreach && hi <= MAX_NORMALIZED_RESERVE && lo != 0 && hi * loB < hiB * lo) return;
+        revert PoolErrors.StableImbalanceExceeded(hi, lo, MAX_IMBALANCE_RATIO);
+    }
+
+    function _min(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a < b ? a : b;
     }
 
     // ------------------------------------------------------------------ amplification governance
@@ -406,6 +495,8 @@ contract StableAMMEngine is ICurveEngine {
     }
 
     /// @notice Freeze A at its current value. PoolManager owner (timelock) or any circuit-breaker guardian.
+    /// @dev Only while a ramp is active (Edith 7-B): otherwise a guardian could keep resetting `initialATime` and
+    /// block governance ramps (which require MIN_RAMP_TIME since the last change) indefinitely.
     function stopRampA(PoolKey calldata key) external {
         if (msg.sender != _governance()) {
             ICircuitBreaker cb = IPoolManagerAdmin(poolManager).circuitBreaker();
@@ -414,6 +505,7 @@ contract StableAMMEngine is ICurveEngine {
         PoolId id = key.toId();
         StablePoolState storage pool = pools[id];
         if (!pool.slot0.isInitialized()) revert PoolErrors.PoolNotInitialized(id);
+        if (block.timestamp >= pool.futureATime) revert PoolErrors.StableNoActiveRamp(pool.futureATime);
         uint256 current = _currentAPrecise(pool);
         pool.initialAPrecise = uint64(current);
         pool.futureAPrecise = uint64(current);
@@ -522,6 +614,8 @@ contract StableAMMEngine is ICurveEngine {
     /// @dev Curve get_y Newton iteration; one unconditional step, then monotone-decreasing stop rule.
     function _getY(uint256 newX, uint256 d, uint256 aPrecise) internal pure returns (uint256 y) {
         if (newX == 0) revert PoolErrors.InsufficientLiquidity();
+        // Solver domain guard (Edith G-1): far outside the supported range the iterates overflow; classify instead.
+        if (d / SOLVER_DOMAIN_RATIO > newX) revert PoolErrors.StableImbalanceExceeded(d, newX, MAX_IMBALANCE_RATIO);
         uint256 ann = aPrecise * N_COINS * N_COINS;
         uint256 c = FullMathLib.mulDiv(FullMathLib.mulDiv(d, d, newX * N_COINS), d * A_PRECISION, ann * N_COINS);
         uint256 b = newX + d * A_PRECISION / ann;
@@ -555,11 +649,12 @@ contract StableAMMEngine is ICurveEngine {
         if (amount0 == 0 && amount1 == 0) return;
         uint128 liquidity = pool.totalLiquidity;
         if (liquidity == 0) revert PoolErrors.NoLiquidityToDonate();
-        if (amount0 > 0) {
-            pool.feeGrowthGlobal0X128 += FullMathLib.mulDiv(amount0, Q128, liquidity);
-        }
-        if (amount1 > 0) {
-            pool.feeGrowthGlobal1X128 += FullMathLib.mulDiv(amount1, Q128, liquidity);
+        uint256 g0 = amount0 > 0 ? FullMathLib.mulDiv(amount0, Q128, liquidity) : 0;
+        uint256 g1 = amount1 > 0 ? FullMathLib.mulDiv(amount1, Q128, liquidity) : 0;
+        // mod-2^256 accumulator (Uniswap semantics).
+        unchecked {
+            pool.feeGrowthGlobal0X128 += g0;
+            pool.feeGrowthGlobal1X128 += g1;
         }
     }
 

@@ -122,12 +122,13 @@ contract BinAMMEngine is ICurveEngine {
 
     // ------------------------------------------------------------------ initialize
 
-    function initialize(PoolKey memory key, uint160 sqrtPriceX96)
+    function initialize(PoolKey memory key, uint160 sqrtPriceX96, bytes memory initParams)
         external
         override
         onlyPoolManager
         returns (int24 tick)
     {
+        if (initParams.length != 0) revert PoolErrors.InvalidInitParams();
         PoolId id = key.toId();
         BinPoolState storage pool = pools[id];
         if (pool.slot0.isInitialized()) revert PoolErrors.PoolAlreadyInitialized(id);
@@ -414,8 +415,12 @@ contract BinAMMEngine is ICurveEngine {
             s.protocolFee += protocolTake;
             if (lpFee > 0) {
                 uint256 g = FullMathLib.mulDiv(lpFee, Q128, bin.totalShares);
-                if (ctx.zeroForOne) bin.feeGrowth0X128 += g;
-                else bin.feeGrowth1X128 += g;
+                // Fee growth is a mod-2^256 accumulator (Uniswap semantics): only differences are meaningful, so
+                // wrapping is intended and a saturated accumulator can never block swaps (Edith E-1 price wall).
+                unchecked {
+                    if (ctx.zeroForOne) bin.feeGrowth0X128 += g;
+                    else bin.feeGrowth1X128 += g;
+                }
             }
         }
     }
@@ -460,8 +465,13 @@ contract BinAMMEngine is ICurveEngine {
         Bin storage activeBin = pool.bins[pool.activeId];
         uint128 shares = activeBin.totalShares;
         if (shares == 0) revert PoolErrors.NoLiquidityToDonate();
-        if (amount0 > 0) activeBin.feeGrowth0X128 += FullMathLib.mulDiv(amount0, Q128, shares);
-        if (amount1 > 0) activeBin.feeGrowth1X128 += FullMathLib.mulDiv(amount1, Q128, shares);
+        uint256 g0 = amount0 > 0 ? FullMathLib.mulDiv(amount0, Q128, shares) : 0;
+        uint256 g1 = amount1 > 0 ? FullMathLib.mulDiv(amount1, Q128, shares) : 0;
+        // mod-2^256 accumulator (see _swapInBin).
+        unchecked {
+            activeBin.feeGrowth0X128 += g0;
+            activeBin.feeGrowth1X128 += g1;
+        }
     }
 
     function getSlot0(PoolId id) external view override returns (Slot0) {

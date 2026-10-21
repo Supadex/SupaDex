@@ -56,7 +56,17 @@ contract StableAMMEngineTest is Test {
         circuitBreaker = new MockGuardianBreaker();
         circuitBreaker.set(GUARDIAN);
         engine = new StableAMMEngine(address(this));
+        // Tests exercise the full hard range [MIN_A, MAX_A]; production starts at [INITIAL_MIN_A, INITIAL_MAX_A].
+        engine.setAmplificationRange(1, 10_000);
         key = _key(18, 18, 100);
+    }
+
+    /// @dev ADR-0007 rev. 2: A is a creator-chosen init param (tickSpacing must be 1). Tests remember the A they
+    /// want per pool and pass it at initialize.
+    mapping(PoolId => uint256) internal aFor;
+
+    function _init(PoolKey memory k, uint160 sqrtP) internal {
+        engine.initialize(k, sqrtP, abi.encode(aFor[k.toId()]));
     }
 
     // ------------------------------------------------------------------ helpers
@@ -71,10 +81,11 @@ contract StableAMMEngineTest is Test {
             currency0: Currency.wrap(t0),
             currency1: Currency.wrap(t1),
             fee: 400,
-            tickSpacing: a,
+            tickSpacing: 1,
             plugin: address(0),
             curveType: CurveType.STABLE_AMM
         });
+        aFor[k.toId()] = uint256(int256(a));
     }
 
     function _add(PoolKey memory k, int256 shares) internal returns (BalanceDelta d) {
@@ -95,7 +106,7 @@ contract StableAMMEngineTest is Test {
     }
 
     function _seed(PoolKey memory k, uint160 sqrtP, int256 shares) internal {
-        engine.initialize(k, sqrtP);
+        _init(k, sqrtP);
         _add(k, shares);
     }
 
@@ -145,8 +156,8 @@ contract StableAMMEngineTest is Test {
 
     function test_decimalsAbove18Rejected() public {
         PoolKey memory k = _key(24, 18, 100);
-        vm.expectRevert();
-        engine.initialize(k, SQRT_1_1);
+        vm.expectRevert(abi.encodeWithSelector(PoolErrors.StableDecimalsUnsupported.selector, 24, 18));
+        _init(k, SQRT_1_1);
     }
 
     // ------------------------------------------------------------------ Issue 2: amplification config
@@ -154,12 +165,12 @@ contract StableAMMEngineTest is Test {
     function test_amplificationBounds() public {
         PoolKey memory k0 = _key(18, 18, 0);
         vm.expectRevert(abi.encodeWithSelector(PoolErrors.StableInvalidAmplification.selector, 0));
-        engine.initialize(k0, SQRT_1_1);
+        _init(k0, SQRT_1_1);
         PoolKey memory kHi = _key(18, 18, 10_001);
         vm.expectRevert(abi.encodeWithSelector(PoolErrors.StableInvalidAmplification.selector, 10_001));
-        engine.initialize(kHi, SQRT_1_1);
+        _init(kHi, SQRT_1_1);
         PoolKey memory k1 = _key(18, 18, 1);
-        engine.initialize(k1, SQRT_1_1);
+        _init(k1, SQRT_1_1);
         assertEq(engine.getA(k1.toId()), 1);
     }
 

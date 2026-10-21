@@ -240,7 +240,7 @@ contract MultiCurveSolvencyInvariantTest is StdInvariant, Test {
             currency0: cA,
             currency1: cC,
             fee: 500,
-            tickSpacing: 100,
+            tickSpacing: 1, // STABLE: A passed at initialize (ADR-0007 rev. 2)
             plugin: address(0),
             curveType: CurveType.STABLE_AMM
         });
@@ -248,7 +248,7 @@ contract MultiCurveSolvencyInvariantTest is StdInvariant, Test {
         // Initialize pools
         manager.initialize(clammKey, 1 << 96, "");
         manager.initialize(binKey, 1 << 96, "");
-        manager.initialize(stableKey, 1 << 96, "");
+        manager.initializeWithParams(stableKey, 1 << 96, abi.encode(uint256(100)), "");
 
         handler = new MultiCurveHandler(vault, manager, clammKey, binKey, stableKey, tokenA, tokenB, tokenC);
 

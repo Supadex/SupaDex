@@ -48,6 +48,19 @@ interface IPoolManager is IPoolEvents {
     function initialize(PoolKey memory key, uint160 sqrtPriceX96, bytes calldata hookData) external returns (int24 tick);
 
     /**
+     * @notice Initializes a new pool with curve-specific creation parameters.
+     * @dev Required for STABLE pools: `initParams = abi.encode(uint256 initialA)` with `key.tickSpacing == 1`;
+     * A must lie in the StableAMMEngine's governance range [minA, maxA]. CLAMM / BIN: `initParams` must be empty
+     * (equivalent to `initialize`).
+     */
+    function initializeWithParams(
+        PoolKey memory key,
+        uint160 sqrtPriceX96,
+        bytes calldata initParams,
+        bytes calldata hookData
+    ) external returns (int24 tick);
+
+    /**
      * @notice Adds or removes liquidity from a pool.
      * @param key The pool identifier key.
      * @param params Liquidity change parameters.

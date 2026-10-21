@@ -67,7 +67,7 @@ contract BinAMMEngineTest is Test {
     // ------------------------------------------------------------------ pricing
 
     function test_initializeAtPriceOne() public {
-        engine.initialize(key, SQRT_1_1);
+        engine.initialize(key, SQRT_1_1, "");
         assertEq(engine.getActiveBinId(pid), 0);
         assertEq(engine.getSlot0(pid).tick(), 0);
         assertEq(engine.getSlot0(pid).sqrtPriceX96(), SQRT_1_1);
@@ -94,15 +94,15 @@ contract BinAMMEngineTest is Test {
 
     function test_invalidBinStepRejected() public {
         vm.expectRevert(abi.encodeWithSelector(PoolErrors.InvalidBinStep.selector, int24(0)));
-        engine.initialize(_key(0), SQRT_1_1);
+        engine.initialize(_key(0), SQRT_1_1, "");
         vm.expectRevert(abi.encodeWithSelector(PoolErrors.InvalidBinStep.selector, int24(201)));
-        engine.initialize(_key(201), SQRT_1_1);
+        engine.initialize(_key(201), SQRT_1_1, "");
     }
 
     // ------------------------------------------------------------------ liquidity distribution
 
     function test_seedingComposition() public {
-        engine.initialize(key, SQRT_1_1);
+        engine.initialize(key, SQRT_1_1, "");
         (BalanceDelta d,) = _modify(-5, 5, 1000 ether, 0);
         assertGt(d.amount0(), 0);
         assertGt(d.amount1(), 0);
@@ -118,7 +118,7 @@ contract BinAMMEngineTest is Test {
     }
 
     function test_rangeGuards() public {
-        engine.initialize(key, SQRT_1_1);
+        engine.initialize(key, SQRT_1_1, "");
         vm.expectRevert(abi.encodeWithSelector(PoolErrors.TicksMisordered.selector, int24(5), int24(-5)));
         _modify(5, -5, 1 ether, 0);
         vm.expectRevert(abi.encodeWithSelector(PoolErrors.BinRangeTooWide.selector, int24(0), int24(64), uint256(64)));
@@ -129,7 +129,7 @@ contract BinAMMEngineTest is Test {
     // ------------------------------------------------------------------ Issue 1: price moves across bins
 
     function test_swapMovesPriceAcrossBins() public {
-        engine.initialize(key, SQRT_1_1);
+        engine.initialize(key, SQRT_1_1, "");
         _modify(-10, 10, 100 ether, 0);
         uint160 p0 = engine.getSlot0(pid).sqrtPriceX96();
         // sell ~5 bins' worth of token1 liquidity
@@ -146,7 +146,7 @@ contract BinAMMEngineTest is Test {
     }
 
     function test_exactOutputAcrossBins() public {
-        engine.initialize(key, SQRT_1_1);
+        engine.initialize(key, SQRT_1_1, "");
         _modify(-10, 10, 100 ether, 0);
         BalanceDelta d = _swap(true, -int256(350 ether), 0);
         assertEq(-d.amount1(), int128(int256(350 ether)), "exact output delivered");
@@ -154,7 +154,7 @@ contract BinAMMEngineTest is Test {
     }
 
     function test_priceLimitStopsTraversal() public {
-        engine.initialize(key, SQRT_1_1);
+        engine.initialize(key, SQRT_1_1, "");
         _modify(-10, 10, 100 ether, 0);
         uint160 limit = uint160(BinMathLib.priceX128ToSqrtPriceX96(engine.getPriceFromId(-3, 10)));
         BalanceDelta d = _swap(true, 10_000 ether, limit);
@@ -169,7 +169,7 @@ contract BinAMMEngineTest is Test {
 
     /// Issue 7 analogue for bins: crossing a wide empty gap is O(1) (tree bitmap), not O(gap).
     function test_gapTraversalIsConstantGas() public {
-        engine.initialize(key, SQRT_1_1);
+        engine.initialize(key, SQRT_1_1, "");
         _modify(0, 0, 1 ether, 0);
         _modify(-1, -1, 1 ether, bytes32(uint256(1))); // adjacent
         uint256 g0 = gasleft();
@@ -178,7 +178,7 @@ contract BinAMMEngineTest is Test {
 
         BinAMMEngine e2 = new BinAMMEngine(address(this));
         PoolKey memory k2 = _key(1);
-        e2.initialize(k2, SQRT_1_1);
+        e2.initialize(k2, SQRT_1_1, "");
         e2.modifyLiquidity(k2, IPoolManager.ModifyLiquidityParams(0, 0, 1 ether, 0), address(this));
         e2.modifyLiquidity(k2, IPoolManager.ModifyLiquidityParams(-200_000, -200_000, 1 ether, 0), address(this));
         g0 = gasleft();
@@ -191,7 +191,7 @@ contract BinAMMEngineTest is Test {
     }
 
     function test_noLiquidityPartialFill() public {
-        engine.initialize(key, SQRT_1_1);
+        engine.initialize(key, SQRT_1_1, "");
         _modify(-2, 2, 1 ether, 0);
         BalanceDelta d = _swap(true, 1000 ether, 0);
         assertLt(d.amount0(), int128(int256(1000 ether)), "only the available liquidity is filled");
@@ -203,7 +203,7 @@ contract BinAMMEngineTest is Test {
     // ------------------------------------------------------------------ fees
 
     function test_feesAccrueOnlyToTradedBins() public {
-        engine.initialize(key, SQRT_1_1);
+        engine.initialize(key, SQRT_1_1, "");
         _modify(-3, 3, 100 ether, bytes32(uint256(1))); // spans traded bins
         _modify(20, 25, 100 ether, bytes32(uint256(2))); // far above: never traded by a sell
         _swap(true, 150 ether, 0);
@@ -222,7 +222,7 @@ contract BinAMMEngineTest is Test {
     // ------------------------------------------------------------------ accounting safety
 
     function testFuzz_addRemoveNeverProfits(uint96 shares, int16 lo, uint8 width, bool trade, uint96 amt) public {
-        engine.initialize(key, SQRT_1_1);
+        engine.initialize(key, SQRT_1_1, "");
         _modify(-20, 20, 10 ether, bytes32(uint256(9))); // background liquidity
         int24 l = int24(bound(int256(lo), -30, 30));
         int24 h = l + int24(uint24(bound(width, 0, 20)));
@@ -242,7 +242,7 @@ contract BinAMMEngineTest is Test {
     }
 
     function testFuzz_roundTripSwapNoProfit(uint96 amt) public {
-        engine.initialize(key, SQRT_1_1);
+        engine.initialize(key, SQRT_1_1, "");
         _modify(-30, 30, 100 ether, 0);
         uint256 a = bound(amt, 1e6, 2000 ether);
         BalanceDelta d1 = _swap(true, int256(a), 0);
@@ -253,7 +253,7 @@ contract BinAMMEngineTest is Test {
     }
 
     function test_removeMoreThanOwnedReverts() public {
-        engine.initialize(key, SQRT_1_1);
+        engine.initialize(key, SQRT_1_1, "");
         _modify(-1, 1, 1 ether, 0);
         vm.expectRevert(PoolErrors.LiquidityOverflow.selector);
         _modify(-1, 1, -int256(2 ether), 0);
@@ -263,7 +263,7 @@ contract BinAMMEngineTest is Test {
     function test_binAMMUnequalDecimalsPricing() public {
         uint160 sqrtPriceX96 = uint160((_sqrt(3e9) << 96) / 1e9);
         PoolKey memory k = _key(25);
-        engine.initialize(k, sqrtPriceX96);
+        engine.initialize(k, sqrtPriceX96, "");
         int24 activeId = engine.getActiveBinId(k.toId());
         assertLt(activeId, 0, "active bin below 0 for price << 1");
         uint256 p = engine.getPriceFromId(activeId, 25);

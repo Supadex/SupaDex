@@ -368,8 +368,8 @@ contract JexiSupaDexTest is Test {
     function test_fuzz_prop_stableAddRemoveNotProfitable(uint96 tradeIn, uint96 dep) public {
         tradeIn = uint96(bound(tradeIn, 1e15, 400e18));
         dep = uint96(bound(dep, 1e15, 1e24));
-        PoolKey memory k = _key(CurveType.STABLE_AMM, 500, 100, address(0)); // PORT: A = 100 (tickSpacing carries A)
-        pm.initialize(k, SQRT_1_1, "");
+        PoolKey memory k = _key(CurveType.STABLE_AMM, 500, 1, address(0)); // PORT: A = 100 via init params
+        pm.initializeWithParams(k, SQRT_1_1, abi.encode(uint256(100)), "");
         _actor(1e26).exec(_one(_op(0, k, 0, 0, int256(1000e18), false)));
         _swap(k, true, tradeIn);
         JFlashActor attacker = _actor(1e26);

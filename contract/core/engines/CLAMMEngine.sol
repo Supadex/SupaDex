@@ -67,12 +67,13 @@ contract CLAMMEngine is ICurveEngine {
 
     mapping(PoolId => PoolState) internal pools;
 
-    function initialize(PoolKey memory key, uint160 sqrtPriceX96)
+    function initialize(PoolKey memory key, uint160 sqrtPriceX96, bytes memory initParams)
         external
         override
         onlyPoolManager
         returns (int24 tick)
     {
+        if (initParams.length != 0) revert PoolErrors.InvalidInitParams();
         PoolId id = key.toId();
         if (pools[id].slot0.isInitialized()) {
             revert PoolErrors.PoolAlreadyInitialized(id);
@@ -428,10 +429,13 @@ contract CLAMMEngine is ICurveEngine {
             state.protocolFeeAmount += stepProtocol;
             if (lpFee > 0) {
                 uint256 delta = FullMathLib.mulDiv(lpFee, Q128, state.liquidity);
-                if (ctx.zeroForOne) {
-                    state.feeGrowthGlobal0X128 += delta;
-                } else {
-                    state.feeGrowthGlobal1X128 += delta;
+                // mod-2^256 accumulator (Uniswap v3/v4 semantics); all consumers take wrapping differences.
+                unchecked {
+                    if (ctx.zeroForOne) {
+                        state.feeGrowthGlobal0X128 += delta;
+                    } else {
+                        state.feeGrowthGlobal1X128 += delta;
+                    }
                 }
             }
         }
@@ -560,11 +564,12 @@ contract CLAMMEngine is ICurveEngine {
         if (amount0 == 0 && amount1 == 0) return;
         uint128 liquidity = pool.liquidity;
         if (liquidity == 0) revert PoolErrors.NoLiquidityToDonate();
-        if (amount0 > 0) {
-            pool.feeGrowthGlobal0X128 += FullMathLib.mulDiv(amount0, Q128, liquidity);
-        }
-        if (amount1 > 0) {
-            pool.feeGrowthGlobal1X128 += FullMathLib.mulDiv(amount1, Q128, liquidity);
+        uint256 g0 = amount0 > 0 ? FullMathLib.mulDiv(amount0, Q128, liquidity) : 0;
+        uint256 g1 = amount1 > 0 ? FullMathLib.mulDiv(amount1, Q128, liquidity) : 0;
+        // mod-2^256 accumulator (Uniswap semantics).
+        unchecked {
+            pool.feeGrowthGlobal0X128 += g0;
+            pool.feeGrowthGlobal1X128 += g1;
         }
     }
 
