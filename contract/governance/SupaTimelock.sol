@@ -138,6 +138,16 @@ contract SupaTimelock is ISupaTimelock {
     }
 
     /**
+     * @notice True when a scheduled operation passed its execution window (ETA + GRACE_PERIOD) without executing.
+     * @dev getOperationState reports such ops as Unset (it can be re-scheduled). UIs use this to show "Expired"
+     *      rather than "never scheduled / cancelled".
+     */
+    function isOperationExpired(bytes32 id) public view returns (bool) {
+        uint256 eta = _timestamps[id];
+        return eta > 1 && block.timestamp > eta + GRACE_PERIOD;
+    }
+
+    /**
      * @notice Returns whether an operation is ready for execution
      */
     function isOperationReady(bytes32 id) public view override returns (bool) {

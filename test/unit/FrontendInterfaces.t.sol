@@ -179,4 +179,21 @@ contract FrontendInterfacesTest is Test {
         emit CallSalt(id, salt);
         tl.schedule(address(tl), 0, data, bytes32(0), salt, 1 hours);
     }
+
+    function test_timelockExpiredView() public {
+        address[] memory p = new address[](1);
+        p[0] = address(this);
+        address[] memory e = new address[](1);
+        e[0] = address(0xE);
+        SupaTimelock tl = new SupaTimelock(1 hours, address(0xA), p, e, p);
+        bytes memory data = abi.encodeWithSignature("updateDelay(uint256)", 2 hours);
+        bytes32 id = tl.hashOperation(address(tl), 0, data, bytes32(0), bytes32(0));
+        assertFalse(tl.isOperationExpired(id));
+        tl.schedule(address(tl), 0, data, bytes32(0), bytes32(0), 1 hours);
+        vm.warp(block.timestamp + 1 hours + tl.GRACE_PERIOD());
+        assertFalse(tl.isOperationExpired(id), "last second of the window is still Ready");
+        vm.warp(block.timestamp + 1);
+        assertTrue(tl.isOperationExpired(id));
+        assertEq(uint8(tl.getOperationState(id)), 0, "state reads Unset once expired");
+    }
 }
