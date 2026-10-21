@@ -54,3 +54,16 @@ evm_version = "cancun"
 via_ir = false
 optimizer = true
 optimizer_runs = 200
+
+# CI profile (Edith remediation-3 condition 1): same compiler pipeline as default, with a PINNED fuzz seed so CI is
+# reproducible. Randomised seeds run in the separate `fuzz-random-seed` job (.github/workflows/test.yml), which
+# prints its seed so any failure can be replayed with `FOUNDRY_PROFILE=ci forge test --fuzz-seed <seed>`.
+[profile.ci.fuzz]
+runs = 4096
+max_test_rejects = 262144
+seed = "0x5eed2026"
+
+[profile.ci.invariant]
+runs = 256
+depth = 128
+fail_on_revert = false
