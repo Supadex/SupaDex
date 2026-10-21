@@ -143,7 +143,11 @@
    - Liquidity is deposited into discrete price bins with zero slippage inside each bin, enabling active liquidity management with minimal math overhead.
    - **Status:** the current engine has one fixed-price active bin and no traversal, so pool creation is disabled (ADR-0004).
 3. **StableAMM (Amplified Invariant Curve)**:
-   - High capital efficiency for correlated pairs (e.g., LSTs, stablecoins).
+   - High capital efficiency for **near-1:1 pegged pairs only** (e.g. USDC/USDT, DAI/USDC). Pools always start at the
+     normalised 1:1 peg (ADR-0007, deviation (c)), with per-pool A chosen by the creator within the governance range.
+   - **Not supported:** yield-bearing, rebasing or rate-drifting assets (LSTs/LRTs such as wstETH/ETH, rETH, sDAI,
+     stETH), pairs that are not near 1:1 after decimal normalisation, and rate-oracle pools. Canonical stable pools are
+     created by the team at launch (see `docs/runbooks/GOVERNANCE.md`).
 
 ---
 

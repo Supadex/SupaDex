@@ -3,14 +3,14 @@
 Status: draft for review (Edith / Jexi). PRODUCTION READINESS NOT ESTABLISHED.
 
 ## What is acceptable
-- **Only official Chainlink proxies, on the same chain, for the direct pair.** The feed must price base/quote itself. No composite or derived feeds (for example ETH/USD × USD/USDC), no feeds bridged from another chain, no third-party "Chainlink-compatible" feeds, and never the test-only `MockChainlinkAggregator` (it refuses to deploy outside 31337/1337).
+- **Only official Chainlink proxies, on the same chain, for the direct pair.** The feed must price base/quote itself. No composite or derived feeds (for example ETH/USD × USD/USDC), no feeds bridged from another chain, no third-party "Chainlink-compatible" feeds, and never the test-only `MockChainlinkAggregator` (it refuses to deploy outside anvil 31337).
 - One plugin per pool. An LVR pool cannot also use AntiJIT. If both are needed, the answer is a purpose-built combined plugin, reviewed as one unit (ADR-0009 9-D).
 
 ## Registry (config/oracle-feeds.json)
 For each feed, one reviewer copies these fields from the Chainlink feed page (data.chain.link / docs.chain.link): proxy address, exact `description()`, decimals, heartbeat, deviation threshold, the pool tokens (base/quote), and on L2s the official sequencer-uptime feed. A second reviewer re-checks every field and records the source URL. **No production entries exist yet.**
 
 ## Procedure (every `setOracleConfig` / `setSequencerUptimeFeed`)
-1. On a known L2 (Base 8453/84532, OP, Arbitrum, Linea, Scroll, zkSync), the sequencer-uptime feed must be set first. Grace must be ≥ 3,600 s, and 3,600 s is recommended. The plugin enforces this: `setOracleConfig` reverts `InvalidOracleConfig(9)` without one.
+1. **Fail closed (ADR-0009, remediation-4):** on every chain except the explicit exemption allowlist in `ChainIds.isSequencerExempt` (Ethereum 1, Sepolia 11155111, Holesky 17000, Hoodi 560048, BNB 56/97, Avalanche 43114, Gnosis 100, Fantom 250, anvil 31337), the sequencer-uptime feed must be set first. This includes every rollup (Base, OP, Arbitrum, Linea, Scroll, zkSync, Polygon zkEVM 1101, Mantle 5000, Blast 81457), Polygon PoS 137, Monad and any unknown chain id. If no official Chainlink uptime feed exists on that chain, LVR external feeds cannot be configured there (pools keep endogenous pricing). `requiresSequencerFeed(chainId)` on the plugin exposes the rule. Grace must be ≥ 3,600 s, and 3,600 s is recommended. The plugin enforces this: `setOracleConfig` reverts `InvalidOracleConfig(9)` without one.
 2. Choose the parameters:
    - heartbeat = published heartbeat. It may be at most +10%. Tighter than published means constant fallback.
    - deadbandBps ≥ the published deviation threshold.
