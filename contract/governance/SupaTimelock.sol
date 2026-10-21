@@ -8,6 +8,13 @@ import {GovernanceErrors} from "../errors/GovernanceErrors.sol";
  * @title SupaTimelock
  * @notice Production-grade, auditor-ready Timelock Controller for SupaDex governance.
  * @dev Manages queued transactions, execution delays, and access roles (Proposers, Executors, Emergency Cancellers).
+ *
+ *      ADR-0010 (Jexi 017) — separation of duties, no bypass:
+ *      - `admin` is an informational label only; it can NOT schedule, execute or cancel.
+ *      - No address may be both proposer and executor (constructor and role setters enforce it).
+ *      - Every role must keep at least one holder; the last holder cannot be removed.
+ *      - Role/delay/admin changes happen only through a scheduled + delayed self-call.
+ *      - Cancellers may overlap with proposers (an emergency guardian may cancel what it can see).
  */
 contract SupaTimelock is ISupaTimelock {
     /**
@@ -43,6 +50,11 @@ contract SupaTimelock is ISupaTimelock {
     mapping(address => bool) public isCanceller;
     address public admin;
 
+    /// @notice Holder counts per role (ADR-0010 last-holder protection).
+    uint256 public proposerCount;
+    uint256 public executorCount;
+    uint256 public cancellerCount;
+
     event ProposerSet(address indexed account, bool status);
     event ExecutorSet(address indexed account, bool status);
     event CancellerSet(address indexed account, bool status);
@@ -71,28 +83,17 @@ contract SupaTimelock is ISupaTimelock {
         minDelay = initialMinDelay;
         admin = initialAdmin;
 
-        uint256 pLen = initialProposers.length;
-        for (uint256 i = 0; i < pLen;) {
-            isProposer[initialProposers[i]] = true;
-            unchecked {
-                ++i;
-            }
+        if (initialProposers.length == 0 || initialExecutors.length == 0 || initialCancellers.length == 0) {
+            revert GovernanceErrors.EmptyRole();
         }
-
-        uint256 eLen = initialExecutors.length;
-        for (uint256 i = 0; i < eLen;) {
-            isExecutor[initialExecutors[i]] = true;
-            unchecked {
-                ++i;
-            }
+        for (uint256 i = 0; i < initialProposers.length; ++i) {
+            _setProposer(initialProposers[i], true);
         }
-
-        uint256 cLen = initialCancellers.length;
-        for (uint256 i = 0; i < cLen;) {
-            isCanceller[initialCancellers[i]] = true;
-            unchecked {
-                ++i;
-            }
+        for (uint256 i = 0; i < initialExecutors.length; ++i) {
+            _setExecutor(initialExecutors[i], true);
+        }
+        for (uint256 i = 0; i < initialCancellers.length; ++i) {
+            _setCanceller(initialCancellers[i], true);
         }
     }
 
@@ -154,7 +155,7 @@ contract SupaTimelock is ISupaTimelock {
         bytes32 salt,
         uint256 delay
     ) external override {
-        if (!isProposer[msg.sender] && msg.sender != admin) {
+        if (!isProposer[msg.sender]) {
             revert GovernanceErrors.UnauthorizedCaller();
         }
         if (delay < minDelay || delay > MAXIMUM_DELAY) {
@@ -184,7 +185,7 @@ contract SupaTimelock is ISupaTimelock {
         payable
         override
     {
-        if (!isExecutor[msg.sender] && msg.sender != admin) {
+        if (!isExecutor[msg.sender]) {
             revert GovernanceErrors.UnauthorizedCaller();
         }
 
@@ -219,7 +220,7 @@ contract SupaTimelock is ISupaTimelock {
      * @notice Cancels a pending proposal operation
      */
     function cancel(bytes32 id) external override {
-        if (!isCanceller[msg.sender] && msg.sender != admin) {
+        if (!isCanceller[msg.sender]) {
             revert GovernanceErrors.UnauthorizedCaller();
         }
 
@@ -242,25 +243,63 @@ contract SupaTimelock is ISupaTimelock {
     }
 
     /**
-     * @notice Proposer role change. ADR-0005: only via a scheduled + delayed self-call (`schedule` → `execute`).
+     * @notice Proposer role change. ADR-0005/0010: only via a scheduled + delayed self-call (`schedule` → `execute`).
      */
     function setProposer(address account, bool status) external onlySelf {
+        _setProposer(account, status);
+    }
+
+    /**
+     * @notice Executor role change. ADR-0005/0010: only via a scheduled + delayed self-call.
+     */
+    function setExecutor(address account, bool status) external onlySelf {
+        _setExecutor(account, status);
+    }
+
+    /**
+     * @notice Canceller role change. ADR-0005/0010: only via a scheduled + delayed self-call.
+     */
+    function setCanceller(address account, bool status) external onlySelf {
+        _setCanceller(account, status);
+    }
+
+    function _setProposer(address account, bool status) internal {
+        if (account == address(0)) revert GovernanceErrors.ZeroAddressRole();
+        if (isProposer[account] == status) return;
+        if (status) {
+            if (isExecutor[account]) revert GovernanceErrors.RoleConflict(account);
+            ++proposerCount;
+        } else {
+            if (proposerCount == 1) revert GovernanceErrors.LastRoleHolder();
+            --proposerCount;
+        }
         isProposer[account] = status;
         emit ProposerSet(account, status);
     }
 
-    /**
-     * @notice Executor role change. ADR-0005: only via a scheduled + delayed self-call.
-     */
-    function setExecutor(address account, bool status) external onlySelf {
+    function _setExecutor(address account, bool status) internal {
+        if (account == address(0)) revert GovernanceErrors.ZeroAddressRole();
+        if (isExecutor[account] == status) return;
+        if (status) {
+            if (isProposer[account]) revert GovernanceErrors.RoleConflict(account);
+            ++executorCount;
+        } else {
+            if (executorCount == 1) revert GovernanceErrors.LastRoleHolder();
+            --executorCount;
+        }
         isExecutor[account] = status;
         emit ExecutorSet(account, status);
     }
 
-    /**
-     * @notice Canceller role change. ADR-0005: only via a scheduled + delayed self-call.
-     */
-    function setCanceller(address account, bool status) external onlySelf {
+    function _setCanceller(address account, bool status) internal {
+        if (account == address(0)) revert GovernanceErrors.ZeroAddressRole();
+        if (isCanceller[account] == status) return;
+        if (status) {
+            ++cancellerCount;
+        } else {
+            if (cancellerCount == 1) revert GovernanceErrors.LastRoleHolder();
+            --cancellerCount;
+        }
         isCanceller[account] = status;
         emit CancellerSet(account, status);
     }
