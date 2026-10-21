@@ -39,6 +39,11 @@ import {Currency, CurrencyLibrary} from "../../types/Currency.sol";
  *      - Manipulation resistance is bounded by the feed: this plugin makes no claim beyond "arbitrage against a
  *        correct, fresh feed is surcharged". Endogenous signal remains manipulable (see ADR-0003).
  *      - Plugin min/max fee bounds (pips, 1e6 = 100%) are authoritative after every computation.
+ *      - L2 sequencer (Edith 9-A): with a Chainlink L2 sequencer-uptime feed set, the price feed is used only while
+ *        the sequencer is up AND has been up for more than `sequencerGracePeriod` (>= 1 h); otherwise fallback
+ *        reason 7. On known L2 chain ids `setOracleConfig` refuses to configure a feed until the uptime feed is set.
+ *      - Acceptable feeds (Edith 9-B, governance runbook + script/OracleConfigCheck.sol): official Chainlink Data
+ *        Feed proxies on the same chain, direct pair to the pool's assets. Never a DEX TWAP/spot price.
  */
 contract LVRShieldPlugin is BaseHook, IPluginEvents {
     using PoolIdLibrary for PoolKey;
@@ -79,6 +84,15 @@ contract LVRShieldPlugin is BaseHook, IPluginEvents {
     uint32 public constant MAX_HEARTBEAT = 2 days;
     uint16 public constant MAX_DEVIATION_CAP_BPS = 5_000; // 50%
     uint256 internal constant MAX_ANSWER = 2 ** 100;
+    /// @notice Sequencer-uptime grace bounds (Edith 9-A: >= 1 h after a restart before the feed is trusted again).
+    uint32 public constant MIN_SEQUENCER_GRACE = 1 hours;
+    uint32 public constant MAX_SEQUENCER_GRACE = 1 days;
+
+    /// @notice Chainlink L2 sequencer-uptime feed (answer 0 = up, 1 = down; startedAt = last status change).
+    IAggregatorV3 public sequencerUptimeFeed;
+    uint32 public sequencerGracePeriod;
+
+    event SequencerUptimeFeedSet(address indexed feed, uint32 gracePeriod);
 
     /// @notice ADR-0009 per-pool external price feed. Price convention: token1 per token0 in raw units
     /// (same as the pool's sqrtPriceX96²). `invert` = the feed quotes token0 per token1.
@@ -259,9 +273,12 @@ contract LVRShieldPlugin is BaseHook, IPluginEvents {
     /// @notice Reads and validates the feed. `reason` 0 = valid, otherwise an `LVROracleFallback` code.
     function _readOraclePriceQ96(OracleConfig memory cfg) internal view returns (uint8 reason, uint256 priceQ96) {
         // Gas-griefing guard: the caller must not be able to force the fallback by under-funding the call.
-        if (gasleft() < (ORACLE_CALL_GAS * 64) / 63 + 5_000) {
-            revert PluginErrors.PluginGasExceeded(address(this), gasleft(), ORACLE_CALL_GAS);
+        IAggregatorV3 seq = sequencerUptimeFeed;
+        uint256 calls = address(seq) == address(0) ? 1 : 2;
+        if (gasleft() < calls * ((ORACLE_CALL_GAS * 64) / 63) + 5_000) {
+            revert PluginErrors.PluginGasExceeded(address(this), gasleft(), calls * ORACLE_CALL_GAS);
         }
+        if (calls == 2 && !_sequencerUp(seq)) return (7, 0);
         (bool ok, bytes memory ret) =
             address(cfg.feed).staticcall{gas: ORACLE_CALL_GAS}(abi.encodeCall(IAggregatorV3.latestRoundData, ()));
         if (!ok || ret.length != 160) return (1, 0);
@@ -273,6 +290,18 @@ contract LVRShieldPlugin is BaseHook, IPluginEvents {
         if (uint256(answer) >= MAX_ANSWER) return (5, 0);
         priceQ96 = _scale(uint256(answer), cfg);
         if (priceQ96 == 0) return (5, 0);
+    }
+
+    /// @dev True iff the sequencer reports up (answer == 0) and has been up for MORE than the grace period.
+    /// Any malformed / reverting / future-dated response counts as down (fail-safe: fallback fee, never revert).
+    function _sequencerUp(IAggregatorV3 seq) internal view returns (bool) {
+        (bool ok, bytes memory ret) =
+            address(seq).staticcall{gas: ORACLE_CALL_GAS}(abi.encodeCall(IAggregatorV3.latestRoundData, ()));
+        if (!ok || ret.length != 160) return false;
+        (, int256 answer, uint256 startedAt,,) = abi.decode(ret, (uint80, int256, uint256, uint256, uint80));
+        if (answer != 0) return false;
+        if (startedAt == 0 || startedAt > block.timestamp) return false;
+        return block.timestamp - startedAt > sequencerGracePeriod;
     }
 
     /// @dev raw price = answer / 10^feedDec × 10^dec1 / 10^dec0 (or its inverse), in Q96. answer < 2^100,
@@ -394,6 +423,10 @@ contract LVRShieldPlugin is BaseHook, IPluginEvents {
         if (fallbackFeePips > FEE_CAP_PIPS) revert PluginErrors.InvalidOracleConfig(6);
         PoolId poolId = key.toId();
         if (!poolLVRStates[poolId].isInitialized) revert OraclePoolNotInitialized();
+        // Edith 9-A: no feed on an L2 without the sequencer-uptime check.
+        if (isKnownL2(block.chainid) && address(sequencerUptimeFeed) == address(0)) {
+            revert PluginErrors.InvalidOracleConfig(9);
+        }
 
         OracleConfig memory cfg;
         cfg.feed = feed;
@@ -410,6 +443,38 @@ contract LVRShieldPlugin is BaseHook, IPluginEvents {
         emit LVROracleConfigured(
             poolId, address(feed), heartbeat, deviationAlphaBps, deadbandBps, maxDeviationBps, fallbackFeePips
         );
+    }
+
+    /**
+     * @notice Set (or clear, only on chains that are not known L2s) the Chainlink L2 sequencer-uptime feed.
+     * Governance only. `gracePeriod` in [MIN_SEQUENCER_GRACE, MAX_SEQUENCER_GRACE]; recommended 3,600 s.
+     */
+    function setSequencerUptimeFeed(IAggregatorV3 feed, uint32 gracePeriod) external onlyRolesOwner {
+        if (address(feed) == address(0)) {
+            if (isKnownL2(block.chainid)) revert PluginErrors.InvalidOracleConfig(9);
+            gracePeriod = 0;
+        } else {
+            if (address(feed).code.length == 0) revert PluginErrors.InvalidOracleConfig(9);
+            if (gracePeriod < MIN_SEQUENCER_GRACE || gracePeriod > MAX_SEQUENCER_GRACE) {
+                revert PluginErrors.InvalidOracleConfig(10);
+            }
+        }
+        sequencerUptimeFeed = feed;
+        sequencerGracePeriod = gracePeriod;
+        emit SequencerUptimeFeedSet(address(feed), gracePeriod);
+    }
+
+    /// @notice Chain ids of rollups with a single sequencer (feed config requires the uptime feed there).
+    function isKnownL2(uint256 chainId) public pure returns (bool) {
+        return chainId == 8453 // Base
+            || chainId == 84532 // Base Sepolia
+            || chainId == 10 // OP Mainnet
+            || chainId == 11155420 // OP Sepolia
+            || chainId == 42161 // Arbitrum One
+            || chainId == 421614 // Arbitrum Sepolia
+            || chainId == 59144 // Linea
+            || chainId == 534352 // Scroll
+            || chainId == 324; // zkSync Era
     }
 
     /// @notice ADR-0009: remove the external feed (pool reverts to endogenous-only pricing).
