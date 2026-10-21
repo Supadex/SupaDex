@@ -230,7 +230,9 @@ contract LVROracleTest is Test, IPluginEvents {
         vm.expectEmit(true, false, false, true, address(plugin));
         emit LVROracleSurcharge(key.toId(), dev, uint24(expected - 3000), true);
         assertEq(_fee(true), expected, "arb direction pays base + surcharge");
-        assertEq(_fee(false), 3000, "non-arb direction (pushes away from the feed... but restores LP) pays endogenous only");
+        assertEq(
+            _fee(false), 3000, "non-arb direction (pushes away from the feed... but restores LP) pays endogenous only"
+        );
         // lastFee stores only the endogenous fee (no compounding of the surcharge)
         (, uint24 lastFee,,,,,,,) = plugin.poolLVRStates(key.toId());
         assertEq(lastFee, 3000);

@@ -389,9 +389,8 @@ contract StableAMMEngine is ICurveEngine {
         StablePoolState storage pool = pools[id];
         if (!pool.slot0.isInitialized()) revert PoolErrors.PoolNotInitialized(id);
         if (
-            block.timestamp < uint256(pool.initialATime) + MIN_RAMP_TIME
-                || futureTime < block.timestamp + MIN_RAMP_TIME || futureA < MIN_A || futureA > MAX_A
-                || futureTime > type(uint40).max
+            block.timestamp < uint256(pool.initialATime) + MIN_RAMP_TIME || futureTime < block.timestamp + MIN_RAMP_TIME
+                || futureA < MIN_A || futureA > MAX_A || futureTime > type(uint40).max
         ) revert PoolErrors.StableInvalidRamp(futureA, futureTime);
 
         uint256 current = _currentAPrecise(pool);
@@ -586,16 +585,16 @@ contract StableAMMEngine is ICurveEngine {
     function getAmplification(PoolId id)
         external
         view
-        returns (uint256 currentAPrecise, uint256 initialAPrecise, uint256 futureAPrecise, uint256 initialTime, uint256 futureTime)
+        returns (
+            uint256 currentAPrecise,
+            uint256 initialAPrecise,
+            uint256 futureAPrecise,
+            uint256 initialTime,
+            uint256 futureTime
+        )
     {
         StablePoolState storage pool = pools[id];
-        return (
-            _currentAPrecise(pool),
-            pool.initialAPrecise,
-            pool.futureAPrecise,
-            pool.initialATime,
-            pool.futureATime
-        );
+        return (_currentAPrecise(pool), pool.initialAPrecise, pool.futureAPrecise, pool.initialATime, pool.futureATime);
     }
 
     /// @notice Normalisation multipliers (10^(18 - decimals)) for token0 and token1.

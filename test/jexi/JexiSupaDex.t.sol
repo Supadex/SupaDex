@@ -137,10 +137,18 @@ contract JFlashActor is IUnlockCallback {
             Op memory o = ops[i];
             if (o.kind == 0) {
                 pm.modifyLiquidity(
-                    o.key, IPoolManager.ModifyLiquidityParams({tickLower: o.lo, tickUpper: o.hi, liquidityDelta: o.amt, salt: 0}), ""
+                    o.key,
+                    IPoolManager.ModifyLiquidityParams({
+                        tickLower: o.lo, tickUpper: o.hi, liquidityDelta: o.amt, salt: 0
+                    }),
+                    ""
                 );
             } else {
-                pm.swap(o.key, IPoolManager.SwapParams({zeroForOne: o.zeroForOne, amountSpecified: o.amt, sqrtPriceLimitX96: 0}), "");
+                pm.swap(
+                    o.key,
+                    IPoolManager.SwapParams({zeroForOne: o.zeroForOne, amountSpecified: o.amt, sqrtPriceLimitX96: 0}),
+                    ""
+                );
             }
         }
         _net(ops[0].key.currency0);
@@ -207,7 +215,13 @@ contract JTimelockDrainHelper is IUnlockCallback {
     }
 
     function unlockCallback(bytes calldata) external returns (bytes memory) {
-        tl.execute(address(vault), 0, abi.encodeCall(SupaVault.accountDelta, (address(this), c, int256(amt))), bytes32(0), saltB);
+        tl.execute(
+            address(vault),
+            0,
+            abi.encodeCall(SupaVault.accountDelta, (address(this), c, int256(amt))),
+            bytes32(0),
+            saltB
+        );
         vault.take(c, sink, amt);
         return "";
     }
@@ -249,14 +263,21 @@ contract JexiSupaDexTest is Test {
         cb = new CircuitBreaker(address(timelock), gs);
 
         SupaVault impl = new SupaVault(address(this));
-        vault = SupaVault(payable(address(new ERC1967Proxy(address(impl), abi.encodeCall(SupaVault.initialize, (address(this)))))));
+        vault = SupaVault(
+            payable(address(new ERC1967Proxy(address(impl), abi.encodeCall(SupaVault.initialize, (address(this))))))
+        );
         vault.setCircuitBreaker(ICircuitBreaker(address(cb)));
 
         address predicted = vm.computeCreateAddress(address(this), vm.getNonce(address(this)) + 3);
         clamm = new CLAMMEngine(predicted);
         bin = new BinAMMEngine(predicted);
         stable = new StableAMMEngine(predicted);
-        pm = new SupaPoolManager(IVault(address(vault)), ICurveEngine(address(clamm)), ICurveEngine(address(bin)), ICurveEngine(address(stable)));
+        pm = new SupaPoolManager(
+            IVault(address(vault)),
+            ICurveEngine(address(clamm)),
+            ICurveEngine(address(bin)),
+            ICurveEngine(address(stable))
+        );
         require(address(pm) == predicted, "pm addr");
         pm.setCircuitBreaker(ICircuitBreaker(address(cb)));
 
@@ -340,11 +361,7 @@ contract JexiSupaDexTest is Test {
 
     // ================================================================== C1
 
-
-
-
     // ================================================================== C2
-
 
     /// Property that SHOULD hold for any AMM: an atomic add->remove round trip is never profitable.
     /// Expected to FAIL on 68791f6 (fuzzer finds counterexamples) - documents C2.
@@ -366,35 +383,27 @@ contract JexiSupaDexTest is Test {
     }
 
     // ================================================================== H1
-    function _clammPool(address plugin, int24 lo, int24 hi, uint160 sqrtP, int256 liq) internal returns (PoolKey memory k) {
+    function _clammPool(address plugin, int24 lo, int24 hi, uint160 sqrtP, int256 liq)
+        internal
+        returns (PoolKey memory k)
+    {
         k = _key(CurveType.CLAMM, 3000, 60, plugin);
         pm.initialize(k, sqrtP, "");
         _actor(1e27).exec(_one(_op(0, k, lo, hi, liq, false)));
     }
-
-
-
 
     // ================================================================== H2
     function _fee(PoolKey memory k) internal view returns (uint24 lastFee) {
         (, lastFee,,,,,,,) = lvr.poolLVRStates(k.toId());
     }
 
-
-
-
-
     // ================================================================== H3
-
 
     // ================================================================== H4
 
-
     // ================================================================== H5
 
-
     // ================================================================== NEW: AntiJIT bypass
-
 
     function _measureJit(bool bypass) internal returns (uint256 fees0, uint256 fees1) {
         PoolKey memory k = _key(CurveType.CLAMM, 3000, 60, address(jit));
@@ -420,11 +429,7 @@ contract JexiSupaDexTest is Test {
 
     // ================================================================== NEW: LVR operator fee
 
-
     // ================================================================== M1 (Ultron) confirm
-
-
-
 
     /// BinAMM mints shares == amount0 just like StableAMM (C2 pattern) but, because the bin price
     /// is fixed and swaps conserve value at that price, an atomic add/remove is value-neutral today.

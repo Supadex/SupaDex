@@ -87,7 +87,10 @@ contract StableAMMEngineTest is Test {
 
     function _swap(PoolKey memory k, bool zeroForOne, int256 amount) internal returns (BalanceDelta d) {
         (d,) = engine.swap(
-            k, IPoolManager.SwapParams({zeroForOne: zeroForOne, amountSpecified: amount, sqrtPriceLimitX96: 0}), k.fee, 0
+            k,
+            IPoolManager.SwapParams({zeroForOne: zeroForOne, amountSpecified: amount, sqrtPriceLimitX96: 0}),
+            k.fee,
+            0
         );
     }
 

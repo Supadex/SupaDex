@@ -169,7 +169,6 @@ contract AntiJITVestingPlugin is BaseHook, IPluginEvents {
         emit JITPenaltyLevied(poolId, sender, positionKey, penaltyAmount, elapsed, minResidencyBlocks);
     }
 
-
     /**
      * @dev Linear unvested share: unvestedBps = BPS * (1 - min(elapsed/K, 1)).
      */

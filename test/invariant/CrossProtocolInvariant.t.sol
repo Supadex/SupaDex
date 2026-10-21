@@ -179,18 +179,29 @@ contract CrossProtocolHandler is Test {
 
     /// Unauthorized caller tries every privileged entry point; any success is a violation.
     function unauthorized(address caller, uint256 which) external {
-        if (caller == address(0) || caller == pm.owner() || caller == vault.owner() || caller == address(vault)) return;
+        if (caller == address(0) || caller == pm.owner() || caller == vault.owner() || caller == address(vault)) {
+            return;
+        }
         calls["unauthorized"]++;
         which = which % 7;
         vm.startPrank(caller);
         bool ok;
-        if (which == 0) (ok,) = address(pm).call(abi.encodeCall(SupaPoolManager.transferOwnership, (caller)));
-        else if (which == 1) (ok,) = address(pm).call(abi.encodeCall(SupaPoolManager.setProtocolFee, (keys[0], 100)));
-        else if (which == 2) (ok,) = address(vault).call(abi.encodeCall(SupaVault.sweepSurplus, (Currency.wrap(address(t0)), caller)));
-        else if (which == 3) (ok,) = address(vault).call(abi.encodeCall(SupaVault.setPoolManager, (caller, true)));
-        else if (which == 4) (ok,) = address(pm).call(abi.encodeCall(SupaPoolManager.setPluginWhitelist, (IPluginWhitelist(caller))));
-        else if (which == 5) (ok,) = address(pm.stableEngine()).call(abi.encodeCall(StableAMMEngine.rampA, (keys[2], 200, block.timestamp + 2 days)));
-        else (ok,) = address(vault).call(abi.encodeCall(SupaVault.transferOwnership, (caller)));
+        if (which == 0) {
+            (ok,) = address(pm).call(abi.encodeCall(SupaPoolManager.transferOwnership, (caller)));
+        } else if (which == 1) {
+            (ok,) = address(pm).call(abi.encodeCall(SupaPoolManager.setProtocolFee, (keys[0], 100)));
+        } else if (which == 2) {
+            (ok,) = address(vault).call(abi.encodeCall(SupaVault.sweepSurplus, (Currency.wrap(address(t0)), caller)));
+        } else if (which == 3) {
+            (ok,) = address(vault).call(abi.encodeCall(SupaVault.setPoolManager, (caller, true)));
+        } else if (which == 4) {
+            (ok,) = address(pm).call(abi.encodeCall(SupaPoolManager.setPluginWhitelist, (IPluginWhitelist(caller))));
+        } else if (which == 5) {
+            (ok,) = address(pm.stableEngine())
+                .call(abi.encodeCall(StableAMMEngine.rampA, (keys[2], 200, block.timestamp + 2 days)));
+        } else {
+            (ok,) = address(vault).call(abi.encodeCall(SupaVault.transferOwnership, (caller)));
+        }
         vm.stopPrank();
         if (ok) unauthorizedSuccesses++;
     }

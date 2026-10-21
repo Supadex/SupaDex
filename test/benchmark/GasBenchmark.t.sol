@@ -189,7 +189,12 @@ contract GasBenchmarkTest is Test {
         });
 
         stableKey = PoolKey({
-            currency0: cA, currency1: cC, fee: 500, tickSpacing: 100, plugin: address(0), curveType: CurveType.STABLE_AMM
+            currency0: cA,
+            currency1: cC,
+            fee: 500,
+            tickSpacing: 100,
+            plugin: address(0),
+            curveType: CurveType.STABLE_AMM
         });
 
         lvrKey = PoolKey({

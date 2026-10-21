@@ -172,7 +172,11 @@ contract VerifyDeployments is Script {
         _req(r, tl.isCanceller(cfg.canceller), "CANCELLER holds canceller role");
         _req(r, cfg.proposer != cfg.executor, "proposer != executor (ADR-0010)");
         _req(r, !tl.isExecutor(cfg.proposer) && !tl.isProposer(cfg.executor), "no proposer/executor overlap");
-        _req(r, tl.proposerCount() == 1 && tl.executorCount() == 1 && tl.cancellerCount() == 1, "exactly the configured role holders");
+        _req(
+            r,
+            tl.proposerCount() == 1 && tl.executorCount() == 1 && tl.cancellerCount() == 1,
+            "exactly the configured role holders"
+        );
         _req(
             r,
             !tl.isProposer(deployer) && !tl.isExecutor(deployer) && !tl.isCanceller(deployer),
@@ -219,7 +223,11 @@ contract VerifyDeployments is Script {
             address(SupaPositionManager(payable(res.positionManager)).poolManager()) == res.poolManager,
             "position manager pool manager"
         );
-        _req(r, address(SupaFeeCollector(payable(res.feeCollector)).poolManager()) == res.poolManager, "fee collector pool manager");
+        _req(
+            r,
+            address(SupaFeeCollector(payable(res.feeCollector)).poolManager()) == res.poolManager,
+            "fee collector pool manager"
+        );
         _req(r, SupaFeeCollector(payable(res.feeCollector)).roles() == res.roles, "fee collector roles");
     }
 

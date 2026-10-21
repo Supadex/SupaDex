@@ -98,7 +98,12 @@ contract JexiPR1VerifyTest is JexiSupaDexTest {
         // Observed: off by up to 2 wei at small reserves / A=1 (Ultron's doc claims +-1). Harmless for swaps
         // (they clamp to min(getY(rIn), rOut)); asserted at +-3 and logged when > 1.
         uint256 yy;
-        try stable.computeY(x, x, y, A) returns (uint256 y_) { yy = y_; } catch { assertTrue(A != 100, "getY non-convergence at A=100"); return; }
+        try stable.computeY(x, x, y, A) returns (uint256 y_) {
+            yy = y_;
+        } catch {
+            assertTrue(A != 100, "getY non-convergence at A=100");
+            return;
+        }
         uint256 err = yy > y ? yy - y : y - yy;
         if (err > 1) console2.log("computeY deviation > 1 wei", err);
         assertLe(err, 8, "computeY(x,x,y)==y +- 8");
@@ -133,9 +138,14 @@ contract JexiPR1VerifyTest is JexiSupaDexTest {
     }
 
     /// exact-out X then exact-in X back inside one unlock: token1 nets 0, token0 must not increase.
-    function testFuzz_stable_roundTripNeverProfitable(uint24 fee, uint256 seed, uint256 skew, bool skewDir, uint256 amt, bool dir)
-        public
-    {
+    function testFuzz_stable_roundTripNeverProfitable(
+        uint24 fee,
+        uint256 seed,
+        uint256 skew,
+        bool skewDir,
+        uint256 amt,
+        bool dir
+    ) public {
         fee = uint24(bound(fee, 0, 3000));
         seed = bound(seed, 1e4, 1e27);
         skew = bound(skew, 0, seed / 2);
@@ -147,14 +157,23 @@ contract JexiPR1VerifyTest is JexiSupaDexTest {
         JFlashActor.Op[] memory ops = new JFlashActor.Op[](2);
         ops[0] = _op(1, k, 0, 0, -int256(amt), dir); // exact-out amt of the out token
         ops[1] = _op(1, k, 0, 0, int256(amt), !dir); // exact-in the same amt back
-        try a.exec(ops) {} catch { return; } // revert = no trade (dust/insufficient), nothing extracted
+        try a.exec(ops) {}
+        catch { // revert = no trade (dust/insufficient), nothing extracted
+            return;
+        }
         assertLe(t0.balanceOf(address(a)) + t1.balanceOf(address(a)), b0 + b1, "round trip profitable (sum)");
         if (dir) assertLe(t0.balanceOf(address(a)), b0, "token0 gained");
         else assertLe(t1.balanceOf(address(a)), b1, "token1 gained");
     }
 
     /// Extreme imbalance (skew up to 20x the seed pushed in), fee 0, dust-to-medium exact-out/exact-in round trips.
-    function testFuzz_stable_roundTripExtremeImbalance(uint256 seed, uint256 skewMul, bool skewDir, uint256 amt, bool dir) public {
+    function testFuzz_stable_roundTripExtremeImbalance(
+        uint256 seed,
+        uint256 skewMul,
+        bool skewDir,
+        uint256 amt,
+        bool dir
+    ) public {
         seed = bound(seed, 1e6, 1e24);
         uint256 skew = seed * bound(skewMul, 1, 20);
         PoolKey memory k = _key(CurveType.STABLE_AMM, 0, 100, address(0)); // PORT: A = 100
@@ -177,7 +196,10 @@ contract JexiPR1VerifyTest is JexiSupaDexTest {
             ops[2 * i] = _op(1, k, 0, 0, -int256(amt), dir);
             ops[2 * i + 1] = _op(1, k, 0, 0, int256(amt), !dir);
         }
-        try a.exec(ops) {} catch { return; }
+        try a.exec(ops) {}
+        catch {
+            return;
+        }
         assertLe(t0.balanceOf(address(a)) + t1.balanceOf(address(a)), b0 + b1, "round trip profitable (sum)");
         if (dir) assertLe(t0.balanceOf(address(a)), b0, "token0 gained");
         else assertLe(t1.balanceOf(address(a)), b1, "token1 gained");
@@ -195,7 +217,10 @@ contract JexiPR1VerifyTest is JexiSupaDexTest {
         for (uint256 i; i < n; i++) {
             ops[i] = _op(1, k, 0, 0, exactOut ? -s : s, i % 2 == 0);
         }
-        try a.exec(ops) {} catch { return; }
+        try a.exec(ops) {}
+        catch {
+            return;
+        }
         assertLe(t0.balanceOf(address(a)) + t1.balanceOf(address(a)), b, "dust sequence profitable");
     }
 
@@ -324,7 +349,9 @@ contract JexiPR1VerifyTest is JexiSupaDexTest {
         CLAMMEngine c2 = new CLAMMEngine(predicted);
         b2 = new BinAMMEngine(predicted);
         StableAMMEngine s2 = new StableAMMEngine(predicted);
-        p2 = new BinEnabledPM(IVault(address(vault)), ICurveEngine(address(c2)), ICurveEngine(address(b2)), ICurveEngine(address(s2)));
+        p2 = new BinEnabledPM(
+            IVault(address(vault)), ICurveEngine(address(c2)), ICurveEngine(address(b2)), ICurveEngine(address(s2))
+        );
         require(address(p2) == predicted, "pm2");
         p2.setPluginWhitelist(IPluginWhitelist(address(wl)));
         vm.prank(address(timelock));

@@ -18,7 +18,6 @@ import {IAggregatorV3} from "../../interfaces/external/IAggregatorV3.sol";
 import {FullMathLib} from "../../libraries/FullMathLib.sol";
 import {Currency, CurrencyLibrary} from "../../types/Currency.sol";
 
-
 /**
  * @title LVRShieldPlugin
  * @notice Native adaptive-fee plugin. Two layered signals (ADR-0003, superseded in part by ADR-0009):
@@ -260,10 +259,11 @@ contract LVRShieldPlugin is BaseHook, IPluginEvents {
     /// @notice Reads and validates the feed. `reason` 0 = valid, otherwise an `LVROracleFallback` code.
     function _readOraclePriceQ96(OracleConfig memory cfg) internal view returns (uint8 reason, uint256 priceQ96) {
         // Gas-griefing guard: the caller must not be able to force the fallback by under-funding the call.
-        if (gasleft() < (ORACLE_CALL_GAS * 64) / 63 + 5_000) revert PluginErrors.PluginGasExceeded(address(this), gasleft(), ORACLE_CALL_GAS);
-        (bool ok, bytes memory ret) = address(cfg.feed).staticcall{gas: ORACLE_CALL_GAS}(
-            abi.encodeCall(IAggregatorV3.latestRoundData, ())
-        );
+        if (gasleft() < (ORACLE_CALL_GAS * 64) / 63 + 5_000) {
+            revert PluginErrors.PluginGasExceeded(address(this), gasleft(), ORACLE_CALL_GAS);
+        }
+        (bool ok, bytes memory ret) =
+            address(cfg.feed).staticcall{gas: ORACLE_CALL_GAS}(abi.encodeCall(IAggregatorV3.latestRoundData, ()));
         if (!ok || ret.length != 160) return (1, 0);
         (, int256 answer,, uint256 updatedAt,) = abi.decode(ret, (uint80, int256, uint256, uint256, uint80));
         if (answer <= 0) return (2, 0);
@@ -279,7 +279,8 @@ contract LVRShieldPlugin is BaseHook, IPluginEvents {
     /// decimals <= 18 ⇒ every intermediate product < 2^256.
     function _scale(uint256 answer, OracleConfig memory cfg) internal pure returns (uint256) {
         if (!cfg.invert) {
-            return FullMathLib.mulDiv(answer, Q96 * 10 ** cfg.decimals1, 10 ** (uint256(cfg.feedDecimals) + cfg.decimals0));
+            return
+                FullMathLib.mulDiv(answer, Q96 * 10 ** cfg.decimals1, 10 ** (uint256(cfg.feedDecimals) + cfg.decimals0));
         }
         return FullMathLib.mulDiv(10 ** (uint256(cfg.feedDecimals) + cfg.decimals1), Q96, answer * 10 ** cfg.decimals0);
     }
@@ -383,7 +384,9 @@ contract LVRShieldPlugin is BaseHook, IPluginEvents {
         uint16 maxDeviationBps,
         uint24 fallbackFeePips
     ) external onlyRolesOwner {
-        if (address(feed) == address(0) || address(feed).code.length == 0) revert PluginErrors.InvalidOracleConfig(1);
+        if (address(feed) == address(0) || address(feed).code.length == 0) {
+            revert PluginErrors.InvalidOracleConfig(1);
+        }
         if (heartbeat < MIN_HEARTBEAT || heartbeat > MAX_HEARTBEAT) revert PluginErrors.InvalidOracleConfig(2);
         if (deviationAlphaBps > 10_000) revert PluginErrors.InvalidOracleConfig(3);
         if (deadbandBps >= maxDeviationBps) revert PluginErrors.InvalidOracleConfig(4);

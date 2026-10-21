@@ -162,7 +162,8 @@ contract DeploySupaDexTest is Test {
 
     /// The scripts must never print a readiness claim. Source-level guard against regressions (Jexi 019).
     function test_scriptsNeverClaimMainnetProduction() public view {
-        string[3] memory files = ["script/DeploySupaDex.s.sol", "script/VerifyDeployments.s.sol", "script/DeployEnvironment.sol"];
+        string[3] memory files =
+            ["script/DeploySupaDex.s.sol", "script/VerifyDeployments.s.sol", "script/DeployEnvironment.sol"];
         for (uint256 i; i < files.length; ++i) {
             string memory src = vm.readFile(files[i]);
             assertFalse(_contains(src, "Mainnet Production"), files[i]);

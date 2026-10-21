@@ -53,7 +53,10 @@ library SecurityTestSetup {
             });
         } else {
             p = IPoolManager.ModifyLiquidityParams({
-                tickLower: -120, tickUpper: 120, liquidityDelta: add ? int256(amount) : -int256(amount), salt: bytes32(0)
+                tickLower: -120,
+                tickUpper: 120,
+                liquidityDelta: add ? int256(amount) : -int256(amount),
+                salt: bytes32(0)
             });
         }
     }

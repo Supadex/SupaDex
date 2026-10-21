@@ -154,7 +154,9 @@ contract DeploySupaDex is Script {
         validateConfig(deployer, rolesCfg);
         if (rolesCfg.timelockDelay == 0) rolesCfg.timelockDelay = DEFAULT_TIMELOCK_DELAY;
         console2.log(DeployEnvironment.CONFIGURATION_VALIDATED);
-        console2.log("=== SupaDex deployment (wiring only;", DeployEnvironment.PRODUCTION_READINESS_NOT_ESTABLISHED, ") ===");
+        console2.log(
+            "=== SupaDex deployment (wiring only;", DeployEnvironment.PRODUCTION_READINESS_NOT_ESTABLISHED, ") ==="
+        );
         console2.log("Deployer:", deployer);
 
         _deployGovernance(deployer, rolesCfg, res);

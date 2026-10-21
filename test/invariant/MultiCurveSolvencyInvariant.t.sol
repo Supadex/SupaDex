@@ -89,7 +89,8 @@ contract MultiCurveHandler is Test, IUnlockCallback {
 
         if (action == 0) {
             // Modify Liquidity
-            IPoolManager.ModifyLiquidityParams memory params = SecurityTestSetup.liquidityParams(selectedKey, amount, true);
+            IPoolManager.ModifyLiquidityParams memory params =
+                SecurityTestSetup.liquidityParams(selectedKey, amount, true);
             (BalanceDelta delta,) = manager.modifyLiquidity(selectedKey, params, "");
             _settleDeltas(selectedKey, delta);
             successfulLiquidityModifications++;
@@ -236,7 +237,12 @@ contract MultiCurveSolvencyInvariantTest is StdInvariant, Test {
         });
 
         stableKey = PoolKey({
-            currency0: cA, currency1: cC, fee: 500, tickSpacing: 100, plugin: address(0), curveType: CurveType.STABLE_AMM
+            currency0: cA,
+            currency1: cC,
+            fee: 500,
+            tickSpacing: 100,
+            plugin: address(0),
+            curveType: CurveType.STABLE_AMM
         });
 
         // Initialize pools

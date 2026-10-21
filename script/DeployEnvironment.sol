@@ -37,7 +37,9 @@ library DeployEnvironment {
                 || chainId == 11155420 // OP Sepolia
                 || chainId == 80002 // Polygon Amoy
                 || chainId == 97 // BNB testnet
-        ) return Kind.TESTNET;
+        ) {
+            return Kind.TESTNET;
+        }
         if (
             chainId == 1 || chainId == 10 || chainId == 56 || chainId == 137 || chainId == 8453 || chainId == 42161
                 || chainId == 43114 || chainId == 324 || chainId == 59144 || chainId == 534352 || chainId == 100

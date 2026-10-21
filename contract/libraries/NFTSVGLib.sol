@@ -32,12 +32,7 @@ library NFTSVGLib {
         string memory stars = _constellation(p.tokenId, p.currency0, p.currency1);
         string memory glyph = _curveGlyph(p.curveType, accent);
 
-        return string.concat(
-            _svgDefs(),
-            stars,
-            _svgOrbit(startDeg, spanDeg, accent, glyph),
-            _svgMeta(p, accent)
-        );
+        return string.concat(_svgDefs(), stars, _svgOrbit(startDeg, spanDeg, accent, glyph), _svgMeta(p, accent));
     }
 
     /// @dev generateSVG is split into parts so the legacy (coverage) codegen stays under the stack limit (Issue 5).

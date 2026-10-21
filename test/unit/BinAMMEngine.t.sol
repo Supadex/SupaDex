@@ -53,7 +53,10 @@ contract BinAMMEngineTest is Test {
 
     function _swap(bool zeroForOne, int256 amount, uint160 limit) internal returns (BalanceDelta d) {
         (d,) = engine.swap(
-            key, IPoolManager.SwapParams({zeroForOne: zeroForOne, amountSpecified: amount, sqrtPriceLimitX96: limit}), key.fee, 0
+            key,
+            IPoolManager.SwapParams({zeroForOne: zeroForOne, amountSpecified: amount, sqrtPriceLimitX96: limit}),
+            key.fee,
+            0
         );
     }
 
@@ -269,9 +272,10 @@ contract BinAMMEngineTest is Test {
         assertLe(p, target);
         assertGt(p * 10_025 / 10_000, target);
 
-        engine.modifyLiquidity(k, IPoolManager.ModifyLiquidityParams(activeId - 5, activeId + 5, 1e10, 0), address(this));
-        (BalanceDelta swapDelta,) =
-            engine.swap(k, IPoolManager.SwapParams(false, int256(20e6), 0), k.fee, 0);
+        engine.modifyLiquidity(
+            k, IPoolManager.ModifyLiquidityParams(activeId - 5, activeId + 5, 1e10, 0), address(this)
+        );
+        (BalanceDelta swapDelta,) = engine.swap(k, IPoolManager.SwapParams(false, int256(20e6), 0), k.fee, 0);
         uint256 ethOut = uint256(int256(-swapDelta.amount0()));
         assertGt(ethOut, 1e15, "20 USDT buys > 0.001 ETH at ~3000");
         assertLt(ethOut, 5e16);

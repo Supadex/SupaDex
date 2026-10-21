@@ -132,7 +132,10 @@ contract BinAMMEngine is ICurveEngine {
         BinPoolState storage pool = pools[id];
         if (pool.slot0.isInitialized()) revert PoolErrors.PoolAlreadyInitialized(id);
         if (key.fee >= MAX_FEE_PIPS) revert PoolErrors.InvalidFee(key.fee);
-        if (key.tickSpacing < int24(uint24(BinMathLib.MIN_BIN_STEP)) || key.tickSpacing > int24(uint24(BinMathLib.MAX_BIN_STEP))) {
+        if (
+            key.tickSpacing < int24(uint24(BinMathLib.MIN_BIN_STEP))
+                || key.tickSpacing > int24(uint24(BinMathLib.MAX_BIN_STEP))
+        ) {
             revert PoolErrors.InvalidBinStep(key.tickSpacing);
         }
         if (sqrtPriceX96 <= TickMathLib.MIN_SQRT_RATIO || sqrtPriceX96 >= TickMathLib.MAX_SQRT_RATIO) {
@@ -346,9 +349,8 @@ contract BinAMMEngine is ICurveEngine {
         }
 
         pool.activeId = s.activeId;
-        pool.slot0 = pool.slot0.setSqrtPriceX96(_sqrtPriceOf(getPriceFromId(s.activeId, ctx.binStep))).setTick(
-            s.activeId
-        );
+        pool.slot0 =
+            pool.slot0.setSqrtPriceX96(_sqrtPriceOf(getPriceFromId(s.activeId, ctx.binStep))).setTick(s.activeId);
         protocolFeeAmount = s.protocolFee;
         swapDelta = _swapDelta(params, s);
     }
@@ -430,7 +432,11 @@ contract BinAMMEngine is ICurveEngine {
         return zeroForOne ? FullMathLib.mulDiv(amountIn, price, SCALE) : FullMathLib.mulDiv(amountIn, SCALE, price);
     }
 
-    function _swapDelta(IPoolManager.SwapParams memory params, SwapState memory s) internal pure returns (BalanceDelta) {
+    function _swapDelta(IPoolManager.SwapParams memory params, SwapState memory s)
+        internal
+        pure
+        returns (BalanceDelta)
+    {
         bool exactInput = params.amountSpecified > 0;
         int256 specifiedUsed = exactInput
             ? params.amountSpecified - SafeCastLib.toInt256(s.remaining)
@@ -483,7 +489,13 @@ contract BinAMMEngine is ICurveEngine {
     function getBin(PoolId id, int24 binId)
         external
         view
-        returns (uint128 reserve0, uint128 reserve1, uint128 totalShares, uint256 feeGrowth0X128, uint256 feeGrowth1X128)
+        returns (
+            uint128 reserve0,
+            uint128 reserve1,
+            uint128 totalShares,
+            uint256 feeGrowth0X128,
+            uint256 feeGrowth1X128
+        )
     {
         Bin storage bin = pools[id].bins[binId];
         return (bin.reserve0, bin.reserve1, bin.totalShares, bin.feeGrowth0X128, bin.feeGrowth1X128);

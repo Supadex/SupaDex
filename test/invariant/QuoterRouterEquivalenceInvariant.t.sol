@@ -278,7 +278,12 @@ contract QuoterRouterEquivalenceInvariantTest is StdInvariant, Test {
         });
 
         stableKey = PoolKey({
-            currency0: cA, currency1: cC, fee: 500, tickSpacing: 100, plugin: address(0), curveType: CurveType.STABLE_AMM
+            currency0: cA,
+            currency1: cC,
+            fee: 500,
+            tickSpacing: 100,
+            plugin: address(0),
+            curveType: CurveType.STABLE_AMM
         });
 
         manager.initialize(clammKey, 1 << 96, "");

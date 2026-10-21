@@ -68,7 +68,9 @@ contract CLAMMEngineTest is Test {
     // ------------------------------------------------------------------ Issue 4: maxLiquidityPerTick
     function _mod(int24 lo, int24 hi, int128 l) internal {
         engine.modifyLiquidity(
-            key, IPoolManager.ModifyLiquidityParams({tickLower: lo, tickUpper: hi, liquidityDelta: l, salt: 0}), address(this)
+            key,
+            IPoolManager.ModifyLiquidityParams({tickLower: lo, tickUpper: hi, liquidityDelta: l, salt: 0}),
+            address(this)
         );
     }
 
@@ -86,7 +88,11 @@ contract CLAMMEngineTest is Test {
         uint128 half = cap / 2;
         _mod(-120, 120, int128(half));
         _mod(-120, 240, int128(cap - half)); // tick -120 now exactly at the cap: allowed (positive control)
-        vm.expectRevert(abi.encodeWithSelector(PoolErrors.TickLiquidityOverflow.selector, int24(-120), uint256(cap) + 1, uint256(cap)));
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                PoolErrors.TickLiquidityOverflow.selector, int24(-120), uint256(cap) + 1, uint256(cap)
+            )
+        );
         _mod(-120, 60, 1);
         // other ticks unaffected; removal at the cap works
         _mod(-60, 60, 1);
@@ -111,7 +117,9 @@ contract CLAMMEngineTest is Test {
         uint256 g = gasleft();
         engine.swap(
             key,
-            IPoolManager.SwapParams({zeroForOne: true, amountSpecified: 1e17, sqrtPriceLimitX96: TickMathLib.MIN_SQRT_RATIO + 1}),
+            IPoolManager.SwapParams({
+                zeroForOne: true, amountSpecified: 1e17, sqrtPriceLimitX96: TickMathLib.MIN_SQRT_RATIO + 1
+            }),
             key.fee,
             0
         );
