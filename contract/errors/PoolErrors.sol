@@ -122,4 +122,24 @@ library PoolErrors {
      * @dev Thrown when donate is attempted with no active liquidity to credit.
      */
     error NoLiquidityToDonate();
+
+    /**
+     * @notice Thrown when a StableSwap Newton iteration fails to converge.
+     */
+    error StableMathNotConverged();
+
+    /**
+     * @notice Thrown when a StableSwap pool is created for tokens with different (or unknown) decimals.
+     */
+    error StableDecimalsMismatch(uint8 decimals0, uint8 decimals1);
+
+    /**
+     * @notice Thrown when the first deposit does not exceed the locked minimum liquidity.
+     */
+    error InsufficientInitialLiquidity(uint256 liquidity, uint256 minimum);
+
+    /**
+     * @notice Thrown when pool creation is attempted for a curve type that is disabled.
+     */
+    error CurveDisabled(uint8 curveType);
 }
