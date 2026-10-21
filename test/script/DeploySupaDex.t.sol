@@ -15,7 +15,10 @@ contract DeploySupaDexTest is Test {
     }
 
     function test_deterministicDeploymentAndVerification() public {
-        address testDeployer = address(0x9999);
+        // The deploy() body runs inside the script contract, so CREATEs and owner-only wiring calls originate from
+        // the script contract itself (under `forge script` broadcast both come from the EOA). Use the script
+        // address as the deployer so ownership and CREATE-nonce predictions match the real broadcast flow.
+        address testDeployer = address(deployer);
         DeploySupaDex.RoleConfig memory rolesCfg = DeploySupaDex.RoleConfig({
             governance: address(0xA011),
             guardian: address(0xA012),
