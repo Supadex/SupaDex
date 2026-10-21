@@ -142,4 +142,56 @@ library PoolErrors {
      * @notice Thrown when pool creation is attempted for a curve type that is disabled.
      */
     error CurveDisabled(uint8 curveType);
+
+    // ---------------------------------------------------------------- remediation-2 (2026-10-21)
+
+    /**
+     * @notice CLAMM: cumulative gross liquidity referencing one tick exceeds `maxLiquidityPerTick` (Issue 4).
+     */
+    error TickLiquidityOverflow(int24 tick, uint256 liquidityGross, uint256 maxLiquidityPerTick);
+
+    /**
+     * @notice BIN: bin step (carried in PoolKey.tickSpacing) is outside [MIN_BIN_STEP, MAX_BIN_STEP].
+     */
+    error InvalidBinStep(int24 binStep);
+
+    /**
+     * @notice BIN: a bin id's price falls outside the supported TickMath price range.
+     */
+    error BinIdOutOfBounds(int24 binId);
+
+    /**
+     * @notice BIN: a position spans more bins than MAX_BINS_PER_POSITION (bounded iteration).
+     */
+    error BinRangeTooWide(int24 binLower, int24 binUpper, uint256 maxBins);
+
+    /**
+     * @notice STABLE: token decimals above 18 (cannot be normalised by an integer multiplier).
+     */
+    error StableDecimalsUnsupported(uint8 decimals0, uint8 decimals1);
+
+    /**
+     * @notice STABLE: amplification outside [MIN_A, MAX_A] (PoolKey.tickSpacing carries the initial A).
+     */
+    error StableInvalidAmplification(uint256 a);
+
+    /**
+     * @notice STABLE: ramp parameters violate MIN_RAMP_TIME / MAX_A_CHANGE, or a ramp is already active.
+     */
+    error StableInvalidRamp(uint256 futureA, uint256 futureTime);
+
+    /**
+     * @notice STABLE: the swap would leave normalised reserves outside the supported imbalance range.
+     */
+    error StableImbalanceExceeded(uint256 reserveHigh, uint256 reserveLow, uint256 maxRatio);
+
+    /**
+     * @notice STABLE: post-swap invariant check failed (D decreased).
+     */
+    error StableInvariantViolated(uint256 dBefore, uint256 dAfter);
+
+    /**
+     * @notice Caller is not the governance owner of the PoolManager (timelock).
+     */
+    error NotGovernance();
 }
