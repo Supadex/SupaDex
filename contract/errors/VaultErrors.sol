@@ -43,10 +43,6 @@ library VaultErrors {
      */
     error ETHTransferFailed();
 
-    /**
-     * @dev Thrown when a currency balance falls below tracked reserves (negative rebase).
-     */
-    error NegativeRebaseUnsupported(Currency currency, uint256 reserves, uint256 balance);
 
     /**
      * @notice Thrown when an ERC-20 settle is attempted without a prior `sync` of that currency.
