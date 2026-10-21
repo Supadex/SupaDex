@@ -37,4 +37,29 @@ interface IVaultEvents {
      * @notice Emitted when ERC-6909 claim tokens are burned.
      */
     event ClaimBurned(Currency indexed currency, address indexed account, uint256 amount);
+
+    /**
+     * @notice Emitted when a currency balance is snapshotted ahead of a settle.
+     */
+    event Sync(Currency indexed currency, uint256 balance);
+
+    /**
+     * @notice Emitted when unaccounted surplus (donations, positive rebases) is swept by the owner.
+     */
+    event SurplusSwept(Currency indexed currency, address indexed to, uint256 amount);
+
+    /**
+     * @notice Emitted when vault ownership changes.
+     */
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @notice Emitted when a pool manager is (de)authorized.
+     */
+    event PoolManagerSet(address indexed manager, bool approved);
+
+    /**
+     * @notice Emitted when the circuit breaker reference changes.
+     */
+    event CircuitBreakerSet(address indexed circuitBreaker);
 }

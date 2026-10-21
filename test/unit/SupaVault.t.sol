@@ -46,6 +46,8 @@ contract MockERC20 {
 }
 
 contract VaultUnlocker is IUnlockCallback {
+    using CurrencyLibrary for Currency;
+
     SupaVault public vault;
 
     enum Action {
@@ -71,12 +73,12 @@ contract VaultUnlocker is IUnlockCallback {
         (Action action, Currency currency, uint256 amount) = abi.decode(data, (Action, Currency, uint256));
 
         if (action == Action.SETTLE_AND_TAKE) {
-            // Settle tokens deposited then take back
-            vault.settle(currency);
+            // Pay (sync -> transfer -> settle) then take back
+            _pay(currency, amount);
             vault.take(currency, address(this), amount);
         } else if (action == Action.MINT_CLAIM) {
-            // Settle tokens then mint claim
-            vault.settle(currency);
+            // Pay then mint claim
+            _pay(currency, amount);
             vault.mint(currency, address(this), amount);
         } else if (action == Action.BURN_CLAIM) {
             // Burn claim then take physical tokens
@@ -91,6 +93,16 @@ contract VaultUnlocker is IUnlockCallback {
         }
 
         return abi.encode(true);
+    }
+
+    function _pay(Currency currency, uint256 amount) internal {
+        if (currency.isNative()) {
+            vault.settle{value: amount}(currency);
+        } else {
+            vault.sync(currency);
+            MockERC20(Currency.unwrap(currency)).transfer(address(vault), amount);
+            vault.settle(currency);
+        }
     }
 }
 
@@ -119,9 +131,6 @@ contract SupaVaultTest is Test {
 
     function test_settleAndTakeERC20() public {
         uint256 amount = 50 ether;
-        // Transfer token to vault first
-        vm.prank(address(unlocker));
-        token.transfer(address(vault), amount);
 
         bytes memory data = abi.encode(VaultUnlocker.Action.SETTLE_AND_TAKE, tokenCurrency, amount);
         unlocker.executeUnlock(data);
@@ -132,9 +141,6 @@ contract SupaVaultTest is Test {
 
     function test_settleAndTakeETH() public {
         uint256 amount = 10 ether;
-        // Send ETH to vault first
-        vm.prank(address(unlocker));
-        payable(address(vault)).transfer(amount);
 
         bytes memory data = abi.encode(VaultUnlocker.Action.SETTLE_AND_TAKE, ethCurrency, amount);
         unlocker.executeUnlock(data);
@@ -146,10 +152,6 @@ contract SupaVaultTest is Test {
     function test_mintAndBurnClaims() public {
         uint256 amount = 25 ether;
         uint256 tokenId = tokenCurrency.toId();
-
-        // 1. Settle tokens and mint claim
-        vm.prank(address(unlocker));
-        token.transfer(address(vault), amount);
 
         bytes memory mintData = abi.encode(VaultUnlocker.Action.MINT_CLAIM, tokenCurrency, amount);
         unlocker.executeUnlock(mintData);
@@ -185,9 +187,6 @@ contract SupaVaultTest is Test {
         uint256 amount = 100 ether;
         uint256 tokenId = tokenCurrency.toId();
 
-        // Settle & mint claim to unlocker
-        vm.prank(address(unlocker));
-        token.transfer(address(vault), amount);
         unlocker.executeUnlock(abi.encode(VaultUnlocker.Action.MINT_CLAIM, tokenCurrency, amount));
 
         // Transfer claims from unlocker to alice

@@ -88,6 +88,7 @@ contract LiquidityProviderHelper is IUnlockCallback {
             if (key.currency0.isNative()) {
                 vault.settle{value: amount0}(key.currency0);
             } else {
+                vault.sync(key.currency0);
                 MockRouterToken(Currency.unwrap(key.currency0)).transfer(address(vault), amount0);
                 vault.settle(key.currency0);
             }
@@ -97,6 +98,7 @@ contract LiquidityProviderHelper is IUnlockCallback {
             if (key.currency1.isNative()) {
                 vault.settle{value: amount1}(key.currency1);
             } else {
+                vault.sync(key.currency1);
                 MockRouterToken(Currency.unwrap(key.currency1)).transfer(address(vault), amount1);
                 vault.settle(key.currency1);
             }

@@ -85,11 +85,13 @@ contract QuoterLiquidityHelper is IUnlockCallback {
 
         if (delta.amount0() > 0) {
             uint256 amount0 = uint256(uint128(delta.amount0()));
+            vault.sync(key.currency0);
             MockQuoterToken(Currency.unwrap(key.currency0)).transfer(address(vault), amount0);
             vault.settle(key.currency0);
         }
         if (delta.amount1() > 0) {
             uint256 amount1 = uint256(uint128(delta.amount1()));
+            vault.sync(key.currency1);
             MockQuoterToken(Currency.unwrap(key.currency1)).transfer(address(vault), amount1);
             vault.settle(key.currency1);
         }

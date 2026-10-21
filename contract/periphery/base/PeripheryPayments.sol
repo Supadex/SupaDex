@@ -64,6 +64,8 @@ abstract contract PeripheryPayments is IPeripheryPayments {
             }
             _vault.settle{value: amount}(currency);
         } else {
+            // v4-style: snapshot the vault balance, transfer, then settle exactly what arrived (ADR-0002).
+            _vault.sync(currency);
             currency.toAddress().safeTransferFrom(payer, address(_vault), amount);
             _vault.settle(currency);
         }

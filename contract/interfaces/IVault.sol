@@ -23,9 +23,14 @@ interface IVault is IERC6909Claims, IVaultEvents {
     function getCurrencyDelta(address account, Currency currency) external view returns (int256);
 
     /**
-     * @notice Settles tokens into the Vault, increasing the caller's transient delta towards zero.
-     * @param currency The currency being settled.
-     * @return paid The amount of tokens paid to settle.
+     * @notice Snapshots the vault's balance of `currency` so the next `settle` credits only the
+     * tokens transferred after this call (Uniswap v4 pattern, ADR-0002).
+     */
+    function sync(Currency currency) external;
+
+    /**
+     * @notice Settles the caller's debt. ERC-20: credits `balance - syncedBalance` (requires a prior
+     * `sync` of the same currency in this unlock). Native ETH: credits exactly `msg.value`.
      */
     function settle(Currency currency) external payable returns (uint256 paid);
 
