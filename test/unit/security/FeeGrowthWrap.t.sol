@@ -83,7 +83,8 @@ contract FeeGrowthWrapTest is Test {
     // ------------------------------------------------------------------ engine-level (test = pool manager)
 
     function _binKey() internal pure returns (PoolKey memory) {
-        return PoolKey(Currency.wrap(address(0x1)), Currency.wrap(address(0x2)), 3000, 10, address(0), CurveType.BIN_AMM);
+        return
+            PoolKey(Currency.wrap(address(0x1)), Currency.wrap(address(0x2)), 3000, 10, address(0), CurveType.BIN_AMM);
     }
 
     function extBinSwap(BinAMMEngine e, bool z, int256 a) external returns (BalanceDelta d) {
@@ -193,7 +194,9 @@ contract FeeGrowthWrapTest is Test {
         // smallest first deposit: 1001 shares, 1000 locked; attacker owns 1
         e.modifyLiquidity(k, IPoolManager.ModifyLiquidityParams(0, 0, 1001, bytes32("atk")), address(this));
         // each donation adds ~2^255 / 1001: 2,010 of them pass 2^256 (checked math reverted at ~#2,003)
-        for (uint256 i; i < 2010; i++) e.donate(k, INT128_MAX, INT128_MAX);
+        for (uint256 i; i < 2010; i++) {
+            e.donate(k, INT128_MAX, INT128_MAX);
+        }
         e.modifyLiquidity(k, IPoolManager.ModifyLiquidityParams(0, 0, 1e24, bytes32("lp")), address(this));
         uint256 checkpoint = e.getPosition(k.toId(), address(this), 0, 0, bytes32("lp")).feeGrowthInside0LastX128;
         assertLt(checkpoint, type(uint256).max / 100, "global growth wrapped past 2^256");

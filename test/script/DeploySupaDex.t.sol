@@ -16,7 +16,9 @@ contract MockSafe {
 
     constructor(uint256 t, uint256 n) {
         threshold = t;
-        for (uint256 i; i < n; i++) owners.push(address(uint160(0x5AFE00 + i)));
+        for (uint256 i; i < n; i++) {
+            owners.push(address(uint160(0x5AFE00 + i)));
+        }
     }
 
     function getThreshold() external view returns (uint256) {

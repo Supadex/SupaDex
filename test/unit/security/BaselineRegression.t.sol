@@ -219,12 +219,16 @@ contract BaselineRegressionTest is Test, IUnlockCallback {
     function _key(CurveType ct) internal view returns (PoolKey memory) {
         // STABLE: tickSpacing must be 1 and A (= 60, the A these baselines were written against) is an init param.
         int24 spacing = ct == CurveType.STABLE_AMM ? int24(1) : int24(60);
-        return PoolKey({currency0: c0, currency1: c1, fee: 3000, tickSpacing: spacing, plugin: address(0), curveType: ct});
+        return
+            PoolKey({currency0: c0, currency1: c1, fee: 3000, tickSpacing: spacing, plugin: address(0), curveType: ct});
     }
 
     function _initPool(PoolKey memory k) internal {
-        if (k.curveType == CurveType.STABLE_AMM) manager.initializeWithParams(k, SQRT_1_1, abi.encode(uint256(60)), "");
-        else manager.initialize(k, SQRT_1_1, "");
+        if (k.curveType == CurveType.STABLE_AMM) {
+            manager.initializeWithParams(k, SQRT_1_1, abi.encode(uint256(60)), "");
+        } else {
+            manager.initialize(k, SQRT_1_1, "");
+        }
     }
 
     function _actor(uint256 fund) internal returns (Actor act) {

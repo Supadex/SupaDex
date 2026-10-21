@@ -60,10 +60,29 @@ contract SupaQuoter is ISupaQuoter, IUnlockCallback {
         override
         returns (uint256 amountOut, uint160 sqrtPriceX96After, int24 tickAfter)
     {
+        (amountOut, sqrtPriceX96After, tickAfter,) = _quoteExactInputSingleWithFee(params);
+    }
+
+    /**
+     * @inheritdoc ISupaQuoter
+     */
+    function quoteExactInputSingleWithFee(QuoteExactInputSingleParams memory params)
+        external
+        override
+        returns (uint256 amountOut, uint160 sqrtPriceX96After, int24 tickAfter, uint24 feePips)
+    {
+        return _quoteExactInputSingleWithFee(params);
+    }
+
+    function _quoteExactInputSingleWithFee(QuoteExactInputSingleParams memory params)
+        internal
+        returns (uint256, uint160, int24, uint24)
+    {
         try this.quoteExactInputSingleInternal(params) {}
         catch (bytes memory reason) {
-            return _parseQuoteInputResult(reason);
+            return _parseQuoteSingleResult(reason);
         }
+        revert PeripheryErrors.InvalidPath(); // unreachable: the internal call always reverts
     }
 
     /**
@@ -99,10 +118,29 @@ contract SupaQuoter is ISupaQuoter, IUnlockCallback {
         override
         returns (uint256 amountIn, uint160 sqrtPriceX96After, int24 tickAfter)
     {
+        (amountIn, sqrtPriceX96After, tickAfter,) = _quoteExactOutputSingleWithFee(params);
+    }
+
+    /**
+     * @inheritdoc ISupaQuoter
+     */
+    function quoteExactOutputSingleWithFee(QuoteExactOutputSingleParams memory params)
+        external
+        override
+        returns (uint256 amountIn, uint160 sqrtPriceX96After, int24 tickAfter, uint24 feePips)
+    {
+        return _quoteExactOutputSingleWithFee(params);
+    }
+
+    function _quoteExactOutputSingleWithFee(QuoteExactOutputSingleParams memory params)
+        internal
+        returns (uint256, uint160, int24, uint24)
+    {
         try this.quoteExactOutputSingleInternal(params) {}
         catch (bytes memory reason) {
-            return _parseQuoteOutputResult(reason);
+            return _parseQuoteSingleResult(reason);
         }
+        revert PeripheryErrors.InvalidPath(); // unreachable
     }
 
     /**
@@ -149,7 +187,9 @@ contract SupaQuoter is ISupaQuoter, IUnlockCallback {
             uint256 amountOut = uint256(uint128(params.zeroForOne ? -delta.amount1() : -delta.amount0()));
             Slot0 slot0 = poolManager.getSlot0(params.poolKey.toId());
 
-            revert PeripheryErrors.QuoteInputSimulation(amountOut, slot0.sqrtPriceX96(), slot0.tick());
+            revert PeripheryErrors.QuoteSingleSimulation(
+                amountOut, slot0.sqrtPriceX96(), slot0.tick(), poolManager.lastSwapFee()
+            );
         } else if (action == Action.QUOTE_INPUT_MULTI) {
             (, bytes memory path, uint128 amountIn) = abi.decode(data, (Action, bytes, uint128));
 
@@ -188,7 +228,9 @@ contract SupaQuoter is ISupaQuoter, IUnlockCallback {
             uint256 amountIn = uint256(uint128(params.zeroForOne ? delta.amount0() : delta.amount1()));
             Slot0 slot0 = poolManager.getSlot0(params.poolKey.toId());
 
-            revert PeripheryErrors.QuoteOutputSimulation(amountIn, slot0.sqrtPriceX96(), slot0.tick());
+            revert PeripheryErrors.QuoteSingleSimulation(
+                amountIn, slot0.sqrtPriceX96(), slot0.tick(), poolManager.lastSwapFee()
+            );
         } else {
             (, bytes memory path, uint128 amountOut) = abi.decode(data, (Action, bytes, uint128));
 
@@ -266,6 +308,35 @@ contract SupaQuoter is ISupaQuoter, IUnlockCallback {
                 amountIn := mload(dataPtr)
                 sqrtPriceX96After := mload(add(dataPtr, 32))
                 tickAfter := mload(add(dataPtr, 64))
+            }
+        } else {
+            assembly {
+                revert(add(reason, 32), mload(reason))
+            }
+        }
+    }
+
+    /**
+     * @dev Decodes single-hop simulation results (amount, sqrtPriceAfter, tickAfter, appliedFeePips);
+     *      any other revert (e.g. a pool/engine error) is bubbled up unchanged.
+     */
+    function _parseQuoteSingleResult(bytes memory reason)
+        internal
+        pure
+        returns (uint256 amount, uint160 sqrtPriceX96After, int24 tickAfter, uint24 feePips)
+    {
+        if (reason.length < 4) revert PeripheryErrors.InvalidPath();
+        bytes4 selector;
+        assembly {
+            selector := mload(add(reason, 32))
+        }
+        if (selector == PeripheryErrors.QuoteSingleSimulation.selector && reason.length == 132) {
+            assembly {
+                let dataPtr := add(reason, 36)
+                amount := mload(dataPtr)
+                sqrtPriceX96After := mload(add(dataPtr, 32))
+                tickAfter := mload(add(dataPtr, 64))
+                feePips := mload(add(dataPtr, 96))
             }
         } else {
             assembly {

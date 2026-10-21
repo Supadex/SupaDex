@@ -68,6 +68,9 @@ contract SupaTimelock is ISupaTimelock {
     event ExecutorSet(address indexed account, bool status);
     event CancellerSet(address indexed account, bool status);
     event AdminSet(address indexed previousAdmin, address indexed newAdmin);
+    /// @notice Emitted alongside CallQueued with the salt needed to execute/cancel (OZ TimelockController style).
+    ///         Always emitted (also for salt == 0) so indexers / Safe-wrapped schedules can recover it from logs.
+    event CallSalt(bytes32 indexed id, bytes32 salt);
 
     /**
      * @dev Modifier to restrict access to this timelock contract itself
@@ -186,6 +189,7 @@ contract SupaTimelock is ISupaTimelock {
         _timestamps[id] = eta;
 
         emit CallQueued(id, 0, target, value, data, predecessor, delay);
+        emit CallSalt(id, salt);
     }
 
     /**

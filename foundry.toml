@@ -8,7 +8,7 @@ via_ir = true
 optimizer = true
 optimizer_runs = 1000000
 # Read-only access so DeploySupaDex.t.sol can assert the scripts never print readiness claims (Jexi 019).
-fs_permissions = [{ access = "read", path = "./script" }]
+fs_permissions = [{ access = "read", path = "./script" }, { access = "read-write", path = "./deployments" }]
 
 remappings = [
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",

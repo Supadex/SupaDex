@@ -258,9 +258,23 @@ contract SupaPoolManager is IPoolManager {
         Slot0 initialSlot0 = Slot0Library.pack(sqrtPriceX96, tick, 0, key.fee, true);
         poolSlot0[id] = initialSlot0;
 
-        emit Initialize(id, key.currency0, key.currency1, key.fee, key.tickSpacing, key.plugin, sqrtPriceX96, tick);
+        _emitInitialize(id, key, sqrtPriceX96, tick);
 
         PluginDispatcher.dispatchAfterInitialize(key.plugin, permissions, msg.sender, key, sqrtPriceX96, tick);
+    }
+
+    function _emitInitialize(PoolId id, PoolKey memory key, uint160 sqrtPriceX96, int24 tick) internal {
+        emit Initialize(
+            id,
+            key.currency0,
+            key.currency1,
+            key.fee,
+            key.tickSpacing,
+            key.plugin,
+            sqrtPriceX96,
+            tick,
+            uint8(key.curveType)
+        );
     }
 
     /// @inheritdoc IPoolManager
@@ -347,6 +361,16 @@ contract SupaPoolManager is IPoolManager {
         if (delta.amount1() != 0) vault.accountDelta(msg.sender, key.currency1, -delta.amount1());
     }
 
+    /// @dev keccak256("supadex.poolmanager.lastSwapFee") - 1
+    bytes32 internal constant LAST_SWAP_FEE_SLOT = 0x0a138a554f16671ce335381b23c2354412de957b3ba305f936d3c64bc9f965d7;
+
+    /// @inheritdoc IPoolManager
+    function lastSwapFee() external view override returns (uint24 fee) {
+        assembly ("memory-safe") {
+            fee := tload(LAST_SWAP_FEE_SLOT)
+        }
+    }
+
     /// @inheritdoc IPoolManager
     function swap(PoolKey memory key, SwapParams memory params, bytes calldata hookData)
         external
@@ -366,6 +390,9 @@ contract SupaPoolManager is IPoolManager {
         if (fee == 0) fee = key.fee;
         // 100% fee (1e6) bricks swaps in engines; reject equality as well as overflow.
         if (fee >= MAX_FEE_PIPS) revert PoolErrors.InvalidFee(fee);
+        assembly ("memory-safe") {
+            tstore(LAST_SWAP_FEE_SLOT, fee)
+        }
 
         uint24 protocolFee = slot0.protocolFee();
         ICurveEngine engine = getCurveEngine(key.curveType);
