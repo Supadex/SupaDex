@@ -25,7 +25,7 @@ import {CircuitBreakerErrors} from "../errors/CircuitBreakerErrors.sol";
  * @dev NOT upgradeable (plain contract; engines are immutables). Upgrading means redeploying and migrating.
  * Circuit breaker = withdraw-only mode (SDX-008): when the vault, pool or curve is paused, swaps, donations
  * and liquidity additions revert, while liquidity removals and fee collection (liquidityDelta <= 0) stay open.
- * BIN_AMM pool creation is disabled (ADR-0004, `binAmmEnabled() == false`) until a multi-bin traversal engine exists.
+ * BIN_AMM pools are enabled again: ADR-0006 (multi-bin engine) supersedes the ADR-0004 gate.
  */
 contract SupaPoolManager is IPoolManager {
     using Slot0Library for Slot0;
@@ -33,12 +33,12 @@ contract SupaPoolManager is IPoolManager {
     uint24 internal constant MAX_FEE_PIPS = 1_000_000;
 
     /**
-     * @notice ADR-0004: BinAMM is a single frozen-price bin; new BIN_AMM pools are disabled until multi-bin lands.
-     * @dev `virtual` only so the test suite can keep exercising BinAMM engine accounting through a test-only
-     * subclass (test/helpers/SecurityTestSetup.sol). The production contract always returns false.
+     * @notice ADR-0006: BinAMM is a real multi-bin engine (price moves bin to bin); BIN_AMM pools are enabled.
+     * @dev Kept as a (virtual) view so integrators and the deploy verifier can assert the curve set, and so a
+     * future redeploy can gate a curve again without changing the ABI. Supersedes the ADR-0004 gate.
      */
     function binAmmEnabled() public pure virtual returns (bool) {
-        return false;
+        return true;
     }
 
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
@@ -250,17 +250,7 @@ contract SupaPoolManager is IPoolManager {
         returns (BalanceDelta callerDelta, BalanceDelta feesAccrued)
     {
         PoolId id = key.toId();
-        // Withdraw-only pause: removals / fee pokes (liquidityDelta <= 0) are always allowed.
-        if (params.liquidityDelta > 0) _checkCircuitBreaker(id, key.curveType);
-        if (!poolSlot0[id].isInitialized()) revert PoolErrors.PoolNotInitialized(id);
-        uint32 permissions = pluginPermissions[id];
-        // Delisting disables the plugin on already-initialized pools. APUS-SUPADEX-011: instead of trapping LP
-        // principal, removals / fee pokes still go through with ALL hooks skipped; only adds revert.
-        if (params.liquidityDelta > 0) {
-            _requirePluginAllowed(key.plugin);
-        } else if (!_isPluginAllowed(key.plugin)) {
-            permissions = 0;
-        }
+        uint32 permissions = _modifyLiquidityPermissions(key, id, params.liquidityDelta);
 
         PluginDispatcher.dispatchBeforeModifyLiquidity(key.plugin, permissions, msg.sender, key, params, hookData);
 
@@ -271,6 +261,44 @@ contract SupaPoolManager is IPoolManager {
         _syncSlot0FromEngine(id, engine, poolSlot0[id].protocolFee());
         poolLiquidity[id] = engine.getLiquidity(id);
 
+        (callerDelta, feesAccrued) =
+            _afterModifyLiquidity(key, params, permissions, engine, callerDelta, feesAccrued, hookData);
+
+        _accountCallerDelta(key, callerDelta.sub(feesAccrued));
+
+        emit ModifyLiquidity(id, msg.sender, params.tickLower, params.tickUpper, params.liquidityDelta, params.salt);
+    }
+
+    /**
+     * @dev Withdraw-only pause + delisted-plugin semantics for modifyLiquidity (split out to keep the legacy
+     * codegen pipeline, used by `forge coverage`, under the stack limit — Issue 5).
+     * Removals / fee pokes (liquidityDelta <= 0) are always allowed. APUS-SUPADEX-011: a delisted plugin's
+     * hooks are skipped on removals so LP principal is never trapped; adds revert.
+     */
+    function _modifyLiquidityPermissions(PoolKey memory key, PoolId id, int256 liquidityDelta)
+        internal
+        view
+        returns (uint32 permissions)
+    {
+        if (liquidityDelta > 0) _checkCircuitBreaker(id, key.curveType);
+        if (!poolSlot0[id].isInitialized()) revert PoolErrors.PoolNotInitialized(id);
+        permissions = pluginPermissions[id];
+        if (liquidityDelta > 0) {
+            _requirePluginAllowed(key.plugin);
+        } else if (!_isPluginAllowed(key.plugin)) {
+            permissions = 0;
+        }
+    }
+
+    function _afterModifyLiquidity(
+        PoolKey memory key,
+        ModifyLiquidityParams memory params,
+        uint32 permissions,
+        ICurveEngine engine,
+        BalanceDelta callerDelta,
+        BalanceDelta feesAccrued,
+        bytes calldata hookData
+    ) internal returns (BalanceDelta, BalanceDelta) {
         (BalanceDelta hookDelta, BalanceDelta feesHookDelta) = PluginDispatcher.dispatchAfterModifyLiquidity(
             key.plugin, permissions, msg.sender, key, params, callerDelta, feesAccrued, hookData
         );
@@ -289,17 +317,13 @@ contract SupaPoolManager is IPoolManager {
                 key, engine, uint256(uint128(feesHookDelta.amount0())), uint256(uint128(feesHookDelta.amount1()))
             );
         }
+        return (callerDelta, feesAccrued);
+    }
 
-        BalanceDelta netCallerDelta = callerDelta.sub(feesAccrued);
-
-        if (netCallerDelta.amount0() != 0) {
-            vault.accountDelta(msg.sender, key.currency0, -netCallerDelta.amount0());
-        }
-        if (netCallerDelta.amount1() != 0) {
-            vault.accountDelta(msg.sender, key.currency1, -netCallerDelta.amount1());
-        }
-
-        emit ModifyLiquidity(id, msg.sender, params.tickLower, params.tickUpper, params.liquidityDelta, params.salt);
+    /// @dev Caller owes positive deltas (vault debit = negative account delta) and is owed negative ones.
+    function _accountCallerDelta(PoolKey memory key, BalanceDelta delta) internal {
+        if (delta.amount0() != 0) vault.accountDelta(msg.sender, key.currency0, -delta.amount0());
+        if (delta.amount1() != 0) vault.accountDelta(msg.sender, key.currency1, -delta.amount1());
     }
 
     /// @inheritdoc IPoolManager
@@ -338,12 +362,7 @@ contract SupaPoolManager is IPoolManager {
 
         swapDelta = _applySwapHookDelta(key, params, swapDelta, hookData);
 
-        if (swapDelta.amount0() != 0) {
-            vault.accountDelta(msg.sender, key.currency0, -swapDelta.amount0());
-        }
-        if (swapDelta.amount1() != 0) {
-            vault.accountDelta(msg.sender, key.currency1, -swapDelta.amount1());
-        }
+        _accountCallerDelta(key, swapDelta);
 
         emit Swap(
             id,
