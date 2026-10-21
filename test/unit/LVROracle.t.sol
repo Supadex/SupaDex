@@ -547,9 +547,9 @@ contract LVROracleTest is Test, IPluginEvents {
     }
 
     /// Edith R3.4-2 (fail closed): Polygon zkEVM 1101, Mantle 5000, Blast 81457 - previously missing from the L2
-    /// list - plus unknown ids, Monad testnet 10143, geth-dev 1337 and Polygon PoS 137 all require the uptime feed.
+    /// list - plus unknown ids, Monad testnet 10143 and geth-dev 1337 all require the uptime feed.
     function test_sequencer_failClosed_rollupsAndUnknownRequireFeed() public {
-        uint256[9] memory ids = [uint256(1101), 5000, 81457, 10143, 1337, 137, 999_999_999, 42161, 324];
+        uint256[8] memory ids = [uint256(1101), 5000, 81457, 10143, 1337, 999_999_999, 42161, 324];
         for (uint256 i; i < ids.length; ++i) {
             vm.chainId(ids[i]);
             assertTrue(plugin.requiresSequencerFeed(ids[i]), "must require uptime feed");
@@ -572,9 +572,10 @@ contract LVROracleTest is Test, IPluginEvents {
         }
     }
 
-    /// Only the explicit L1 / local allowlist may configure a feed without an uptime feed.
+    /// Only the explicit L1 / validator-set / local allowlist (incl. Polygon PoS 137 / Amoy 80002, Edith R4) may
+    /// configure a feed without an uptime feed.
     function test_sequencer_exemptL1sConfigureWithoutFeed() public {
-        uint256[10] memory ids = [uint256(1), 11155111, 17000, 560048, 56, 97, 43114, 100, 250, 31337];
+        uint256[12] memory ids = [uint256(1), 11155111, 17000, 560048, 56, 97, 43114, 100, 250, 137, 80002, 31337];
         for (uint256 i; i < ids.length; ++i) {
             vm.chainId(ids[i]);
             assertFalse(plugin.requiresSequencerFeed(ids[i]), "exempt L1");

@@ -35,10 +35,13 @@ library ChainIds {
         return isLocal(chainId) || isTestnet(chainId);
     }
 
-    /// @notice Chains with no single sequencer, where an L2 sequencer-uptime feed is not required: true L1s with
-    ///         their own consensus (and their test networks) plus the local chain. EVERY other id, including
+    /// @notice Chains with no single sequencer, where an L2 sequencer-uptime feed is not required: Ethereum and
+    ///         validator-set chains with their own consensus (BNB, Avalanche, Gnosis, Fantom, Polygon PoS) and their
+    ///         test networks, plus the local chain (ADR-0009, Edith R4). Polygon PoS checkpointing to Ethereum affects
+    ///         finality, not swap liveness, and Chainlink publishes no uptime feed for it. EVERY other id, including
     ///         rollups such as Polygon zkEVM 1101, Mantle 5000, Blast 81457 and any unknown id, requires one.
-    ///         Polygon PoS (137 / 80002) is deliberately NOT exempt (checkpointed sidechain; fail closed).
+    ///         Exemption does NOT approve any price feed: feeds must still be verified official same-chain Chainlink
+    ///         direct-pair proxies (runbook); nothing on Fantom 250 unless verified at deploy time.
     function isSequencerExempt(uint256 chainId) internal pure returns (bool) {
         return chainId == 1 // Ethereum Mainnet
             || chainId == 11155111 // Ethereum Sepolia
@@ -48,7 +51,9 @@ library ChainIds {
             || chainId == 97 // BNB Smart Chain testnet
             || chainId == 43114 // Avalanche C-Chain
             || chainId == 100 // Gnosis
-            || chainId == 250 // Fantom Opera
+            || chainId == 250 // Fantom Opera (being superseded by Sonic; feeds only if verified at deploy time)
+            || chainId == 137 // Polygon PoS
+            || chainId == 80002 // Polygon Amoy
             || isLocal(chainId);
     }
 

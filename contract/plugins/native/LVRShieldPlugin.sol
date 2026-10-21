@@ -482,7 +482,7 @@ contract LVRShieldPlugin is BaseHook, IPluginEvents {
 
     /// @notice Fail-closed (Edith R3.4-2): an uptime feed is required on every chain except the explicit L1 / local
     ///         allowlist in `ChainIds.isSequencerExempt` (Ethereum + its testnets, BNB, Avalanche, Gnosis, Fantom,
-    ///         anvil 31337). Rollups such as 1101 / 5000 / 81457 and unknown chain ids require one.
+    ///         Polygon PoS 137/80002, anvil 31337). Rollups such as 1101 / 5000 / 81457 and unknown chain ids require one.
     function requiresSequencerFeed(uint256 chainId) public pure returns (bool) {
         return ChainIds.requiresSequencerFeed(chainId);
     }

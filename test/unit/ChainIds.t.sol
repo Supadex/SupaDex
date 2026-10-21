@@ -65,20 +65,19 @@ contract ChainIdsTest is Test {
         for (uint256 i; i < l2.length; ++i) {
             assertTrue(ChainIds.requiresSequencerFeed(l2[i]), "rollup must require an uptime feed");
         }
-        uint256[10] memory l1 = [uint256(1), 11155111, 17000, 560048, 56, 97, 43114, 100, 250, 31337];
+        uint256[12] memory l1 = [uint256(1), 11155111, 17000, 560048, 56, 97, 43114, 100, 250, 137, 80002, 31337];
         for (uint256 i; i < l1.length; ++i) {
             assertFalse(ChainIds.requiresSequencerFeed(l1[i]), "explicit L1 / local allowlist");
         }
-        assertTrue(ChainIds.requiresSequencerFeed(137), "Polygon PoS not exempt (fail closed)");
         assertTrue(ChainIds.requiresSequencerFeed(10143), "Monad not exempt");
         assertTrue(ChainIds.requiresSequencerFeed(1337), "geth-dev not exempt");
     }
 
-    /// Any id outside the 10-entry exemption allowlist requires a feed (fail closed for unknown chains).
+    /// Any id outside the 12-entry exemption allowlist requires a feed (fail closed for unknown chains).
     function testFuzz_sequencer_unknownRequiresFeed(uint256 id) public pure {
         vm.assume(
             id != 1 && id != 11155111 && id != 17000 && id != 560048 && id != 56 && id != 97 && id != 43114
-                && id != 100 && id != 250 && id != 31337
+                && id != 100 && id != 250 && id != 137 && id != 80002 && id != 31337
         );
         assertTrue(ChainIds.requiresSequencerFeed(id));
     }
