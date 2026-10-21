@@ -127,12 +127,22 @@ contract AntiJITVestingPlugin is BaseHook, IPluginEvents {
             return (this.afterModifyLiquidity.selector, BalanceDelta.wrap(0), BalanceDelta.wrap(0));
         }
 
+        uint256 penaltyAmount;
+        (feesHookDelta, penaltyAmount) = _haircut(feesAccrued, unvestedBps);
+        if (penaltyAmount > 0) _emitPenalty(sender, key, params, penaltyAmount);
+        return (this.afterModifyLiquidity.selector, BalanceDelta.wrap(0), feesHookDelta);
+    }
+
+    /// @dev Unvested share of accrued fees per leg (rounded down, in the LP's favour).
+    function _haircut(BalanceDelta feesAccrued, uint24 unvestedBps)
+        internal
+        pure
+        returns (BalanceDelta feesHookDelta, uint256 penaltyAmount)
+    {
         int128 f0 = feesAccrued.amount0();
         int128 f1 = feesAccrued.amount1();
         int128 h0;
         int128 h1;
-        uint256 penaltyAmount;
-
         if (f0 > 0) {
             uint256 haircut0 = (uint256(uint128(f0)) * unvestedBps) / BPS_DENOMINATOR;
             h0 = int128(uint128(haircut0));
@@ -143,18 +153,22 @@ contract AntiJITVestingPlugin is BaseHook, IPluginEvents {
             h1 = int128(uint128(haircut1));
             penaltyAmount += haircut1;
         }
-
-        if (penaltyAmount > 0) {
-            PoolId poolId = key.toId();
-            bytes32 positionKey = keccak256(abi.encodePacked(sender, params.tickLower, params.tickUpper, params.salt));
-            PositionResidency storage residency = residencies[poolId][positionKey];
-            uint32 elapsed = _elapsedBlocks(residency.lastDepositBlock);
-            emit JITPenaltyLevied(poolId, sender, positionKey, penaltyAmount, elapsed, minResidencyBlocks);
-        }
-
         feesHookDelta = toBalanceDelta(h0, h1);
-        return (this.afterModifyLiquidity.selector, BalanceDelta.wrap(0), feesHookDelta);
     }
+
+    function _emitPenalty(
+        address sender,
+        PoolKey calldata key,
+        IPoolManager.ModifyLiquidityParams calldata params,
+        uint256 penaltyAmount
+    ) internal {
+        PoolId poolId = key.toId();
+        bytes32 positionKey = keccak256(abi.encodePacked(sender, params.tickLower, params.tickUpper, params.salt));
+        PositionResidency storage residency = residencies[poolId][positionKey];
+        uint32 elapsed = _elapsedBlocks(residency.lastDepositBlock);
+        emit JITPenaltyLevied(poolId, sender, positionKey, penaltyAmount, elapsed, minResidencyBlocks);
+    }
+
 
     /**
      * @dev Linear unvested share: unvestedBps = BPS * (1 - min(elapsed/K, 1)).

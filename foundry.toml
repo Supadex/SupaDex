@@ -7,6 +7,8 @@ evm_version = "cancun"
 via_ir = true
 optimizer = true
 optimizer_runs = 1000000
+# Read-only access so DeploySupaDex.t.sol can assert the scripts never print readiness claims (Jexi 019).
+fs_permissions = [{ access = "read", path = "./script" }]
 
 remappings = [
     "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
@@ -25,3 +27,30 @@ depth = 64
 fail_on_revert = false
 
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
+
+[lint]
+lint_on_build = false
+
+# Fast local iteration profile (same compiler + via_ir; lower optimizer runs). CI/default stays unchanged.
+[profile.dev]
+src = "contract"
+out = "out-dev"
+cache_path = "cache-dev"
+libs = ["lib", "node_modules"]
+solc_version = "0.8.26"
+evm_version = "cancun"
+via_ir = true
+optimizer = true
+optimizer_runs = 200
+
+# Legacy (non via-IR) pipeline: what `forge coverage` uses. Must compile for coverage to work (Issue 5).
+[profile.legacy]
+src = "contract"
+out = "out-legacy"
+cache_path = "cache-legacy"
+libs = ["lib", "node_modules"]
+solc_version = "0.8.26"
+evm_version = "cancun"
+via_ir = false
+optimizer = true
+optimizer_runs = 200
