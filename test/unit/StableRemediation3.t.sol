@@ -397,4 +397,35 @@ contract StableRemediation3Test is Test {
         vm.expectRevert(abi.encodeWithSelector(PoolErrors.PoolAlreadyInitialized.selector, k.toId()));
         engine.initialize(k, SQRT_1_1, abi.encode(uint256(200)));
     }
+
+    // ------------------------------------------------------------------ exact root bracket for computeD
+
+    /// @dev h(D) = 4xy(4A(x+y) - (4A-1)D) - D^3 is strictly decreasing near the root and h(root) = 0 (Curve n=2).
+    function _h(uint256 x, uint256 y, uint256 A, uint256 D) internal pure returns (int256) {
+        return int256(4 * x * y) * (int256(4 * A * (x + y)) - int256(4 * A - 1) * int256(D)) - int256(D) ** 3;
+    }
+
+    /// @notice Stronger than the Jexi residual check: D is never below floor(root) and at most 2 wei above it
+    ///         (trader-adverse: a larger D yields a larger post-swap y). Python reference over 200k cases:
+    ///         D = floor(root) 98.3%, +1 1.7%, +2 0.001%.
+    function testFuzz_computeD_isFloorOfRoot(uint256 x, uint256 y, uint256 A) public view {
+        x = bound(x, 1e6, 1e23);
+        y = bound(y, x / 1000 + 1, x * 1000 > 1e23 ? 1e23 : x * 1000);
+        A = bound(A, 1, 10_000);
+        uint256 D;
+        try engine.computeD(x, y, A) returns (uint256 d_) {
+            D = d_;
+        } catch {
+            return; // non-convergence is a named revert (covered by the liveness tests)
+        }
+        assertLt(_h(x, y, A, D + 1), 0, "D >= floor(root)");
+        assertGe(_h(x, y, A, D - 2), 0, "D <= floor(root) + 2");
+    }
+
+    function test_computeD_seedCounterexample_isExactFloor() public view {
+        uint256 D = engine.computeD(1e6, 1004, 1);
+        assertEq(D, 236_515, "floor of the true root 236515.563");
+        assertGe(_h(1e6, 1004, 1, D), 0);
+        assertLt(_h(1e6, 1004, 1, D + 1), 0);
+    }
 }

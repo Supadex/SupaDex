@@ -232,12 +232,14 @@ contract SupaTimelockRolesTest is Test {
     /// A single delayed op can no longer lower a production delay below 48 h (Edith R5).
     function test_delayFloor_updateDelayCannotGoBelowFloor() public {
         vm.chainId(1);
+        // absolute warps: under via-IR `block.timestamp` may be read once and reused across vm.warp calls
+        uint256 t0 = block.timestamp;
         tl = new SupaTimelock(48 hours, ADMIN, _arr(PROPOSER), _arr(EXECUTOR), _arr(CANCELLER));
         bytes memory lower = abi.encodeCall(SupaTimelock.updateDelay, (1 hours));
         bytes32 salt = bytes32(uint256(77));
         vm.prank(PROPOSER);
         tl.schedule(address(tl), 0, lower, bytes32(0), salt, 48 hours);
-        vm.warp(block.timestamp + 48 hours);
+        vm.warp(t0 + 48 hours);
         vm.prank(EXECUTOR);
         vm.expectRevert();
         tl.execute(address(tl), 0, lower, bytes32(0), salt);
@@ -247,7 +249,7 @@ contract SupaTimelockRolesTest is Test {
         salt = bytes32(uint256(78));
         vm.prank(PROPOSER);
         tl.schedule(address(tl), 0, raise, bytes32(0), salt, 48 hours);
-        vm.warp(block.timestamp + 48 hours);
+        vm.warp(t0 + 96 hours);
         vm.prank(EXECUTOR);
         tl.execute(address(tl), 0, raise, bytes32(0), salt);
         assertEq(tl.minDelay(), 72 hours);

@@ -66,7 +66,12 @@ contract JexiPR1VerifyTest is JexiSupaDexTest {
         uint256 diff = lhs > rhs ? lhs - rhs : rhs - lhs;
         // |d(lhs-rhs)/dD| <= 4A + 4 (balanced) .. grows with imbalance; allow 2 wei of D error plus 1e-12 rel.
         uint256 dD = 4 * A + 3 * FullMathLib.mulDiv(D, D, 4 * x * 1) / y + 4;
-        return diff <= 2 * dD + lhs / 1e12;
+        // remediation-3 (Ultron, flagged to Jexi): `rhs` itself floors twice, and the inner floor of D*D/(2x) is
+        // amplified by D/(2y). Seed 0x5eed2026 (4096 runs) hit x=1e6, y=1004, A=1: engine D=236515 = floor(true
+        // root 236515.563), yet |lhs-rhs| = 105 > 98 purely from this harness rounding. Account for it explicitly;
+        // the exact root bracket is asserted separately in StableRemediation3.testFuzz_computeD_isFloorOfRoot.
+        uint256 harnessRounding = D / (2 * y) + 2;
+        return diff <= 2 * dD + harnessRounding + lhs / 1e12;
     }
 
     function testFuzz_stable_D_bounds_symmetry_invariant(uint256 x, uint256 y, uint256 A) public view {
