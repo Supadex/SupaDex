@@ -7,6 +7,47 @@ import {VerifyDeployments} from "../../script/VerifyDeployments.s.sol";
 import {DeployEnvironment} from "../../script/DeployEnvironment.sol";
 import {SupaTimelock} from "../../contract/governance/SupaTimelock.sol";
 import {SupaPoolManager} from "../../contract/core/SupaPoolManager.sol";
+import {CircuitBreaker} from "../../contract/security/CircuitBreaker.sol";
+
+/// TEST-ONLY Safe stand-in exposing the two calls the verifier uses to recognise a multisig.
+contract MockSafe {
+    uint256 public threshold;
+    address[] internal owners;
+
+    constructor(uint256 t, uint256 n) {
+        threshold = t;
+        for (uint256 i; i < n; i++) owners.push(address(uint160(0x5AFE00 + i)));
+    }
+
+    function getThreshold() external view returns (uint256) {
+        return threshold;
+    }
+
+    function getOwners() external view returns (address[] memory) {
+        return owners;
+    }
+}
+
+contract NotASafe {
+    function ping() external pure returns (uint256) {
+        return 1;
+    }
+}
+
+/// Test harnesses: pin the resolved environment (what `run()` derives from DEPLOY_ENV + the anvil probe).
+contract DeployHarness is DeploySupaDex {
+    function setKind(DeployEnvironment.Kind k) external {
+        resolvedKind = k;
+        resolved = true;
+    }
+}
+
+contract VerifyHarness is VerifyDeployments {
+    function setKind(DeployEnvironment.Kind k) external {
+        resolvedKind = k;
+        resolved = true;
+    }
+}
 
 /// @notice Jexi 019: deploy + fail-closed verification, including negative controls.
 contract DeploySupaDexTest is Test {
@@ -187,5 +228,107 @@ contract DeploySupaDexTest is Test {
             if (m) return true;
         }
         return false;
+    }
+
+    // ---- remediation-3: value-bearing gates (conditions 3, 10, 11; Edith 6-B, 10-A, 10-C)
+
+    function test_valueBearingClassification() public pure {
+        assertFalse(DeployEnvironment.valueBearing(DeployEnvironment.Kind.LOCAL, 31337));
+        assertFalse(DeployEnvironment.valueBearing(DeployEnvironment.Kind.TESTNET, 11155111));
+        assertFalse(DeployEnvironment.valueBearing(DeployEnvironment.Kind.FORK, 31337), "fork of a local chain");
+        assertFalse(DeployEnvironment.valueBearing(DeployEnvironment.Kind.FORK, 84532), "fork of a testnet");
+        assertTrue(DeployEnvironment.valueBearing(DeployEnvironment.Kind.FORK, 1), "fork of mainnet");
+        assertTrue(DeployEnvironment.valueBearing(DeployEnvironment.Kind.FORK, 8453), "fork of Base");
+        assertTrue(DeployEnvironment.valueBearing(DeployEnvironment.Kind.PRODUCTION, 1));
+        assertTrue(DeployEnvironment.valueBearing(DeployEnvironment.Kind.UNKNOWN, 424242), "fail closed");
+    }
+
+    function _safeCfg() internal returns (DeploySupaDex.RoleConfig memory c) {
+        c = _cfg();
+        c.proposer = address(new MockSafe(3, 5));
+        c.executor = address(new MockSafe(2, 3));
+        c.canceller = address(new MockSafe(2, 3));
+        c.guardian = address(new MockSafe(2, 3));
+        c.operator = address(new MockSafe(2, 3));
+    }
+
+    function _forkMainnet() internal returns (DeployHarness d, VerifyHarness v) {
+        vm.chainId(1);
+        d = new DeployHarness();
+        v = new VerifyHarness();
+        d.setKind(DeployEnvironment.Kind.FORK);
+        v.setKind(DeployEnvironment.Kind.FORK);
+    }
+
+    /// Fork of a value-bearing chain: BIN is paused at genesis, the timelock floor is 48 h, and verification
+    /// passes only when every role holder is a multisig.
+    function test_valueBearing_forkDeploy_pausesBin_andPassesWithSafes() public {
+        (DeployHarness d, VerifyHarness v) = _forkMainnet();
+        DeploySupaDex.RoleConfig memory cfg = _safeCfg();
+        DeploySupaDex.DeploymentResult memory res = d.deploy(address(d), cfg);
+        CircuitBreaker cb = CircuitBreaker(res.circuitBreaker);
+        assertTrue(cb.isCurvePaused(1), "BIN_AMM paused at genesis");
+        assertFalse(cb.isCurvePaused(0) || cb.isCurvePaused(2), "CLAMM / STABLE live");
+        assertEq(cb.owner(), res.timelock, "breaker handed to the timelock");
+        assertEq(SupaTimelock(payable(res.timelock)).delayFloor(), 48 hours);
+        VerifyDeployments.Report memory r = v.verify(res, cfg, address(d));
+        assertEq(r.failures, 0);
+    }
+
+    function test_valueBearing_eoaRoleHoldersBlocked() public {
+        (DeployHarness d, VerifyHarness v) = _forkMainnet();
+        DeploySupaDex.DeploymentResult memory res = d.deploy(address(d), _cfg()); // EOAs
+        VerifyDeployments.Report memory r = v.check(res, _cfg(), address(d));
+        assertEq(r.failures, 5, "proposer, executor, canceller, guardian, operator are not multisigs");
+        vm.expectRevert(bytes(DeployEnvironment.DEPLOYMENT_BLOCKED));
+        v.verify(res, _cfg(), address(d));
+        // the same EOA config is fine on a local chain (not value-bearing)
+        vm.chainId(31337);
+        DeploySupaDex.DeploymentResult memory local = deployer.deploy(address(deployer), _cfg());
+        assertEq(verifier.verify(local, _cfg(), address(deployer)).failures, 0);
+        assertFalse(CircuitBreaker(local.circuitBreaker).isCurvePaused(1), "BIN live on local chains by default");
+    }
+
+    function test_valueBearing_binUnpausedBlocked() public {
+        (DeployHarness d, VerifyHarness v) = _forkMainnet();
+        DeploySupaDex.RoleConfig memory cfg = _safeCfg();
+        DeploySupaDex.DeploymentResult memory res = d.deploy(address(d), cfg);
+        vm.prank(res.timelock);
+        CircuitBreaker(res.circuitBreaker).unpauseCurve(1);
+        VerifyDeployments.Report memory r = v.check(res, cfg, address(d));
+        assertEq(r.failures, 1, "only the BIN pause check fails");
+    }
+
+    function test_valueBearing_guardianEqualsProposerBlocked() public {
+        (DeployHarness d, VerifyHarness v) = _forkMainnet();
+        DeploySupaDex.RoleConfig memory cfg = _safeCfg();
+        cfg.guardian = cfg.proposer;
+        DeploySupaDex.DeploymentResult memory res = d.deploy(address(d), cfg);
+        VerifyDeployments.Report memory r = v.check(res, cfg, address(d));
+        assertEq(r.failures, 1, "GUARDIAN != PROPOSER");
+    }
+
+    function test_valueBearing_shortDelayRefusedOnChain() public {
+        (DeployHarness d,) = _forkMainnet();
+        DeploySupaDex.RoleConfig memory cfg = _safeCfg();
+        cfg.timelockDelay = 24 hours;
+        vm.expectRevert(); // SupaTimelock: InvalidDelay (48 h floor on chain id 1)
+        d.deploy(address(d), cfg);
+    }
+
+    function test_binPausedOptIn_onTestChains() public {
+        vm.setEnv("BIN_PAUSED", "true");
+        DeploySupaDex.DeploymentResult memory res = _deploy();
+        assertTrue(CircuitBreaker(res.circuitBreaker).isCurvePaused(1));
+        vm.setEnv("BIN_PAUSED", "false");
+    }
+
+    function test_isMultisig_recognition() public {
+        assertFalse(verifier.isMultisig(address(0xBEEF)), "EOA");
+        assertFalse(verifier.isMultisig(address(new NotASafe())), "contract without Safe interface");
+        assertFalse(verifier.isMultisig(address(new MockSafe(1, 3))), "threshold 1 is not a multisig");
+        assertFalse(verifier.isMultisig(address(new MockSafe(3, 2))), "threshold above owner count");
+        assertTrue(verifier.isMultisig(address(new MockSafe(2, 3))));
+        assertTrue(verifier.isMultisig(address(new MockSafe(3, 5))));
     }
 }

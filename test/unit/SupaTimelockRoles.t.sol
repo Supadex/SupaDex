@@ -197,4 +197,59 @@ contract SupaTimelockRolesTest is Test {
     function extGovSelf(bytes calldata data) external {
         _govSelf(data);
     }
+
+    // ------------------------------------------------------------- remediation-3: on-chain delay floor (10-A)
+
+    function test_delayFloor_localChainIsOneHour() public view {
+        assertEq(block.chainid, 31337);
+        assertEq(tl.delayFloor(), 1 hours);
+        assertEq(tl.PRODUCTION_DELAY_FLOOR(), 48 hours);
+    }
+
+    /// Value-bearing chain ids (and unknown ones - fail closed) get a 48 h floor in the constructor and updateDelay.
+    function test_delayFloor_valueBearingIs48h() public {
+        uint256[4] memory ids = [uint256(1), 8453, 42161, 999_999]; // mainnet, Base, Arbitrum, unknown
+        for (uint256 i; i < ids.length; i++) {
+            vm.chainId(ids[i]);
+            vm.expectRevert(GovernanceErrors.InvalidDelay.selector);
+            new SupaTimelock(48 hours - 1, ADMIN, _arr(PROPOSER), _arr(EXECUTOR), _arr(CANCELLER));
+            SupaTimelock prod = new SupaTimelock(48 hours, ADMIN, _arr(PROPOSER), _arr(EXECUTOR), _arr(CANCELLER));
+            assertEq(prod.delayFloor(), 48 hours);
+        }
+    }
+
+    function test_delayFloor_testnetsAllowShorterDelay() public {
+        uint256[3] memory ids = [uint256(11155111), 84532, 10143]; // Sepolia, Base Sepolia, Monad testnet
+        for (uint256 i; i < ids.length; i++) {
+            vm.chainId(ids[i]);
+            SupaTimelock t = new SupaTimelock(1 hours, ADMIN, _arr(PROPOSER), _arr(EXECUTOR), _arr(CANCELLER));
+            assertEq(t.delayFloor(), 1 hours);
+        }
+        assertFalse(tl.isTestChain(1));
+        assertFalse(tl.isTestChain(8453));
+    }
+
+    /// A single delayed op can no longer lower a production delay below 48 h (Edith R5).
+    function test_delayFloor_updateDelayCannotGoBelowFloor() public {
+        vm.chainId(1);
+        tl = new SupaTimelock(48 hours, ADMIN, _arr(PROPOSER), _arr(EXECUTOR), _arr(CANCELLER));
+        bytes memory lower = abi.encodeCall(SupaTimelock.updateDelay, (1 hours));
+        bytes32 salt = bytes32(uint256(77));
+        vm.prank(PROPOSER);
+        tl.schedule(address(tl), 0, lower, bytes32(0), salt, 48 hours);
+        vm.warp(block.timestamp + 48 hours);
+        vm.prank(EXECUTOR);
+        vm.expectRevert();
+        tl.execute(address(tl), 0, lower, bytes32(0), salt);
+        assertEq(tl.minDelay(), 48 hours);
+        // positive control: raising works through the same path
+        bytes memory raise = abi.encodeCall(SupaTimelock.updateDelay, (72 hours));
+        salt = bytes32(uint256(78));
+        vm.prank(PROPOSER);
+        tl.schedule(address(tl), 0, raise, bytes32(0), salt, 48 hours);
+        vm.warp(block.timestamp + 48 hours);
+        vm.prank(EXECUTOR);
+        tl.execute(address(tl), 0, raise, bytes32(0), salt);
+        assertEq(tl.minDelay(), 72 hours);
+    }
 }
