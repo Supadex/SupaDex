@@ -8,3 +8,8 @@ Status: draft for review. PRODUCTION READINESS NOT ESTABLISHED.
 - **Ownership transfers** are single-step (owner = timelock). A 2-step transfer (10-E) is not implemented. It is low priority because the transfer itself is a timelocked op.
 - **Salt recovery:** `schedule` emits `CallSalt(id, salt)` next to `CallQueued`, so Safe-wrapped schedules can be executed from logs alone. `isOperationExpired(id)` distinguishes expired from never-scheduled.
 - **BIN curve:** it is paused at genesis on value-bearing networks (`CircuitBreaker.pauseCurve(1)`) and the verifier checks this. Unpausing is a timelocked op that requires Jexi's sign-off and an external audit.
+
+## Plugin whitelist policy: delta-returning plugins (APUS-SUPADEX-024)
+- `setPluginCanReturnDelta(plugin, true)` lets a plugin reduce an LP's removal credit (a principal haircut) or confiscate unvested fees.
+- Since remediation-3, the PoolManager redistributes the retained principal like confiscated fees. It is donated to in-range LPs, or booked as protocol fees when the pool has no active liquidity. It is never stranded in `reservesOf`. The plugin itself receives nothing.
+- Whitelisting a principal-haircutting plugin is still a governance decision that changes LP economics. It needs its own security review. The shipped LVR plugin may not return deltas; AntiJIT returns fee deltas only.
