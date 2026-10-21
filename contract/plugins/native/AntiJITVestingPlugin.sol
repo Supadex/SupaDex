@@ -13,6 +13,10 @@ import {BalanceDelta, toBalanceDelta} from "../../types/BalanceDelta.sol";
  * @title AntiJITVestingPlugin
  * @notice Native anti-MEV plugin that linearly vests accrued swap fees over a minimum residency
  *         window and redistributes unvested fees to remaining LPs via fee growth.
+ * @dev Residency is tracked per position key. Adding liquidity resets the clock for the entire position
+ *      (APUS-SUPADEX-014); honest LPs who top up therefore re-vest fees earned in the next
+ *      `minResidencyBlocks` blocks. Fees realised on any modify (including adds) are haircut by the
+ *      pre-update residency (APUS-SUPADEX-008). Separate salts/positions are tracked independently.
  */
 contract AntiJITVestingPlugin is BaseHook, IPluginEvents {
     /**
@@ -70,31 +74,25 @@ contract AntiJITVestingPlugin is BaseHook, IPluginEvents {
 
         PositionResidency storage residency = residencies[poolId][positionKey];
 
+        // APUS-SUPADEX-008: every modifyLiquidity realises the position's accrued fees (engines pay them on adds
+        // too), so the haircut is ALWAYS evaluated against the residency that earned those fees, before any update.
+        _pendingUnvestedBps = _computeUnvestedBps(residency);
+
         if (params.liquidityDelta > 0) {
             uint128 addLiq = uint128(uint256(int256(params.liquidityDelta)));
             uint128 oldLiq = residency.liquidity;
-            uint32 currentBlock = uint32(block.number);
-
-            if (oldLiq == 0) {
-                residency.lastDepositBlock = currentBlock;
-            } else {
-                // Liquidity-weighted average deposit block (honest top-ups do not fully reset).
-                uint256 weighted =
-                    (uint256(oldLiq) * uint256(residency.lastDepositBlock) + uint256(addLiq) * uint256(currentBlock))
-                        / (uint256(oldLiq) + uint256(addLiq));
-                residency.lastDepositBlock = uint32(weighted);
-            }
+            // APUS-SUPADEX-014: any top-up restarts the residency clock for the whole position (no liquidity-
+            // weighted averaging), so a resident seed cannot shield a same-block JIT top-up. Fees earned before
+            // the top-up were already settled above at the old age; only fees accrued after it vest again.
+            residency.lastDepositBlock = uint32(block.number);
             residency.lastDepositTimestamp = uint32(block.timestamp);
             residency.liquidity = oldLiq + addLiq;
-            _pendingUnvestedBps = 0;
 
             emit LiquidityResidencyRecorded(
                 poolId, sender, positionKey, residency.lastDepositBlock, uint32(block.timestamp), residency.liquidity
             );
         } else {
-            // Remove or fee-collect poke: evaluate vesting against current residency.
-            _pendingUnvestedBps = _computeUnvestedBps(residency);
-
+            // Remove or fee-collect poke (vesting already evaluated above).
             if (params.liquidityDelta < 0) {
                 uint128 deltaAbs = uint128(uint256(int256(-params.liquidityDelta)));
                 if (deltaAbs >= residency.liquidity) {
