@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
+import {ChainIds} from "../libraries/ChainIds.sol";
+
 /**
  * @title MockChainlinkAggregator (TEST-ONLY, local chains only)
  * @notice Deployable AggregatorV3-compatible price feed for local anvil seeding and frontend state testing
  *         (LVR healthy / stale / invalid / reverting). It is permissionless on purpose; any caller can move the
- *         price. It can only be deployed on chain 31337 or 1337, so it can never be configured as a real feed.
+ *         price. It can only be deployed on local chain 31337 (ChainIds.isLocal), so it can never be configured as a real feed.
  *         Production LVR feeds must be official same-chain Chainlink direct-pair proxies (ADR-0009, runbook).
  */
 contract MockChainlinkAggregator {
@@ -26,7 +28,7 @@ contract MockChainlinkAggregator {
     event MockRevertingSet(bool reverting);
 
     constructor(uint8 _decimals, string memory _description, int256 initialAnswer) {
-        if (block.chainid != 31337 && block.chainid != 1337) revert LocalChainOnly(block.chainid);
+        if (!ChainIds.isLocal(block.chainid)) revert LocalChainOnly(block.chainid);
         decimals = _decimals;
         description = _description;
         _set(initialAnswer, block.timestamp);
@@ -92,7 +94,7 @@ contract MockSequencerUptimeFeed {
     event MockSequencerStatus(uint80 indexed roundId, int256 answer, uint256 startedAt);
 
     constructor() {
-        if (block.chainid != 31337 && block.chainid != 1337) revert LocalChainOnly(block.chainid);
+        if (!ChainIds.isLocal(block.chainid)) revert LocalChainOnly(block.chainid);
         // Up since 1 day ago (past any grace period) unless block.timestamp is small.
         _set(0, block.timestamp > 1 days ? block.timestamp - 1 days : 1);
     }

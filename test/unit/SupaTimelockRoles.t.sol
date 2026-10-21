@@ -219,7 +219,7 @@ contract SupaTimelockRolesTest is Test {
     }
 
     function test_delayFloor_testnetsAllowShorterDelay() public {
-        uint256[3] memory ids = [uint256(11155111), 84532, 10143]; // Sepolia, Base Sepolia, Monad testnet
+        uint256[3] memory ids = [uint256(11155111), 84532, 31337]; // Sepolia, Base Sepolia, anvil
         for (uint256 i; i < ids.length; i++) {
             vm.chainId(ids[i]);
             SupaTimelock t = new SupaTimelock(1 hours, ADMIN, _arr(PROPOSER), _arr(EXECUTOR), _arr(CANCELLER));
@@ -227,6 +227,20 @@ contract SupaTimelockRolesTest is Test {
         }
         assertFalse(tl.isTestChain(1));
         assertFalse(tl.isTestChain(8453));
+    }
+
+    /// Edith R3 / ADR-0010: Monad testnet 10143 (value-bearing, deviation (e)) and geth-dev 1337 (reused by
+    /// appchains) are no longer test chains: they get the 48 h floor.
+    function test_delayFloor_monadTestnetAndGethDevAre48h() public {
+        uint256[2] memory ids = [uint256(10143), 1337];
+        for (uint256 i; i < ids.length; i++) {
+            assertFalse(tl.isTestChain(ids[i]));
+            vm.chainId(ids[i]);
+            vm.expectRevert(GovernanceErrors.InvalidDelay.selector);
+            new SupaTimelock(1 hours, ADMIN, _arr(PROPOSER), _arr(EXECUTOR), _arr(CANCELLER));
+            SupaTimelock t = new SupaTimelock(48 hours, ADMIN, _arr(PROPOSER), _arr(EXECUTOR), _arr(CANCELLER));
+            assertEq(t.delayFloor(), 48 hours);
+        }
     }
 
     /// A single delayed op can no longer lower a production delay below 48 h (Edith R5).

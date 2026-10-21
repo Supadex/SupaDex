@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import {ISupaTimelock} from "../interfaces/ISupaTimelock.sol";
 import {GovernanceErrors} from "../errors/GovernanceErrors.sol";
+import {ChainIds} from "../libraries/ChainIds.sol";
 
 /**
  * @title SupaTimelock
@@ -339,21 +340,12 @@ contract SupaTimelock is ISupaTimelock {
     }
 
     /**
-     * @notice Chains where a delay below 48 h is acceptable: local anvil/hardhat and public testnets only.
-     * Everything else (including unknown chain ids and anvil forks of mainnet, which report chain id 1) is treated
-     * as value-bearing.
+     * @notice Chains where a delay below 48 h is acceptable: local anvil (31337) and public testnets only, read from
+     * the shared `ChainIds` allowlist that the deploy scripts also use (ADR-0010 condition). Everything else
+     * (including unknown chain ids, Monad testnet 10143, geth-dev 1337 and anvil forks of mainnet, which report
+     * chain id 1) is treated as value-bearing.
      */
     function isTestChain(uint256 chainId) public pure returns (bool) {
-        return chainId == 31337 // anvil / hardhat
-            || chainId == 1337 // geth dev
-            || chainId == 11155111 // Ethereum Sepolia
-            || chainId == 17000 // Holesky
-            || chainId == 560048 // Hoodi
-            || chainId == 84532 // Base Sepolia
-            || chainId == 421614 // Arbitrum Sepolia
-            || chainId == 11155420 // OP Sepolia
-            || chainId == 80002 // Polygon Amoy
-            || chainId == 97 // BNB testnet
-            || chainId == 10143; // Monad testnet
+        return ChainIds.isTestChain(chainId);
     }
 }
