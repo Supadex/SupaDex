@@ -17,6 +17,7 @@ import {VolatilityTWAPOracle} from "./VolatilityTWAPOracle.sol";
 import {IAggregatorV3} from "../../interfaces/external/IAggregatorV3.sol";
 import {FullMathLib} from "../../libraries/FullMathLib.sol";
 import {Currency, CurrencyLibrary} from "../../types/Currency.sol";
+import {ChainIds} from "../../libraries/ChainIds.sol";
 
 /**
  * @title LVRShieldPlugin
@@ -438,8 +439,8 @@ contract LVRShieldPlugin is BaseHook, IPluginEvents {
         if (fallbackFeePips > FEE_CAP_PIPS) revert PluginErrors.InvalidOracleConfig(6);
         PoolId poolId = key.toId();
         if (!poolLVRStates[poolId].isInitialized) revert OraclePoolNotInitialized();
-        // Edith 9-A: no feed on an L2 without the sequencer-uptime check.
-        if (isKnownL2(block.chainid) && address(sequencerUptimeFeed) == address(0)) {
+        // Edith 9-A / R3.4-2: no feed without the sequencer-uptime check unless the chain is an exempt L1 (fail closed).
+        if (requiresSequencerFeed(block.chainid) && address(sequencerUptimeFeed) == address(0)) {
             revert PluginErrors.InvalidOracleConfig(9);
         }
 
@@ -461,12 +462,12 @@ contract LVRShieldPlugin is BaseHook, IPluginEvents {
     }
 
     /**
-     * @notice Set (or clear, only on chains that are not known L2s) the Chainlink L2 sequencer-uptime feed.
+     * @notice Set (or clear, only on sequencer-exempt L1 / local chains) the Chainlink L2 sequencer-uptime feed.
      * Governance only. `gracePeriod` in [MIN_SEQUENCER_GRACE, MAX_SEQUENCER_GRACE]; recommended 3,600 s.
      */
     function setSequencerUptimeFeed(IAggregatorV3 feed, uint32 gracePeriod) external onlyRolesOwner {
         if (address(feed) == address(0)) {
-            if (isKnownL2(block.chainid)) revert PluginErrors.InvalidOracleConfig(9);
+            if (requiresSequencerFeed(block.chainid)) revert PluginErrors.InvalidOracleConfig(9);
             gracePeriod = 0;
         } else {
             if (address(feed).code.length == 0) revert PluginErrors.InvalidOracleConfig(9);
@@ -479,17 +480,11 @@ contract LVRShieldPlugin is BaseHook, IPluginEvents {
         emit SequencerUptimeFeedSet(address(feed), gracePeriod);
     }
 
-    /// @notice Chain ids of rollups with a single sequencer (feed config requires the uptime feed there).
-    function isKnownL2(uint256 chainId) public pure returns (bool) {
-        return chainId == 8453 // Base
-            || chainId == 84532 // Base Sepolia
-            || chainId == 10 // OP Mainnet
-            || chainId == 11155420 // OP Sepolia
-            || chainId == 42161 // Arbitrum One
-            || chainId == 421614 // Arbitrum Sepolia
-            || chainId == 59144 // Linea
-            || chainId == 534352 // Scroll
-            || chainId == 324; // zkSync Era
+    /// @notice Fail-closed (Edith R3.4-2): an uptime feed is required on every chain except the explicit L1 / local
+    ///         allowlist in `ChainIds.isSequencerExempt` (Ethereum + its testnets, BNB, Avalanche, Gnosis, Fantom,
+    ///         anvil 31337). Rollups such as 1101 / 5000 / 81457 and unknown chain ids require one.
+    function requiresSequencerFeed(uint256 chainId) public pure returns (bool) {
+        return ChainIds.requiresSequencerFeed(chainId);
     }
 
     /// @notice ADR-0009: remove the external feed (pool reverts to endogenous-only pricing).

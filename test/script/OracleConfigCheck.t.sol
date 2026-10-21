@@ -137,4 +137,20 @@ contract OracleConfigCheckTest is Test {
         e.sequencerFeed = address(0x5E9);
         assertGt(_fails(e), 0, "a different sequencer feed is rejected");
     }
+
+    /// Edith R3.4-2: 1101 / 5000 / 81457 (and unknown ids) are sequencer-required; the check demands the registry
+    /// uptime feed there and rejects an entry without one. On the local exempt chain it is not required.
+    function test_failClosed_rollupsRequireRegistrySequencerFeed() public {
+        uint256[4] memory ids = [uint256(1101), 5000, 81457, 999_999_999];
+        for (uint256 i; i < ids.length; ++i) {
+            vm.chainId(ids[i]);
+            OracleConfigCheck.FeedEntry memory e = _entry();
+            e.chainId = ids[i];
+            assertEq(_fails(e), 0, "matching sequencer feed passes");
+            e.sequencerFeed = address(0);
+            assertGt(_fails(e), 0, "missing registry sequencer feed is rejected");
+            e.sequencerFeed = address(0x5E9);
+            assertGt(_fails(e), 0, "a different sequencer feed is rejected");
+        }
+    }
 }

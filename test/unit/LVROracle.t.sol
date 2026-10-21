@@ -528,11 +528,12 @@ contract LVROracleTest is Test, IPluginEvents {
         assertEq(address(plugin.sequencerUptimeFeed()), address(0));
     }
 
-    /// On a known L2 (Base 8453) a price feed cannot be configured until the uptime feed is set, and the uptime
-    /// feed cannot be cleared there.
+    /// On a sequencer-required chain (Base 8453) a price feed cannot be configured until the uptime feed is set, and
+    /// the uptime feed cannot be cleared there.
     function test_sequencer_requiredOnKnownL2() public {
         vm.chainId(8453);
-        assertTrue(plugin.isKnownL2(8453) && plugin.isKnownL2(84532) && !plugin.isKnownL2(1));
+        assertTrue(plugin.requiresSequencerFeed(8453) && plugin.requiresSequencerFeed(84532));
+        assertFalse(plugin.requiresSequencerFeed(1));
         vm.expectRevert(abi.encodeWithSelector(PluginErrors.InvalidOracleConfig.selector, uint8(9)));
         _configure();
         MockSequencerFeed seq = new MockSequencerFeed();
@@ -543,6 +544,42 @@ contract LVROracleTest is Test, IPluginEvents {
         assertEq(status, 0);
         vm.expectRevert(abi.encodeWithSelector(PluginErrors.InvalidOracleConfig.selector, uint8(9)));
         plugin.setSequencerUptimeFeed(IAggregatorV3(address(0)), 0);
+    }
+
+    /// Edith R3.4-2 (fail closed): Polygon zkEVM 1101, Mantle 5000, Blast 81457 - previously missing from the L2
+    /// list - plus unknown ids, Monad testnet 10143, geth-dev 1337 and Polygon PoS 137 all require the uptime feed.
+    function test_sequencer_failClosed_rollupsAndUnknownRequireFeed() public {
+        uint256[9] memory ids = [uint256(1101), 5000, 81457, 10143, 1337, 137, 999_999_999, 42161, 324];
+        for (uint256 i; i < ids.length; ++i) {
+            vm.chainId(ids[i]);
+            assertTrue(plugin.requiresSequencerFeed(ids[i]), "must require uptime feed");
+            vm.expectRevert(abi.encodeWithSelector(PluginErrors.InvalidOracleConfig.selector, uint8(9)));
+            _configure();
+        }
+    }
+
+    /// Once the uptime feed is set on 1101 / 5000 / 81457, configuration works; it can never be cleared there.
+    function test_sequencer_failClosed_feedSetThenNotClearable() public {
+        uint256[3] memory ids = [uint256(1101), 5000, 81457];
+        MockSequencerFeed seq = new MockSequencerFeed();
+        seq.set(0, block.timestamp - 2 days);
+        for (uint256 i; i < ids.length; ++i) {
+            vm.chainId(ids[i]);
+            plugin.setSequencerUptimeFeed(IAggregatorV3(address(seq)), 3600);
+            _configure();
+            vm.expectRevert(abi.encodeWithSelector(PluginErrors.InvalidOracleConfig.selector, uint8(9)));
+            plugin.setSequencerUptimeFeed(IAggregatorV3(address(0)), 0);
+        }
+    }
+
+    /// Only the explicit L1 / local allowlist may configure a feed without an uptime feed.
+    function test_sequencer_exemptL1sConfigureWithoutFeed() public {
+        uint256[10] memory ids = [uint256(1), 11155111, 17000, 560048, 56, 97, 43114, 100, 250, 31337];
+        for (uint256 i; i < ids.length; ++i) {
+            vm.chainId(ids[i]);
+            assertFalse(plugin.requiresSequencerFeed(ids[i]), "exempt L1");
+            _configure();
+        }
     }
 
     /// The gas guard covers BOTH calls when an uptime feed is set: under-funding never forces fallback.

@@ -168,8 +168,8 @@ contract VerifyDeployments is Script {
         _req(r, cfg.guardian != cfg.proposer, "GUARDIAN != PROPOSER");
         StableAMMEngine se = StableAMMEngine(res.stableEngine);
         _req(r, se.minA() >= se.MIN_A() && se.maxA() <= se.MAX_A(), "stable A creator range within hard bounds");
-        if (lvr.isKnownL2(block.chainid)) {
-            _req(r, address(lvr.sequencerUptimeFeed()) != address(0), "L2: sequencer-uptime feed configured");
+        if (lvr.requiresSequencerFeed(block.chainid)) {
+            _req(r, address(lvr.sequencerUptimeFeed()) != address(0), "sequencer-required chain: sequencer-uptime feed configured");
         }
     }
 

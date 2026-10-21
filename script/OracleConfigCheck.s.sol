@@ -96,13 +96,13 @@ contract OracleConfigCheck is Script {
         );
         _expect(r, cfg.deadbandBps >= e.publishedDeviationBps, "deadband >= published deviation threshold");
         _expect(r, cfg.maxDeviationBps > cfg.deadbandBps, "maxDeviation > deadband");
-        if (lvr.isKnownL2(block.chainid)) {
+        if (lvr.requiresSequencerFeed(block.chainid)) {
             _expect(
                 r,
                 address(lvr.sequencerUptimeFeed()) == e.sequencerFeed && e.sequencerFeed != address(0),
-                "L2: sequencer-uptime feed is the registry feed"
+                "sequencer-required chain: sequencer-uptime feed is the registry feed"
             );
-            _expect(r, lvr.sequencerGracePeriod() >= 3600, "L2: sequencer grace >= 1 h");
+            _expect(r, lvr.sequencerGracePeriod() >= 3600, "sequencer-required chain: sequencer grace >= 1 h");
         }
         (uint8 status,,, uint256 dev) = lvr.previewOracle(key.toId());
         _expect(r, status == 0, "previewOracle status 0 (fresh, valid, within maxDeviation)");
