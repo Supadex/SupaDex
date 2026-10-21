@@ -1,0 +1,17 @@
+{
+  "_README": "Official same-chain Chainlink direct-pair proxies ONLY. Copy every field from data.chain.link / docs.chain.link (feed page: proxy address, heartbeat, deviation threshold, decimals) and record the source URL and the two reviewers. No entries are filled in yet: none have been verified, and no value-bearing LVR pool may be configured until they are. The `example-local` entry is shape-only, for the forge tests.",
+  "example-local": {
+    "chainId": 31337,
+    "feed": "0x0000000000000000000000000000000000000000",
+    "description": "ETH / USD",
+    "decimals": 8,
+    "publishedHeartbeat": 3600,
+    "publishedDeviationBps": 50,
+    "base": "0x0000000000000000000000000000000000000000",
+    "quote": "0x0000000000000000000000000000000000000000",
+    "directPair": true,
+    "sequencerFeed": "0x0000000000000000000000000000000000000000",
+    "source": "n/a (local)",
+    "reviewers": []
+  }
+}

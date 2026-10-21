@@ -26,3 +26,14 @@ PROGRESS.md
 .cursorrules
 
 .agents/skills/supadex-development
+out-dev/
+cache-dev/
+out-legacy/
+cache-legacy/
+out-cov/
+cache-cov/
+lcov.info
+branch_structure.json
+temp_auto_push.bat
+temp_interactive_push.bat
+.gitignore

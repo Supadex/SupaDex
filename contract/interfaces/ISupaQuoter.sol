@@ -50,6 +50,14 @@ interface ISupaQuoter {
         returns (uint256 amountOut, uint160 sqrtPriceX96After, int24 tickAfter);
 
     /**
+     * @notice Same as quoteExactInputSingle, plus the LP fee (pips, 1e6 = 100%) the pool manager actually applied
+     *         to this swap (plugin dynamic fee, e.g. LVR, or key.fee when the plugin returns 0).
+     */
+    function quoteExactInputSingleWithFee(QuoteExactInputSingleParams memory params)
+        external
+        returns (uint256 amountOut, uint160 sqrtPriceX96After, int24 tickAfter, uint24 feePips);
+
+    /**
      * @notice Returns exact output quote for multi-hop swap route.
      */
     function quoteExactInput(bytes memory path, uint128 amountIn) external returns (uint256 amountOut);
@@ -60,6 +68,11 @@ interface ISupaQuoter {
     function quoteExactOutputSingle(QuoteExactOutputSingleParams memory params)
         external
         returns (uint256 amountIn, uint160 sqrtPriceX96After, int24 tickAfter);
+
+    /// @notice Same as quoteExactOutputSingle, plus the applied LP fee (pips).
+    function quoteExactOutputSingleWithFee(QuoteExactOutputSingleParams memory params)
+        external
+        returns (uint256 amountIn, uint160 sqrtPriceX96After, int24 tickAfter, uint24 feePips);
 
     /**
      * @notice Returns exact input quote for multi-hop swap route.

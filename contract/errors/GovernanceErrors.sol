@@ -50,4 +50,24 @@ library GovernanceErrors {
      * @dev Thrown when minimum delay is less than the protocol minimum or greater than maximum
      */
     error InvalidDelay();
+
+    /**
+     * @notice ADR-0010: an address may not hold both the proposer and the executor role.
+     */
+    error RoleConflict(address account);
+
+    /**
+     * @notice ADR-0010: removing this holder would leave the role empty (timelock bricked).
+     */
+    error LastRoleHolder();
+
+    /**
+     * @notice ADR-0010: zero address supplied as a role holder.
+     */
+    error ZeroAddressRole();
+
+    /**
+     * @notice ADR-0010: a required role list was empty at construction.
+     */
+    error EmptyRole();
 }

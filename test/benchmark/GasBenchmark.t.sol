@@ -80,9 +80,7 @@ contract BenchmarkLiquidityHelper is IUnlockCallback {
 
     function unlockCallback(bytes calldata data) external override returns (bytes memory) {
         (PoolKey memory key, uint256 amount) = abi.decode(data, (PoolKey, uint256));
-        IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
-            tickLower: -120, tickUpper: 120, liquidityDelta: int256(amount), salt: bytes32(0)
-        });
+        IPoolManager.ModifyLiquidityParams memory params = SecurityTestSetup.liquidityParams(key, amount, true);
 
         (BalanceDelta delta,) = manager.modifyLiquidity(key, params, "");
         if (delta.amount0() > 0) {
@@ -191,7 +189,12 @@ contract GasBenchmarkTest is Test {
         });
 
         stableKey = PoolKey({
-            currency0: cA, currency1: cC, fee: 500, tickSpacing: 1, plugin: address(0), curveType: CurveType.STABLE_AMM
+            currency0: cA,
+            currency1: cC,
+            fee: 500,
+            tickSpacing: 1, // STABLE: A passed at initialize (ADR-0007 rev. 2)
+            plugin: address(0),
+            curveType: CurveType.STABLE_AMM
         });
 
         lvrKey = PoolKey({
@@ -205,7 +208,7 @@ contract GasBenchmarkTest is Test {
 
         manager.initialize(clammKey, 1 << 96, "");
         manager.initialize(binKey, 1 << 96, "");
-        manager.initialize(stableKey, 1 << 96, "");
+        manager.initializeWithParams(stableKey, 1 << 96, abi.encode(uint256(100)), "");
         manager.initialize(lvrKey, 1 << 96, "");
 
         BenchmarkLiquidityHelper helper = new BenchmarkLiquidityHelper(vault, manager);

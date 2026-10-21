@@ -83,7 +83,8 @@ contract EmergencyShutdownIntegrationTest is Test {
     PoolId public clammId;
     PoolId public binId;
 
-    address public admin = address(0xAAAA);
+    address public admin = address(0xAAAA); // proposer + canceller
+    address public executorAddr = address(0xEEEE); // ADR-0010: executor must differ from proposer
     address public guardian = address(0xBBBB);
     address public alice = address(0xCCCC);
 
@@ -118,7 +119,7 @@ contract EmergencyShutdownIntegrationTest is Test {
         address[] memory proposers = new address[](1);
         proposers[0] = admin;
         address[] memory executors = new address[](1);
-        executors[0] = admin;
+        executors[0] = executorAddr;
         address[] memory cancellers = new address[](1);
         cancellers[0] = admin;
 
@@ -216,7 +217,7 @@ contract EmergencyShutdownIntegrationTest is Test {
 
         vm.warp(block.timestamp + 1 days);
 
-        vm.prank(admin);
+        vm.prank(executorAddr);
         timelock.execute(address(circuitBreaker), 0, unpauseData, bytes32(0), salt);
 
         assertFalse(circuitBreaker.isPoolPaused(clammId));

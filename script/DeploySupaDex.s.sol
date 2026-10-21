@@ -24,19 +24,28 @@ import {SupaFeeCollector} from "../contract/periphery/SupaFeeCollector.sol";
 import {IVault} from "../contract/interfaces/IVault.sol";
 import {ISupaRoles} from "../contract/interfaces/ISupaRoles.sol";
 import {IPluginWhitelist} from "../contract/interfaces/IPluginWhitelist.sol";
+import {DeployEnvironment} from "./DeployEnvironment.sol";
 
 /**
  * @title DeploySupaDex
- * @notice Production deployment script deploying the complete SupaDex AMM ecosystem.
+ * @notice Deploys the complete SupaDex stack to a LOCAL or TESTNET chain. Value-bearing and unknown chains are
+ *         refused (fail closed, Jexi 019). Passing this script means wiring only — PRODUCTION READINESS NOT
+ *         ESTABLISHED.
+ * @dev ADR-0010 (Jexi 017): proposer, executor and canceller are separate addresses; the deployer keeps no role
+ *      and every owner-gated contract ends owned by the timelock.
  */
 contract DeploySupaDex is Script {
     struct RoleConfig {
-        address governance;
-        address guardian;
-        address operator;
+        address governance; // informational timelock `admin` label (no power)
+        address proposer; // schedules timelock operations (e.g. governance multisig)
+        address executor; // executes ready operations (must differ from proposer)
+        address canceller; // cancels pending operations (e.g. security council)
+        address guardian; // circuit-breaker pause + StableAMM stopRampA
+        address operator; // SupaRoles operator (fee sweeps only)
         address dao;
         address staking;
         address insurance;
+        uint256 timelockDelay; // 0 ⇒ DEFAULT_TIMELOCK_DELAY
     }
 
     struct DeploymentResult {
@@ -61,17 +70,30 @@ contract DeploySupaDex is Script {
         address feeCollector;
     }
 
+    uint256 public constant DEFAULT_TIMELOCK_DELAY = 2 days;
+    uint32 public constant ANTI_JIT_MIN_RESIDENCY_BLOCKS = 10;
+
+    /// @dev Reads PRIVATE_KEY only to sign under `forge script --broadcast`; never logged or stored.
     function run() external returns (DeploymentResult memory res) {
+        _resolveEnvironment();
+        _requireDeployableChain();
+        if (vm.envOr("EXPECTED_CHAIN_ID", uint256(0)) != block.chainid) {
+            console2.log(DeployEnvironment.DEPLOYMENT_BLOCKED, "- EXPECTED_CHAIN_ID unset or != block.chainid");
+            revert(DeployEnvironment.DEPLOYMENT_BLOCKED);
+        }
         uint256 deployerPrivateKey = vm.envUint("PRIVATE_KEY");
         address deployer = vm.addr(deployerPrivateKey);
-
         RoleConfig memory rolesCfg = RoleConfig({
             governance: vm.envAddress("GOVERNANCE"),
+            proposer: vm.envAddress("PROPOSER"),
+            executor: vm.envAddress("EXECUTOR"),
+            canceller: vm.envAddress("CANCELLER"),
             guardian: vm.envAddress("GUARDIAN"),
             operator: vm.envAddress("OPERATOR"),
             dao: vm.envAddress("DAO"),
             staking: vm.envAddress("STAKING"),
-            insurance: vm.envAddress("INSURANCE")
+            insurance: vm.envAddress("INSURANCE"),
+            timelockDelay: vm.envOr("TIMELOCK_DELAY", DEFAULT_TIMELOCK_DELAY)
         });
 
         vm.startBroadcast(deployerPrivateKey);
@@ -79,137 +101,182 @@ contract DeploySupaDex is Script {
         vm.stopBroadcast();
     }
 
+    /// @dev Set by `run()` only after DEPLOY_ENV and the node probe agree (see DeployEnvironment.resolve).
+    DeployEnvironment.Kind internal resolvedKind;
+    bool internal resolved;
+
+    /// @notice Is the RPC node a local anvil node? Cheatcode RPC; any failure (live node, no RPC) => false.
+    function _isLocalNode() internal returns (bool) {
+        try vm.rpc("anvil_nodeInfo", "[]") returns (bytes memory) {
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    function _resolveEnvironment() internal {
+        string memory declared = vm.envOr("DEPLOY_ENV", string(""));
+        resolvedKind = DeployEnvironment.resolve(block.chainid, declared, _isLocalNode());
+        resolved = true;
+        console2.log("Declared DEPLOY_ENV:", declared);
+    }
+
+    function _requireDeployableChain() internal view {
+        DeployEnvironment.Kind kind = _kind();
+        console2.log("Chain id:", block.chainid);
+        console2.log("Environment:", DeployEnvironment.label(kind));
+        if (!DeployEnvironment.deploymentAllowed(kind)) {
+            console2.log(DeployEnvironment.DEPLOYMENT_BLOCKED, "- chain is not an allowed local/testnet chain");
+            revert(DeployEnvironment.DEPLOYMENT_BLOCKED);
+        }
+        console2.log(DeployEnvironment.ENVIRONMENT_VERIFIED);
+    }
+
+    function _kind() internal view returns (DeployEnvironment.Kind) {
+        return resolved ? resolvedKind : DeployEnvironment.classify(block.chainid);
+    }
+
+    /// @notice ADR-0006 / Edith 6-B: BIN stays paused on any value-bearing deployment until Jexi review AND an
+    /// external audit sign off (unpausing is a timelock action). Optional on test chains via BIN_PAUSED=true.
+    function binPausedAtGenesis() public view returns (bool) {
+        return DeployEnvironment.valueBearing(_kind(), block.chainid) || binPausedOptIn();
+    }
+
+    /// @notice Operator opt-in (BIN_PAUSED=true). Virtual so tests can exercise the opt-in without mutating the
+    /// process-wide environment, which raced with other suites running in parallel (flaky CurvePaused in setUp).
+    function binPausedOptIn() public view virtual returns (bool) {
+        return vm.envOr("BIN_PAUSED", false);
+    }
+
+    function validateConfig(address deployer, RoleConfig memory c) public pure {
+        require(c.governance != address(0), "GOVERNANCE required");
+        require(c.proposer != address(0), "PROPOSER required");
+        require(c.executor != address(0), "EXECUTOR required");
+        require(c.canceller != address(0), "CANCELLER required");
+        require(c.guardian != address(0), "GUARDIAN required");
+        require(c.operator != address(0), "OPERATOR required");
+        require(c.dao != address(0), "DAO required");
+        require(c.staking != address(0), "STAKING required");
+        require(c.insurance != address(0), "INSURANCE required");
+        require(c.proposer != c.executor, "PROPOSER and EXECUTOR must differ (ADR-0010)");
+        require(
+            deployer != c.proposer && deployer != c.executor && deployer != c.canceller && deployer != c.governance,
+            "deployer must hold no timelock role"
+        );
+    }
+
     function deploy(address deployer, RoleConfig memory rolesCfg) public returns (DeploymentResult memory res) {
-        require(rolesCfg.governance != address(0), "GOVERNANCE required");
-        require(rolesCfg.guardian != address(0), "GUARDIAN required");
-        require(rolesCfg.operator != address(0), "OPERATOR required");
-        require(rolesCfg.dao != address(0), "DAO required");
-        require(rolesCfg.staking != address(0), "STAKING required");
-        require(rolesCfg.insurance != address(0), "INSURANCE required");
+        _requireDeployableChain();
+        validateConfig(deployer, rolesCfg);
+        if (rolesCfg.timelockDelay == 0) rolesCfg.timelockDelay = DEFAULT_TIMELOCK_DELAY;
+        console2.log(DeployEnvironment.CONFIGURATION_VALIDATED);
+        console2.log(
+            "=== SupaDex deployment (wiring only;", DeployEnvironment.PRODUCTION_READINESS_NOT_ESTABLISHED, ") ==="
+        );
+        console2.log("Deployer:", deployer);
 
-        console2.log("=== Starting SupaDex Mainnet Production Deployment ===");
-        console2.log("Deployer Address:", deployer);
-        console2.log("Governance:", rolesCfg.governance);
+        _deployGovernance(deployer, rolesCfg, res);
+        _deployCore(deployer, res);
+        _deployPlugins(deployer, res);
+        _deployPeriphery(deployer, rolesCfg, res);
+        _handOff(res);
+        console2.log("Deployment transactions complete. Run VerifyDeployments before any use.");
+        console2.log(DeployEnvironment.PRODUCTION_READINESS_NOT_ESTABLISHED);
+    }
 
-        // 1. Governance & Timelock — governance is admin/proposer; executor open to governance
+    function _deployGovernance(address deployer, RoleConfig memory c, DeploymentResult memory res) internal {
         address[] memory proposers = new address[](1);
-        proposers[0] = rolesCfg.governance;
+        proposers[0] = c.proposer;
         address[] memory executors = new address[](1);
-        executors[0] = rolesCfg.governance;
+        executors[0] = c.executor;
         address[] memory cancellers = new address[](1);
-        cancellers[0] = rolesCfg.governance;
+        cancellers[0] = c.canceller;
+        res.timelock = address(new SupaTimelock(c.timelockDelay, c.governance, proposers, executors, cancellers));
+        console2.log("1. SupaTimelock:", res.timelock);
 
-        SupaTimelock timelock = new SupaTimelock(1 days, rolesCfg.governance, proposers, executors, cancellers);
-        res.timelock = address(timelock);
-        console2.log("1. SupaTimelock deployed at:", res.timelock);
+        res.roles = address(new SupaRoles(deployer, c.operator));
+        console2.log("1b. SupaRoles:", res.roles);
 
-        // 1b. Operator roles
-        SupaRoles roles = new SupaRoles(deployer, rolesCfg.operator);
-        res.roles = address(roles);
-        console2.log("1b. SupaRoles deployed at:", res.roles);
-
-        // 2. Emergency Defense & Circuit Breaker
         address[] memory guardians = new address[](1);
-        guardians[0] = rolesCfg.guardian;
+        guardians[0] = c.guardian;
+        // Deployer owns the breaker only until _handOff (needed to pause BIN at genesis), then the timelock.
+        res.circuitBreaker = address(new CircuitBreaker(deployer, guardians));
+        console2.log("2. CircuitBreaker:", res.circuitBreaker);
+        if (binPausedAtGenesis()) {
+            CircuitBreaker(res.circuitBreaker).pauseCurve(uint8(1)); // CurveType.BIN_AMM
+            console2.log("2b. BIN_AMM curve PAUSED at genesis (value-bearing; unpause needs Jexi + external audit)");
+        }
+    }
 
-        CircuitBreaker circuitBreaker = new CircuitBreaker(res.timelock, guardians);
-        res.circuitBreaker = address(circuitBreaker);
-        console2.log("2. CircuitBreaker deployed at:", res.circuitBreaker);
-
-        // 3. Vault & Proxy — atomic initialize via ERC1967Proxy constructor
-        SupaVault vaultImpl = new SupaVault(deployer);
-        res.vaultImplementation = address(vaultImpl);
+    function _deployCore(address deployer, DeploymentResult memory res) internal {
+        // Vault & proxy — atomic initialize via the ERC1967Proxy constructor.
+        res.vaultImplementation = address(new SupaVault(deployer));
         bytes memory initData = abi.encodeCall(SupaVault.initialize, (deployer));
         res.vaultProxy = address(new ERC1967Proxy(res.vaultImplementation, initData));
-        SupaVault vault = SupaVault(payable(res.vaultProxy));
-        vault.setCircuitBreaker(circuitBreaker);
-        console2.log("3. SupaVault Proxy deployed at:", res.vaultProxy);
+        SupaVault(payable(res.vaultProxy)).setCircuitBreaker(CircuitBreaker(res.circuitBreaker));
+        console2.log("3. SupaVault proxy:", res.vaultProxy);
 
-        // 4–5. Deploy engines at predicted PoolManager CREATE address (EIP-3860-safe)
-        // Nonce: current after vault proxy + vault wiring txs — compute from deployer.
-        uint64 pmNonce = vm.getNonce(deployer);
-        // After this point we CREATE: clamm, bin, stable, then PoolManager (+3).
-        address predictedPm = vm.computeCreateAddress(deployer, pmNonce + 3);
-        CLAMMEngine clamm = new CLAMMEngine(predictedPm);
-        BinAMMEngine bin = new BinAMMEngine(predictedPm);
-        StableAMMEngine stable = new StableAMMEngine(predictedPm);
-        SupaPoolManager poolManager = new SupaPoolManager(
-            IVault(res.vaultProxy),
-            ICurveEngine(address(clamm)),
-            ICurveEngine(address(bin)),
-            ICurveEngine(address(stable))
+        // Engines bound to the predicted PoolManager CREATE address (EIP-3860-safe): clamm, bin, stable, PM.
+        address predictedPm = vm.computeCreateAddress(deployer, vm.getNonce(deployer) + 3);
+        res.clammEngine = address(new CLAMMEngine(predictedPm));
+        res.binEngine = address(new BinAMMEngine(predictedPm));
+        res.stableEngine = address(new StableAMMEngine(predictedPm));
+        res.poolManager = address(
+            new SupaPoolManager(
+                IVault(res.vaultProxy),
+                ICurveEngine(res.clammEngine),
+                ICurveEngine(res.binEngine),
+                ICurveEngine(res.stableEngine)
+            )
         );
-        require(address(poolManager) == predictedPm, "PM CREATE mismatch");
-        res.poolManager = address(poolManager);
-        res.clammEngine = address(clamm);
-        res.binEngine = address(bin);
-        res.stableEngine = address(stable);
-        poolManager.setCircuitBreaker(circuitBreaker);
-        console2.log("4. Curve Engines deployed (bound to predicted PM)");
-        console2.log("5. SupaPoolManager deployed at:", res.poolManager);
+        require(res.poolManager == predictedPm, "PM CREATE mismatch");
+        SupaPoolManager(res.poolManager).setCircuitBreaker(CircuitBreaker(res.circuitBreaker));
+        console2.log("4-5. Engines + SupaPoolManager:", res.poolManager);
+    }
 
-        // 6. LVR deploys writer-bound oracle in its constructor
-        LVRShieldPlugin lvrPlugin = new LVRShieldPlugin(poolManager);
-        lvrPlugin.setRoles(ISupaRoles(res.roles));
-        res.lvrShieldPlugin = address(lvrPlugin);
-        res.oracle = address(lvrPlugin.oracle());
+    function _deployPlugins(address deployer, DeploymentResult memory res) internal {
+        SupaPoolManager pm = SupaPoolManager(res.poolManager);
+        LVRShieldPlugin lvr = new LVRShieldPlugin(pm);
+        lvr.setRoles(ISupaRoles(res.roles)); // roles.owner() becomes the timelock in _handOff
+        res.lvrShieldPlugin = address(lvr);
+        res.oracle = address(lvr.oracle());
+        res.antiJITPlugin = address(new AntiJITVestingPlugin(pm, ANTI_JIT_MIN_RESIDENCY_BLOCKS));
+        console2.log("6. LVRShieldPlugin / AntiJITVestingPlugin:", res.lvrShieldPlugin, res.antiJITPlugin);
 
-        AntiJITVestingPlugin jitPlugin = new AntiJITVestingPlugin(poolManager, 10);
-        res.antiJITPlugin = address(jitPlugin);
-        console2.log("6. Native Plugins deployed (LVR Shield, Anti-JIT)");
-
-        // 6b. Plugin whitelist (pre-approve native plugins; Anti-JIT may return deltas)
         address[] memory initialPlugins = new address[](2);
         initialPlugins[0] = res.lvrShieldPlugin;
         initialPlugins[1] = res.antiJITPlugin;
         PluginWhitelist whitelist = new PluginWhitelist(deployer, initialPlugins);
         whitelist.setPluginCanReturnDelta(res.antiJITPlugin, true);
         res.pluginWhitelist = address(whitelist);
-        poolManager.setPluginWhitelist(IPluginWhitelist(res.pluginWhitelist));
-        console2.log("6b. PluginWhitelist deployed at:", res.pluginWhitelist);
+        pm.setPluginWhitelist(IPluginWhitelist(res.pluginWhitelist));
+        console2.log("6b. PluginWhitelist:", res.pluginWhitelist);
+    }
 
-        // 7. Periphery Contracts
-        PositionNFTDescriptor nftDescriptor = new PositionNFTDescriptor();
-        res.nftDescriptor = address(nftDescriptor);
+    function _deployPeriphery(address deployer, RoleConfig memory c, DeploymentResult memory res) internal {
+        SupaPoolManager pm = SupaPoolManager(res.poolManager);
+        IVault v = IVault(res.vaultProxy);
+        res.nftDescriptor = address(new PositionNFTDescriptor());
+        res.positionManager = address(new SupaPositionManager(pm, v, res.nftDescriptor));
+        res.router = address(new SupaRouter(pm, v));
+        res.quoter = address(new SupaQuoter(pm, v));
+        res.claimsRouter = address(new SupaClaimsRouter(v));
+        res.feeCollector =
+            address(new SupaFeeCollector(pm, v, ISupaRoles(res.roles), deployer, c.dao, c.staking, c.insurance));
+        pm.setProtocolFeeController(res.feeCollector);
+        console2.log("7. Periphery deployed; FeeCollector:", res.feeCollector);
+    }
 
-        SupaPositionManager positionManager =
-            new SupaPositionManager(poolManager, IVault(res.vaultProxy), address(nftDescriptor));
-        res.positionManager = address(positionManager);
-
-        SupaRouter router = new SupaRouter(poolManager, IVault(res.vaultProxy));
-        res.router = address(router);
-
-        SupaQuoter quoter = new SupaQuoter(poolManager, IVault(res.vaultProxy));
-        res.quoter = address(quoter);
-
-        SupaClaimsRouter claimsRouter = new SupaClaimsRouter(IVault(res.vaultProxy));
-        res.claimsRouter = address(claimsRouter);
-
-        SupaFeeCollector feeCollector = new SupaFeeCollector(
-            poolManager,
-            IVault(res.vaultProxy),
-            ISupaRoles(res.roles),
-            deployer,
-            rolesCfg.dao,
-            rolesCfg.staking,
-            rolesCfg.insurance
+    function _handOff(DeploymentResult memory res) internal {
+        SupaVault(payable(res.vaultProxy)).setPoolManager(res.poolManager, true);
+        SupaVault(payable(res.vaultProxy)).transferOwnership(res.timelock);
+        SupaPoolManager(res.poolManager).transferOwnership(res.timelock);
+        SupaRoles(res.roles).transferOwnership(res.timelock);
+        PluginWhitelist(res.pluginWhitelist).transferOwnership(res.timelock);
+        SupaFeeCollector(payable(res.feeCollector)).transferOwnership(res.timelock);
+        CircuitBreaker(res.circuitBreaker).transferOwnership(res.timelock);
+        console2.log(
+            "8. Ownership of vault, pool manager, roles, whitelist, fee collector, circuit breaker -> SupaTimelock"
         );
-        res.feeCollector = address(feeCollector);
-        poolManager.setProtocolFeeController(res.feeCollector);
-        console2.log("7. Periphery deployed (incl FeeCollector)");
-        console2.log("   FeeCollector:", res.feeCollector);
-
-        // 8. Wire Permissions — only PoolManager may call accountDelta
-        vault.setPoolManager(res.poolManager, true);
-
-        // 9. Transfer ownership to Timelock
-        vault.transferOwnership(res.timelock);
-        poolManager.transferOwnership(res.timelock);
-        roles.transferOwnership(res.timelock);
-        whitelist.transferOwnership(res.timelock);
-        feeCollector.transferOwnership(res.timelock);
-        console2.log("8. Transferred Core ownership to SupaTimelock");
-
-        console2.log("=== Deployment Complete and Fully Verified ===");
     }
 }

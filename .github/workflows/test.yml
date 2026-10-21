@@ -6,13 +6,18 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+  schedule:
+    - cron: "17 2 * * *" # nightly random-seed fuzz
 
 jobs:
   check:
-    name: Foundry project
+    name: Foundry project (pinned fuzz seed, FOUNDRY_PROFILE=ci)
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      FOUNDRY_PROFILE: ci
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -31,5 +36,35 @@ jobs:
       - name: Run Forge build
         run: forge build --sizes
 
-      - name: Run Forge tests
+      - name: Storage layout guard (upgradeable vault; append-only into __gap)
+        run: |
+          python3 script/check-storage-layout.py self-test
+          python3 script/check-storage-layout.py check
+
+      - name: Run Forge tests (pinned seed 0x5eed2026)
         run: forge test -vvv
+
+  fuzz-random-seed:
+    name: Fuzz/invariant with a random seed
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      FOUNDRY_PROFILE: ci
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+
+      - name: Pick seed
+        id: seed
+        run: echo "seed=0x$(openssl rand -hex 16)" >> "$GITHUB_OUTPUT"
+
+      - name: Fuzz + invariant suites (replay with FOUNDRY_PROFILE=ci forge test --fuzz-seed <seed>)
+        run: |
+          echo "fuzz seed: ${{ steps.seed.outputs.seed }}"
+          forge test --fuzz-seed "${{ steps.seed.outputs.seed }}" --match-test "(testFuzz|invariant)" -vv

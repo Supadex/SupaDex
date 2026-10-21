@@ -11,6 +11,8 @@ import {Currency} from "../types/Currency.sol";
 interface IPoolEvents {
     /**
      * @notice Emitted when a new pool is initialized.
+     * @dev remediation-3: `curveType` (0 CLAMM, 1 BIN_AMM, 2 STABLE_AMM) appended so the full PoolKey can be rebuilt
+     *      from this log alone. STABLE pools additionally emit StableAInitialized(id, aPrecise) from the engine.
      */
     event Initialize(
         PoolId indexed id,
@@ -20,7 +22,8 @@ interface IPoolEvents {
         int24 tickSpacing,
         address plugin,
         uint160 sqrtPriceX96,
-        int24 tick
+        int24 tick,
+        uint8 curveType
     );
 
     /**

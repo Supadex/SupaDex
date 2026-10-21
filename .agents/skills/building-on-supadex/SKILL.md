@@ -196,5 +196,5 @@ contract LiquidityProviderExample {
 2. **Curve Engine Compatibility**:
    - `CLAMM`: Ensure `tickLower < tickUpper` and ticks are exact multiples of `tickSpacing`.
    - `BinAMM`: Use discrete bin indices with proper `binStep`.
-   - `StableAMM`: Use for correlated or pegged assets (e.g., stablecoins, LSTs) with appropriate $A$ amplification factor.
+   - `StableAMM`: Use **only for near-1:1 pegged pairs** after decimal normalisation (e.g. USDC/USDT, DAI/USDC). Pools always start at the 1:1 peg and have no rate provider, so **never** use it for LSTs/LRTs, rebasing or yield-bearing assets (wstETH/ETH, rETH, stETH, sDAI) or rate-oracle pools. Pass `abi.encode(uint256 A)` with A inside `[minA(), maxA()]`; `tickSpacing` must be 1.
 3. **ERC-6909 Gas Optimization**: When performing multiple sequential trades or rebalances across transactions, keep intermediate balances as internal ERC-6909 claims (`settleWithClaims: true`, `receiveAsClaims: true`) to bypass external ERC-20 transfers and save significant gas.
