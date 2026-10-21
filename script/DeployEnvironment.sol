@@ -16,7 +16,8 @@ library DeployEnvironment {
         UNKNOWN, // fail closed
         LOCAL, // anvil / hardhat / local fork
         TESTNET, // public test networks
-        PRODUCTION // value-bearing networks: deployment blocked by this remediation
+        PRODUCTION, // value-bearing networks: deployment blocked by this remediation
+        FORK // a local anvil node forking any chain (declared DEPLOY_ENV=fork AND the node answers anvil_nodeInfo)
     }
 
     string internal constant ENVIRONMENT_VERIFIED = "ENVIRONMENT VERIFIED";
@@ -45,15 +46,31 @@ library DeployEnvironment {
         return Kind.UNKNOWN;
     }
 
+    /// @notice Resolves the environment from the chain id, the operator's declared DEPLOY_ENV and whether the RPC
+    ///         node identified itself as a local anvil node. Any mismatch resolves to UNKNOWN (fail closed):
+    ///         - "local":   chain id must be a local id (31337/1337)
+    ///         - "fork":    the node must be a local anvil node (chain id may be any, e.g. a mainnet fork)
+    ///         - "testnet": chain id must be a known testnet AND the node must not be a local node
+    ///         - anything else (unset, "mainnet", "production", typos): PRODUCTION if the id is value-bearing, else UNKNOWN
+    function resolve(uint256 chainId, string memory declared, bool localNode) internal pure returns (Kind) {
+        Kind base = classify(chainId);
+        bytes32 d = keccak256(bytes(declared));
+        if (d == keccak256("local")) return base == Kind.LOCAL ? Kind.LOCAL : Kind.UNKNOWN;
+        if (d == keccak256("fork")) return localNode ? Kind.FORK : Kind.UNKNOWN;
+        if (d == keccak256("testnet")) return (base == Kind.TESTNET && !localNode) ? Kind.TESTNET : Kind.UNKNOWN;
+        return base == Kind.PRODUCTION ? Kind.PRODUCTION : Kind.UNKNOWN;
+    }
+
     function label(Kind kind) internal pure returns (string memory) {
+        if (kind == Kind.FORK) return "local fork (anvil)";
         if (kind == Kind.LOCAL) return "local development chain";
         if (kind == Kind.TESTNET) return "public testnet";
         if (kind == Kind.PRODUCTION) return "value-bearing network";
         return "unknown chain";
     }
 
-    /// @notice Only LOCAL and TESTNET chains may be deployed to. UNKNOWN and PRODUCTION fail closed.
+    /// @notice Only LOCAL, FORK and TESTNET may be deployed to. UNKNOWN and PRODUCTION fail closed.
     function deploymentAllowed(Kind kind) internal pure returns (bool) {
-        return kind == Kind.LOCAL || kind == Kind.TESTNET;
+        return kind == Kind.LOCAL || kind == Kind.FORK || kind == Kind.TESTNET;
     }
 }

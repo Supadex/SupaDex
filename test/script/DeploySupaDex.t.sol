@@ -134,6 +134,32 @@ contract DeploySupaDexTest is Test {
         assertFalse(DeployEnvironment.deploymentAllowed(DeployEnvironment.Kind.PRODUCTION));
     }
 
+    /// Jexi 019: fork detection. Declared env and node probe must agree; every mismatch fails closed.
+    function test_environmentResolution_failsClosed() public pure {
+        DeployEnvironment.Kind U = DeployEnvironment.Kind.UNKNOWN;
+        // local
+        assertEq(uint8(DeployEnvironment.resolve(31337, "local", true)), uint8(DeployEnvironment.Kind.LOCAL));
+        assertEq(uint8(DeployEnvironment.resolve(31337, "local", false)), uint8(DeployEnvironment.Kind.LOCAL));
+        assertEq(uint8(DeployEnvironment.resolve(1, "local", true)), uint8(U), "mainnet id declared local");
+        // fork: any chain id, but only on a local anvil node
+        assertEq(uint8(DeployEnvironment.resolve(1, "fork", true)), uint8(DeployEnvironment.Kind.FORK));
+        assertEq(uint8(DeployEnvironment.resolve(8453, "fork", true)), uint8(DeployEnvironment.Kind.FORK));
+        assertEq(uint8(DeployEnvironment.resolve(1, "fork", false)), uint8(U), "declared fork but live node");
+        // testnet
+        assertEq(uint8(DeployEnvironment.resolve(11155111, "testnet", false)), uint8(DeployEnvironment.Kind.TESTNET));
+        assertEq(uint8(DeployEnvironment.resolve(11155111, "testnet", true)), uint8(U), "testnet declared on anvil");
+        assertEq(uint8(DeployEnvironment.resolve(1, "testnet", false)), uint8(U), "mainnet declared testnet");
+        // undeclared / production / typos
+        assertEq(uint8(DeployEnvironment.resolve(1, "", false)), uint8(DeployEnvironment.Kind.PRODUCTION));
+        assertEq(uint8(DeployEnvironment.resolve(1, "mainnet", false)), uint8(DeployEnvironment.Kind.PRODUCTION));
+        assertEq(uint8(DeployEnvironment.resolve(11155111, "", false)), uint8(U), "undeclared testnet");
+        assertEq(uint8(DeployEnvironment.resolve(31337, "Local", true)), uint8(U), "case-sensitive");
+        assertEq(uint8(DeployEnvironment.resolve(999999, "testnet", false)), uint8(U));
+        assertTrue(DeployEnvironment.deploymentAllowed(DeployEnvironment.Kind.FORK));
+        assertFalse(DeployEnvironment.deploymentAllowed(DeployEnvironment.Kind.PRODUCTION));
+        assertFalse(DeployEnvironment.deploymentAllowed(U));
+    }
+
     /// The scripts must never print a readiness claim. Source-level guard against regressions (Jexi 019).
     function test_scriptsNeverClaimMainnetProduction() public view {
         string[3] memory files = ["script/DeploySupaDex.s.sol", "script/VerifyDeployments.s.sol", "script/DeployEnvironment.sol"];

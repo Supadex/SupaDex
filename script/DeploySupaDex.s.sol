@@ -75,6 +75,7 @@ contract DeploySupaDex is Script {
 
     /// @dev Reads PRIVATE_KEY only to sign under `forge script --broadcast`; never logged or stored.
     function run() external returns (DeploymentResult memory res) {
+        _resolveEnvironment();
         _requireDeployableChain();
         if (vm.envOr("EXPECTED_CHAIN_ID", uint256(0)) != block.chainid) {
             console2.log(DeployEnvironment.DEPLOYMENT_BLOCKED, "- EXPECTED_CHAIN_ID unset or != block.chainid");
@@ -100,8 +101,28 @@ contract DeploySupaDex is Script {
         vm.stopBroadcast();
     }
 
+    /// @dev Set by `run()` only after DEPLOY_ENV and the node probe agree (see DeployEnvironment.resolve).
+    DeployEnvironment.Kind internal resolvedKind;
+    bool internal resolved;
+
+    /// @notice Is the RPC node a local anvil node? Cheatcode RPC; any failure (live node, no RPC) => false.
+    function _isLocalNode() internal returns (bool) {
+        try vm.rpc("anvil_nodeInfo", "[]") returns (bytes memory) {
+            return true;
+        } catch {
+            return false;
+        }
+    }
+
+    function _resolveEnvironment() internal {
+        string memory declared = vm.envOr("DEPLOY_ENV", string(""));
+        resolvedKind = DeployEnvironment.resolve(block.chainid, declared, _isLocalNode());
+        resolved = true;
+        console2.log("Declared DEPLOY_ENV:", declared);
+    }
+
     function _requireDeployableChain() internal view {
-        DeployEnvironment.Kind kind = DeployEnvironment.classify(block.chainid);
+        DeployEnvironment.Kind kind = resolved ? resolvedKind : DeployEnvironment.classify(block.chainid);
         console2.log("Chain id:", block.chainid);
         console2.log("Environment:", DeployEnvironment.label(kind));
         if (!DeployEnvironment.deploymentAllowed(kind)) {

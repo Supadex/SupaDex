@@ -34,7 +34,16 @@ contract VerifyDeployments is Script {
     }
 
     /// @notice Reads recorded addresses (SUPADEX_* env) and the INTENDED role config (env) and verifies.
-    function run() external view {
+    DeployEnvironment.Kind internal resolvedKind;
+    bool internal resolved;
+
+    function run() external {
+        bool localNode;
+        try vm.rpc("anvil_nodeInfo", "[]") returns (bytes memory) {
+            localNode = true;
+        } catch {}
+        resolvedKind = DeployEnvironment.resolve(block.chainid, vm.envOr("DEPLOY_ENV", string("")), localNode);
+        resolved = true;
         DeploySupaDex.DeploymentResult memory res = _resFromEnv();
         DeploySupaDex.RoleConfig memory cfg = DeploySupaDex.RoleConfig({
             governance: vm.envAddress("GOVERNANCE"),
@@ -96,7 +105,7 @@ contract VerifyDeployments is Script {
         returns (Report memory r)
     {
         // ---- Environment
-        DeployEnvironment.Kind kind = DeployEnvironment.classify(block.chainid);
+        DeployEnvironment.Kind kind = resolved ? resolvedKind : DeployEnvironment.classify(block.chainid);
         console2.log("Chain id:", block.chainid, DeployEnvironment.label(kind));
         _req(r, DeployEnvironment.deploymentAllowed(kind), "chain is an allowed local/testnet chain");
         bool codeOk = _codeChecks(r, res);
