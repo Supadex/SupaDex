@@ -15,6 +15,9 @@ import {GovernanceErrors} from "../errors/GovernanceErrors.sol";
  *      - Every role must keep at least one holder; the last holder cannot be removed.
  *      - Role/delay/admin changes happen only through a scheduled + delayed self-call.
  *      - Cancellers may overlap with proposers (an emergency guardian may cancel what it can see).
+ *      - On-chain delay floor (Edith 10-A): `delayFloor` is fixed at construction from the chain id. Value-bearing
+ *        (i.e. every chain that is not a known local/test chain — fail-closed) gets PRODUCTION_DELAY_FLOOR = 48 h;
+ *        known local/test chains get MINIMUM_DELAY. Neither the constructor nor `updateDelay` accept less.
  */
 contract SupaTimelock is ISupaTimelock {
     /**
@@ -26,6 +29,12 @@ contract SupaTimelock is ISupaTimelock {
      * @notice Maximum permissible delay (30 days)
      */
     uint256 public constant MAXIMUM_DELAY = 30 days;
+
+    /// @notice Delay floor on value-bearing networks (Edith 10-A).
+    uint256 public constant PRODUCTION_DELAY_FLOOR = 48 hours;
+
+    /// @notice Effective lower bound on `minDelay` for this deployment (chain-derived, immutable).
+    uint256 public immutable delayFloor;
 
     /**
      * @notice Grace period after ETA during which a queued transaction is executable (14 days)
@@ -76,7 +85,9 @@ contract SupaTimelock is ISupaTimelock {
         address[] memory initialCancellers
     ) {
         if (initialAdmin == address(0)) revert GovernanceErrors.ZeroAddressAdmin();
-        if (initialMinDelay < MINIMUM_DELAY || initialMinDelay > MAXIMUM_DELAY) {
+        uint256 floor = isTestChain(block.chainid) ? MINIMUM_DELAY : PRODUCTION_DELAY_FLOOR;
+        delayFloor = floor;
+        if (initialMinDelay < floor || initialMinDelay > MAXIMUM_DELAY) {
             revert GovernanceErrors.InvalidDelay();
         }
 
@@ -235,7 +246,7 @@ contract SupaTimelock is ISupaTimelock {
      * @notice Updates minimum execution delay (must be executed via Timelock self-call)
      */
     function updateDelay(uint256 newDelay) external override onlySelf {
-        if (newDelay < MINIMUM_DELAY || newDelay > MAXIMUM_DELAY) {
+        if (newDelay < delayFloor || newDelay > MAXIMUM_DELAY) {
             revert GovernanceErrors.InvalidDelay();
         }
         emit MinDelayChange(minDelay, newDelay);
@@ -311,5 +322,24 @@ contract SupaTimelock is ISupaTimelock {
         if (newAdmin == address(0)) revert GovernanceErrors.ZeroAddressAdmin();
         emit AdminSet(admin, newAdmin);
         admin = newAdmin;
+    }
+
+    /**
+     * @notice Chains where a delay below 48 h is acceptable: local anvil/hardhat and public testnets only.
+     * Everything else (including unknown chain ids and anvil forks of mainnet, which report chain id 1) is treated
+     * as value-bearing.
+     */
+    function isTestChain(uint256 chainId) public pure returns (bool) {
+        return chainId == 31337 // anvil / hardhat
+            || chainId == 1337 // geth dev
+            || chainId == 11155111 // Ethereum Sepolia
+            || chainId == 17000 // Holesky
+            || chainId == 560048 // Hoodi
+            || chainId == 84532 // Base Sepolia
+            || chainId == 421614 // Arbitrum Sepolia
+            || chainId == 11155420 // OP Sepolia
+            || chainId == 80002 // Polygon Amoy
+            || chainId == 97 // BNB testnet
+            || chainId == 10143; // Monad testnet
     }
 }
