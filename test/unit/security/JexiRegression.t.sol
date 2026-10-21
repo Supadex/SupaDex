@@ -585,6 +585,36 @@ contract JexiRegressionTest is Test {
         got1 = t1.balanceOf(address(j)) - afterAdd1;
     }
 
+    // ================================================================== Issue 4: hook fee accounting
+    /// Hook (AntiJIT) fee confiscation must never create liabilities without assets nor orphan value: after a JIT
+    /// LP is haircut and every LP exits, the vault still covers all protocol-fee liabilities and the residual is
+    /// rounding dust only (confiscated fees reached the resident LP via donate, not a dead balance).
+    function testFuzz_issue4_hookFeeAccounting_liabilitiesLeAssets(uint96 s1, uint96 s2, bool d1) public {
+        PoolKey memory k = _key(CurveType.CLAMM, 3000, 60, address(jit));
+        pm.initialize(k, SQRT_1_1, "");
+        JFlashActor r = _actor(1e27);
+        r.exec(_one(_op(0, k, -600, 600, 1e22, false)));
+        vm.roll(block.number + 100);
+        JFlashActor j = _actor(1e27);
+        j.exec(_one(_op(0, k, -600, 600, 9e22, false)));
+        _swap(k, d1, uint128(bound(s1, 1e15, 50e18)));
+        _swap(k, !d1, uint128(bound(s2, 1e15, 50e18)));
+        uint256 rBefore0 = t0.balanceOf(address(r));
+        j.exec(_one(_op(0, k, -600, 600, -int256(9e22), false))); // early exit => fees haircut
+        _swap(k, d1, 1e18);
+        vm.roll(block.number + 100);
+        r.exec(_one(_op(0, k, -600, 600, -int256(1e22), false)));
+        assertGt(t0.balanceOf(address(r)), rBefore0, "resident exits");
+        uint256 v0 = t0.balanceOf(address(vault));
+        uint256 v1 = t1.balanceOf(address(vault));
+        uint256 p0 = pm.protocolFeesAccrued(c0);
+        uint256 p1 = pm.protocolFeesAccrued(c1);
+        assertGe(v0, p0, "assets >= liabilities token0");
+        assertGe(v1, p1, "assets >= liabilities token1");
+        assertLe(v0 - p0, 1e6, "no orphaned value token0 (rounding dust only)");
+        assertLe(v1 - p1, 1e6, "no orphaned value token1 (rounding dust only)");
+    }
+
     // ================================================================== 014 AntiJIT residency dilution
     /// A resident seed position that is topped up in the same block as a trade cannot collect the
     /// post-top-up fees (clock restarts for the whole position).
