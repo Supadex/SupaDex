@@ -81,10 +81,12 @@ contract QuoterHelperLP is IUnlockCallback {
 
         (BalanceDelta delta,) = manager.modifyLiquidity(key, params, "");
         if (delta.amount0() > 0) {
+            vault.sync(key.currency0);
             MockQuoterInvToken(Currency.unwrap(key.currency0)).transfer(address(vault), uint128(delta.amount0()));
             vault.settle(key.currency0);
         }
         if (delta.amount1() > 0) {
+            vault.sync(key.currency1);
             MockQuoterInvToken(Currency.unwrap(key.currency1)).transfer(address(vault), uint128(delta.amount1()));
             vault.settle(key.currency1);
         }
@@ -236,7 +238,7 @@ contract QuoterRouterEquivalenceInvariantTest is StdInvariant, Test {
 
     function setUp() public {
         vault = new SupaVault(address(this));
-        (manager,,,) = SecurityTestSetup.deployManagerWithEngines(vault);
+        (manager,,,) = SecurityTestSetup.deployManagerWithEnginesBinEnabled(vault);
         CLAMMEngine clamm = CLAMMEngine(address(manager.clammEngine()));
         BinAMMEngine binAmm = BinAMMEngine(address(manager.binEngine()));
         StableAMMEngine stableAmm = StableAMMEngine(address(manager.stableEngine()));

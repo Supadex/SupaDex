@@ -69,10 +69,12 @@ contract PoolManagerTestHarness is IUnlockCallback {
 
             // Transfer tokens to vault and settle
             if (delta.amount0() > 0) {
+                vault.sync(key.currency0);
                 MockToken(Currency.unwrap(key.currency0)).transfer(address(vault), uint128(delta.amount0()));
                 vault.settle(key.currency0);
             }
             if (delta.amount1() > 0) {
+                vault.sync(key.currency1);
                 MockToken(Currency.unwrap(key.currency1)).transfer(address(vault), uint128(delta.amount1()));
                 vault.settle(key.currency1);
             }
@@ -84,6 +86,7 @@ contract PoolManagerTestHarness is IUnlockCallback {
 
             // Settle input token0
             if (delta.amount0() > 0) {
+                vault.sync(key.currency0);
                 MockToken(Currency.unwrap(key.currency0)).transfer(address(vault), uint128(delta.amount0()));
                 vault.settle(key.currency0);
             }
@@ -93,8 +96,10 @@ contract PoolManagerTestHarness is IUnlockCallback {
             }
         } else if (action == Action.DONATE) {
             manager.donate(key, val, val, "");
+            vault.sync(key.currency0);
             MockToken(Currency.unwrap(key.currency0)).transfer(address(vault), val);
             vault.settle(key.currency0);
+            vault.sync(key.currency1);
             MockToken(Currency.unwrap(key.currency1)).transfer(address(vault), val);
             vault.settle(key.currency1);
         }
@@ -122,7 +127,7 @@ contract SupaPoolManagerTest is Test {
 
     function setUp() public {
         vault = new SupaVault(address(this));
-        (manager,,,) = SecurityTestSetup.deployManagerWithEngines(vault);
+        (manager,,,) = SecurityTestSetup.deployManagerWithEnginesBinEnabled(vault);
         clamm = CLAMMEngine(address(manager.clammEngine()));
         binAmm = BinAMMEngine(address(manager.binEngine()));
         stableAmm = StableAMMEngine(address(manager.stableEngine()));
@@ -179,7 +184,7 @@ contract SupaPoolManagerTest is Test {
         assertEq(tickClamm, 0);
 
         int24 tickBin = manager.initialize(binKey, 1 << 96, "");
-        assertEq(tickBin, int24(uint24(8388608))); // CENTER_BIN_ID encoded as int24
+        assertEq(tickBin, 0); // center bin = signed offset 0 (was int24(uint24(2^23)) overflow, SDX-006)
 
         int24 tickStable = manager.initialize(stableKey, 1 << 96, "");
         assertEq(tickStable, 0);

@@ -123,6 +123,12 @@ contract MockPlugin is IPlugin {
     }
 }
 
+contract RevertingPermsPlugin {
+    function getPluginPermissions() external pure returns (uint32) {
+        revert("nope");
+    }
+}
+
 contract PluginDispatcherTest is Test {
     MockPlugin public plugin;
     PoolKey public key;
@@ -140,10 +146,10 @@ contract PluginDispatcherTest is Test {
     }
 
     function test_zeroAddressPluginNoOp() public {
-        PluginDispatcher.dispatchBeforeInitialize(address(0), address(this), key, 1 << 96);
-        PluginDispatcher.dispatchAfterInitialize(address(0), address(this), key, 1 << 96, 0);
+        PluginDispatcher.dispatchBeforeInitialize(address(0), 0, address(this), key, 1 << 96);
+        PluginDispatcher.dispatchAfterInitialize(address(0), 0, address(this), key, 1 << 96, 0);
         uint24 fee = PluginDispatcher.dispatchBeforeSwap(
-            address(0), address(this), key, IPoolManager.SwapParams(true, 100, 0), ""
+            address(0), 0, address(this), key, IPoolManager.SwapParams(true, 100, 0), ""
         );
         assertEq(fee, 0);
     }
@@ -151,25 +157,31 @@ contract PluginDispatcherTest is Test {
     function test_permissionChecks() public {
         // Plugin with no permissions (0)
         plugin.setPermissions(0);
-        PluginDispatcher.dispatchBeforeInitialize(address(plugin), address(this), key, 1 << 96);
+        PluginDispatcher.dispatchBeforeInitialize(address(plugin), plugin.permissions(), address(this), key, 1 << 96);
         uint24 fee = PluginDispatcher.dispatchBeforeSwap(
-            address(plugin), address(this), key, IPoolManager.SwapParams(true, 100, 0), ""
+            address(plugin), plugin.permissions(), address(this), key, IPoolManager.SwapParams(true, 100, 0), ""
         );
         assertEq(fee, 0);
     }
 
     function test_dispatchLifecycleSuccess() public {
         plugin.setFeeOverride(5000);
-        PluginDispatcher.dispatchBeforeInitialize(address(plugin), address(this), key, 1 << 96);
-        PluginDispatcher.dispatchAfterInitialize(address(plugin), address(this), key, 1 << 96, 0);
+        PluginDispatcher.dispatchBeforeInitialize(address(plugin), plugin.permissions(), address(this), key, 1 << 96);
+        PluginDispatcher.dispatchAfterInitialize(address(plugin), plugin.permissions(), address(this), key, 1 << 96, 0);
 
         uint24 fee = PluginDispatcher.dispatchBeforeSwap(
-            address(plugin), address(this), key, IPoolManager.SwapParams(true, 100, 0), ""
+            address(plugin), plugin.permissions(), address(this), key, IPoolManager.SwapParams(true, 100, 0), ""
         );
         assertEq(fee, 5000);
 
         int128 hookDelta = PluginDispatcher.dispatchAfterSwap(
-            address(plugin), address(this), key, IPoolManager.SwapParams(true, 100, 0), toBalanceDelta(10, 20), ""
+            address(plugin),
+            plugin.permissions(),
+            address(this),
+            key,
+            IPoolManager.SwapParams(true, 100, 0),
+            toBalanceDelta(10, 20),
+            ""
         );
         assertEq(hookDelta, 100);
     }
@@ -177,12 +189,40 @@ contract PluginDispatcherTest is Test {
     function test_pluginRevertThrows() public {
         plugin.setShouldRevert(true);
         vm.expectRevert();
-        PluginDispatcher.dispatchBeforeInitialize(address(plugin), address(this), key, 1 << 96);
+        this.callBeforeInit();
+    }
+
+    /// A plugin changing its own permissions after caching has no effect on dispatch.
+    function test_cachedPermissionsIgnorePluginChanges() public {
+        plugin.setPermissions(0);
+        uint32 cached = this.readPerms(address(plugin)); // 0 at "initialize"
+        plugin.setPermissions(0xFF);
+        plugin.setFeeOverride(9999);
+        uint24 fee = PluginDispatcher.dispatchBeforeSwap(
+            address(plugin), cached, address(this), key, IPoolManager.SwapParams(true, 100, 0), ""
+        );
+        assertEq(fee, 0);
+    }
+
+    function test_readPermissionsFailsClosed() public {
+        RevertingPermsPlugin bad = new RevertingPermsPlugin();
+        vm.expectRevert();
+        this.readPerms(address(bad));
+        assertEq(this.readPerms(address(0)), 0);
+        assertEq(this.readPerms(address(plugin)), 0xFF);
+    }
+
+    function callBeforeInit() external {
+        PluginDispatcher.dispatchBeforeInitialize(address(plugin), uint32(0xFF), address(this), key, 1 << 96);
+    }
+
+    function readPerms(address p) external view returns (uint32) {
+        return PluginDispatcher.readPermissions(p);
     }
 
     function test_invalidReturnSelectorThrows() public {
         plugin.setInvalidReturnSelector(bytes4(0x12345678));
         vm.expectRevert();
-        PluginDispatcher.dispatchBeforeInitialize(address(plugin), address(this), key, 1 << 96);
+        this.callBeforeInit();
     }
 }

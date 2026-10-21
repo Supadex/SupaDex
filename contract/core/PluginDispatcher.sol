@@ -27,25 +27,38 @@ library PluginDispatcher {
     uint256 internal constant HOOK_GAS_LIMIT = 500_000;
 
     /**
-     * @notice Validates plugin permissions bitmask.
+     * @notice Reads a plugin's permission bitmask ONCE (at pool initialization). Fails closed.
+     * @dev SDX: plugins cannot change their own permissions afterwards because the PoolManager caches this
+     * value per pool and every dispatch uses the cached bitmask.
      */
-    function hasPermission(address plugin, uint32 flag) internal view returns (bool) {
-        if (plugin == address(0)) return false;
-        try IPlugin(plugin).getPluginPermissions{gas: 20_000}() returns (uint32 permissions) {
-            return (permissions & flag) == flag;
-        } catch {
-            return false;
+    function readPermissions(address plugin) internal view returns (uint32 permissions) {
+        if (plugin == address(0)) return 0;
+        try IPlugin(plugin).getPluginPermissions{gas: 20_000}() returns (uint32 p) {
+            return p;
+        } catch (bytes memory reason) {
+            revert PluginErrors.PluginCallFailed(plugin, IPlugin.getPluginPermissions.selector, reason);
         }
+    }
+
+    /**
+     * @notice Checks a cached permissions bitmask.
+     */
+    function hasPermission(uint32 permissions, uint32 flag) internal pure returns (bool) {
+        return (permissions & flag) == flag;
     }
 
     /**
      * @notice Dispatches beforeInitialize hook.
      */
-    function dispatchBeforeInitialize(address plugin, address sender, PoolKey memory key, uint160 sqrtPriceX96)
-        internal
-    {
+    function dispatchBeforeInitialize(
+        address plugin,
+        uint32 permissions,
+        address sender,
+        PoolKey memory key,
+        uint160 sqrtPriceX96
+    ) internal {
         if (plugin == address(0)) return;
-        if (!hasPermission(plugin, BEFORE_INITIALIZE_FLAG)) return;
+        if (!hasPermission(permissions, BEFORE_INITIALIZE_FLAG)) return;
 
         bytes4 selector = IPlugin.beforeInitialize.selector;
         try IPlugin(plugin).beforeInitialize{gas: HOOK_GAS_LIMIT}(sender, key, sqrtPriceX96) returns (bytes4 res) {
@@ -60,13 +73,14 @@ library PluginDispatcher {
      */
     function dispatchAfterInitialize(
         address plugin,
+        uint32 permissions,
         address sender,
         PoolKey memory key,
         uint160 sqrtPriceX96,
         int24 tick
     ) internal {
         if (plugin == address(0)) return;
-        if (!hasPermission(plugin, AFTER_INITIALIZE_FLAG)) return;
+        if (!hasPermission(permissions, AFTER_INITIALIZE_FLAG)) return;
 
         bytes4 selector = IPlugin.afterInitialize.selector;
         try IPlugin(plugin).afterInitialize{gas: HOOK_GAS_LIMIT}(sender, key, sqrtPriceX96, tick) returns (bytes4 res) {
@@ -81,13 +95,14 @@ library PluginDispatcher {
      */
     function dispatchBeforeModifyLiquidity(
         address plugin,
+        uint32 permissions,
         address sender,
         PoolKey memory key,
         IPoolManager.ModifyLiquidityParams memory params,
         bytes memory hookData
     ) internal {
         if (plugin == address(0)) return;
-        if (!hasPermission(plugin, BEFORE_MODIFY_LIQUIDITY_FLAG)) return;
+        if (!hasPermission(permissions, BEFORE_MODIFY_LIQUIDITY_FLAG)) return;
 
         bytes4 selector = IPlugin.beforeModifyLiquidity.selector;
         try IPlugin(plugin).beforeModifyLiquidity{gas: HOOK_GAS_LIMIT}(sender, key, params, hookData) returns (
@@ -106,6 +121,7 @@ library PluginDispatcher {
      */
     function dispatchAfterModifyLiquidity(
         address plugin,
+        uint32 permissions,
         address sender,
         PoolKey memory key,
         IPoolManager.ModifyLiquidityParams memory params,
@@ -114,12 +130,14 @@ library PluginDispatcher {
         bytes memory hookData
     ) internal returns (BalanceDelta hookDelta, BalanceDelta feesHookDelta) {
         if (plugin == address(0)) return (hookDelta, feesHookDelta);
-        if (!hasPermission(plugin, AFTER_MODIFY_LIQUIDITY_FLAG)) return (hookDelta, feesHookDelta);
+        if (!hasPermission(permissions, AFTER_MODIFY_LIQUIDITY_FLAG)) return (hookDelta, feesHookDelta);
 
         bytes4 selector = IPlugin.afterModifyLiquidity.selector;
         try IPlugin(plugin).afterModifyLiquidity{gas: HOOK_GAS_LIMIT}(
             sender, key, params, delta, feesAccrued, hookData
-        ) returns (bytes4 res, BalanceDelta returnedDelta, BalanceDelta returnedFeesDelta) {
+        ) returns (
+            bytes4 res, BalanceDelta returnedDelta, BalanceDelta returnedFeesDelta
+        ) {
             if (res != selector) revert PluginErrors.PluginCallFailed(plugin, selector, "");
             hookDelta = returnedDelta;
             feesHookDelta = returnedFeesDelta;
@@ -133,13 +151,14 @@ library PluginDispatcher {
      */
     function dispatchBeforeSwap(
         address plugin,
+        uint32 permissions,
         address sender,
         PoolKey memory key,
         IPoolManager.SwapParams memory params,
         bytes memory hookData
     ) internal returns (uint24 overrideFee) {
         if (plugin == address(0)) return 0;
-        if (!hasPermission(plugin, BEFORE_SWAP_FLAG)) return 0;
+        if (!hasPermission(permissions, BEFORE_SWAP_FLAG)) return 0;
 
         bytes4 selector = IPlugin.beforeSwap.selector;
         try IPlugin(plugin).beforeSwap{gas: HOOK_GAS_LIMIT}(sender, key, params, hookData) returns (
@@ -157,6 +176,7 @@ library PluginDispatcher {
      */
     function dispatchAfterSwap(
         address plugin,
+        uint32 permissions,
         address sender,
         PoolKey memory key,
         IPoolManager.SwapParams memory params,
@@ -164,7 +184,7 @@ library PluginDispatcher {
         bytes memory hookData
     ) internal returns (int128 hookDeltaSpecified) {
         if (plugin == address(0)) return 0;
-        if (!hasPermission(plugin, AFTER_SWAP_FLAG)) return 0;
+        if (!hasPermission(permissions, AFTER_SWAP_FLAG)) return 0;
 
         bytes4 selector = IPlugin.afterSwap.selector;
         try IPlugin(plugin).afterSwap{gas: HOOK_GAS_LIMIT}(sender, key, params, delta, hookData) returns (
@@ -182,6 +202,7 @@ library PluginDispatcher {
      */
     function dispatchBeforeDonate(
         address plugin,
+        uint32 permissions,
         address sender,
         PoolKey memory key,
         uint256 amount0,
@@ -189,7 +210,7 @@ library PluginDispatcher {
         bytes memory hookData
     ) internal {
         if (plugin == address(0)) return;
-        if (!hasPermission(plugin, BEFORE_DONATE_FLAG)) return;
+        if (!hasPermission(permissions, BEFORE_DONATE_FLAG)) return;
 
         bytes4 selector = IPlugin.beforeDonate.selector;
         try IPlugin(plugin).beforeDonate{gas: HOOK_GAS_LIMIT}(sender, key, amount0, amount1, hookData) returns (
@@ -206,6 +227,7 @@ library PluginDispatcher {
      */
     function dispatchAfterDonate(
         address plugin,
+        uint32 permissions,
         address sender,
         PoolKey memory key,
         uint256 amount0,
@@ -213,7 +235,7 @@ library PluginDispatcher {
         bytes memory hookData
     ) internal {
         if (plugin == address(0)) return;
-        if (!hasPermission(plugin, AFTER_DONATE_FLAG)) return;
+        if (!hasPermission(permissions, AFTER_DONATE_FLAG)) return;
 
         bytes4 selector = IPlugin.afterDonate.selector;
         try IPlugin(plugin).afterDonate{gas: HOOK_GAS_LIMIT}(sender, key, amount0, amount1, hookData) returns (

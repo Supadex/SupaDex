@@ -67,7 +67,9 @@ contract Actor is IUnlockCallback {
     }
 
     function donate(PoolKey memory key, uint256 amount0, uint256 amount1) external {
-        vault.unlock(abi.encode(Op.DONATE, key, int24(0), int24(0), int256(amount0), bytes32(uint256(amount1)), false, int256(0)));
+        vault.unlock(
+            abi.encode(Op.DONATE, key, int24(0), int24(0), int256(amount0), bytes32(uint256(amount1)), false, int256(0))
+        );
     }
 
     function unlockCallback(bytes calldata data) external returns (bytes memory) {
@@ -75,7 +77,9 @@ contract Actor is IUnlockCallback {
             abi.decode(data, (Op, PoolKey, int24, int24, int256, bytes32, bool, int256));
         if (op == Op.MODIFY) {
             manager.modifyLiquidity(
-                key, IPoolManager.ModifyLiquidityParams({tickLower: lo, tickUpper: hi, liquidityDelta: liq, salt: salt}), ""
+                key,
+                IPoolManager.ModifyLiquidityParams({tickLower: lo, tickUpper: hi, liquidityDelta: liq, salt: salt}),
+                ""
             );
         } else if (op == Op.SWAP) {
             uint160 limit = z ? TickMathLib.MIN_SQRT_RATIO + 1 : TickMathLib.MAX_SQRT_RATIO - 1;
@@ -93,6 +97,7 @@ contract Actor is IUnlockCallback {
     function _resolve(Currency c) internal {
         int256 d = vault.getCurrencyDelta(address(this), c);
         if (d < 0) {
+            vault.sync(c);
             Tok(Currency.unwrap(c)).transfer(address(vault), uint256(-d));
             vault.settle(c);
         } else if (d > 0) {
@@ -130,8 +135,8 @@ contract BenignHook is BaseHook {
     constructor(IPoolManager pm) BaseHook(pm) {}
 
     function getPluginPermissions() public pure override returns (uint32) {
-        return PluginDispatcher.AFTER_SWAP_FLAG | PluginDispatcher.BEFORE_DONATE_FLAG
-            | PluginDispatcher.AFTER_DONATE_FLAG;
+        return
+            PluginDispatcher.AFTER_SWAP_FLAG | PluginDispatcher.BEFORE_DONATE_FLAG | PluginDispatcher.AFTER_DONATE_FLAG;
     }
 
     function afterSwap(address, PoolKey calldata, IPoolManager.SwapParams calldata, BalanceDelta, bytes calldata)
@@ -197,13 +202,12 @@ contract SyncProbeHook is BaseHook {
         return PluginDispatcher.AFTER_SWAP_FLAG;
     }
 
-    function afterSwap(
-        address,
-        PoolKey calldata key,
-        IPoolManager.SwapParams calldata,
-        BalanceDelta,
-        bytes calldata
-    ) external override onlyPoolManager returns (bytes4, int128) {
+    function afterSwap(address, PoolKey calldata key, IPoolManager.SwapParams calldata, BalanceDelta, bytes calldata)
+        external
+        override
+        onlyPoolManager
+        returns (bytes4, int128)
+    {
         PoolId id = key.toId();
         observedTick = poolManager.getSlot0(id).tick();
         observedLiquidity = poolManager.getLiquidity(id);
@@ -408,13 +412,11 @@ contract SecurityRegressionTest is Test {
             plugin: address(0),
             curveType: CurveType.BIN_AMM
         });
+        // ADR-0004: BIN_AMM pools are disabled on the production PoolManager (single frozen bin).
+        // Bin pro-rata exit accounting is still covered via the test-only bin-enabled manager in
+        // test/unit/SupaPoolManager.t.sol.
+        vm.expectRevert(abi.encodeWithSelector(PoolErrors.CurveDisabled.selector, uint8(CurveType.BIN_AMM)));
         manager.initialize(binKey, 1 << 96, "");
-        victim.modify(binKey, 0, 0, 100 ether, bytes32(0));
-        attacker.modify(binKey, 0, 0, 100 ether, bytes32(uint256(1)));
-        attacker.swap(binKey, true, 50 ether);
-        victim.modify(binKey, 0, 0, -100 ether, bytes32(0));
-        // Last LP exits (pro-rata) — must not revert
-        attacker.modify(binKey, 0, 0, -100 ether, bytes32(uint256(1)));
     }
 
     /// M1: delisting a plugin disables modify/swap on already-initialized pools

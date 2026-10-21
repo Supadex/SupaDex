@@ -11,6 +11,16 @@ import {BinAMMEngine} from "../../contract/core/engines/BinAMMEngine.sol";
 import {StableAMMEngine} from "../../contract/core/engines/StableAMMEngine.sol";
 import {PluginWhitelist} from "../../contract/governance/PluginWhitelist.sol";
 
+/// @dev TEST-ONLY: re-enables BIN_AMM pool creation so legacy BinAMM accounting tests keep running.
+/// Production `SupaPoolManager` refuses BIN_AMM pools (ADR-0004); see BaselineRegression tests.
+contract BinEnabledTestPoolManager is SupaPoolManager {
+    constructor(IVault v, ICurveEngine c, ICurveEngine b, ICurveEngine s) SupaPoolManager(v, c, b, s) {}
+
+    function binAmmEnabled() public pure override returns (bool) {
+        return true;
+    }
+}
+
 /**
  * @title SecurityTestSetup
  * @notice Shared helpers for predicted-CREATE engine binding + mandatory plugin whitelist.
@@ -26,6 +36,21 @@ library SecurityTestSetup {
         internal
         returns (SupaPoolManager manager, CLAMMEngine clamm, BinAMMEngine bin, StableAMMEngine stable)
     {
+        return _deploy(vault, false);
+    }
+
+    /// @dev TEST-ONLY variant with BIN_AMM pools enabled (see `BinEnabledTestPoolManager`).
+    function deployManagerWithEnginesBinEnabled(IVault vault)
+        internal
+        returns (SupaPoolManager manager, CLAMMEngine clamm, BinAMMEngine bin, StableAMMEngine stable)
+    {
+        return _deploy(vault, true);
+    }
+
+    function _deploy(IVault vault, bool binEnabled)
+        private
+        returns (SupaPoolManager manager, CLAMMEngine clamm, BinAMMEngine bin, StableAMMEngine stable)
+    {
         address deployer = address(this);
         uint64 nonce = VM.getNonce(deployer);
         address predicted = VM.computeCreateAddress(deployer, nonce + 3);
@@ -33,9 +58,15 @@ library SecurityTestSetup {
         clamm = new CLAMMEngine(predicted);
         bin = new BinAMMEngine(predicted);
         stable = new StableAMMEngine(predicted);
-        manager = new SupaPoolManager(
-            vault, ICurveEngine(address(clamm)), ICurveEngine(address(bin)), ICurveEngine(address(stable))
-        );
+        if (binEnabled) {
+            manager = new BinEnabledTestPoolManager(
+                vault, ICurveEngine(address(clamm)), ICurveEngine(address(bin)), ICurveEngine(address(stable))
+            );
+        } else {
+            manager = new SupaPoolManager(
+                vault, ICurveEngine(address(clamm)), ICurveEngine(address(bin)), ICurveEngine(address(stable))
+            );
+        }
         require(address(manager) == predicted, "SecurityTestSetup: PM address mismatch");
     }
 

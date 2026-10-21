@@ -112,6 +112,7 @@ contract MultiCurveHandler is Test, IUnlockCallback {
         int128 d1 = delta.amount1();
 
         if (d0 > 0) {
+            vault.sync(pKey.currency0);
             MockMultiCurveToken(Currency.unwrap(pKey.currency0)).transfer(address(vault), uint128(d0));
             vault.settle(pKey.currency0);
         } else if (d0 < 0) {
@@ -119,6 +120,7 @@ contract MultiCurveHandler is Test, IUnlockCallback {
         }
 
         if (d1 > 0) {
+            vault.sync(pKey.currency1);
             MockMultiCurveToken(Currency.unwrap(pKey.currency1)).transfer(address(vault), uint128(d1));
             vault.settle(pKey.currency1);
         } else if (d1 < 0) {
@@ -194,7 +196,7 @@ contract MultiCurveSolvencyInvariantTest is StdInvariant, Test {
 
     function setUp() public {
         vault = new SupaVault(address(this));
-        (manager,,,) = SecurityTestSetup.deployManagerWithEngines(vault);
+        (manager,,,) = SecurityTestSetup.deployManagerWithEnginesBinEnabled(vault);
         CLAMMEngine clamm = CLAMMEngine(address(manager.clammEngine()));
         BinAMMEngine binAmm = BinAMMEngine(address(manager.binEngine()));
         StableAMMEngine stableAmm = StableAMMEngine(address(manager.stableEngine()));

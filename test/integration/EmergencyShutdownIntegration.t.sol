@@ -130,7 +130,7 @@ contract EmergencyShutdownIntegrationTest is Test {
 
         // Deploy Vault & Core
         vault = new SupaVault(address(this));
-        (manager,,,) = SecurityTestSetup.deployManagerWithEngines(vault);
+        (manager,,,) = SecurityTestSetup.deployManagerWithEnginesBinEnabled(vault);
         clamm = CLAMMEngine(address(manager.clammEngine()));
         bin = BinAMMEngine(address(manager.binEngine()));
         stable = StableAMMEngine(address(manager.stableEngine()));
