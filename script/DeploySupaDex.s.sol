@@ -139,7 +139,13 @@ contract DeploySupaDex is Script {
     /// @notice ADR-0006 / Edith 6-B: BIN stays paused on any value-bearing deployment until Jexi review AND an
     /// external audit sign off (unpausing is a timelock action). Optional on test chains via BIN_PAUSED=true.
     function binPausedAtGenesis() public view returns (bool) {
-        return DeployEnvironment.valueBearing(_kind(), block.chainid) || vm.envOr("BIN_PAUSED", false);
+        return DeployEnvironment.valueBearing(_kind(), block.chainid) || binPausedOptIn();
+    }
+
+    /// @notice Operator opt-in (BIN_PAUSED=true). Virtual so tests can exercise the opt-in without mutating the
+    /// process-wide environment, which raced with other suites running in parallel (flaky CurvePaused in setUp).
+    function binPausedOptIn() public view virtual returns (bool) {
+        return vm.envOr("BIN_PAUSED", false);
     }
 
     function validateConfig(address deployer, RoleConfig memory c) public pure {

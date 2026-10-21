@@ -38,9 +38,19 @@ contract NotASafe {
 
 /// Test harnesses: pin the resolved environment (what `run()` derives from DEPLOY_ENV + the anvil probe).
 contract DeployHarness is DeploySupaDex {
+    bool internal optIn;
+
     function setKind(DeployEnvironment.Kind k) external {
         resolvedKind = k;
         resolved = true;
+    }
+
+    function setBinPausedOptIn(bool v) external {
+        optIn = v;
+    }
+
+    function binPausedOptIn() public view override returns (bool) {
+        return optIn || super.binPausedOptIn();
     }
 }
 
@@ -318,11 +328,16 @@ contract DeploySupaDexTest is Test {
         d.deploy(address(d), cfg);
     }
 
+    /// Opt-in exercised through the harness, not vm.setEnv: env vars are process-global and setting BIN_PAUSED
+    /// here raced with SeedLocal / OracleConfigCheck setUp in parallel suites.
     function test_binPausedOptIn_onTestChains() public {
-        vm.setEnv("BIN_PAUSED", "true");
-        DeploySupaDex.DeploymentResult memory res = _deploy();
-        assertTrue(CircuitBreaker(res.circuitBreaker).isCurvePaused(1));
-        vm.setEnv("BIN_PAUSED", "false");
+        DeployHarness off = new DeployHarness();
+        DeploySupaDex.DeploymentResult memory r0 = off.deploy(address(off), _cfg());
+        assertFalse(CircuitBreaker(r0.circuitBreaker).isCurvePaused(1), "not paused without opt-in on 31337");
+        DeployHarness on = new DeployHarness();
+        on.setBinPausedOptIn(true);
+        DeploySupaDex.DeploymentResult memory r1 = on.deploy(address(on), _cfg());
+        assertTrue(CircuitBreaker(r1.circuitBreaker).isCurvePaused(1), "opt-in pauses BIN");
     }
 
     function test_isMultisig_recognition() public {
