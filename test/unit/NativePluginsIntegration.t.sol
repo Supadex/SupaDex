@@ -78,10 +78,12 @@ contract PluginIntegrationHarness is IUnlockCallback {
             (BalanceDelta delta,) = manager.modifyLiquidity(key, params, "");
 
             if (delta.amount0() > 0) {
+                vault.sync(key.currency0);
                 MockPluginToken(Currency.unwrap(key.currency0)).transfer(address(vault), uint128(delta.amount0()));
                 vault.settle(key.currency0);
             }
             if (delta.amount1() > 0) {
+                vault.sync(key.currency1);
                 MockPluginToken(Currency.unwrap(key.currency1)).transfer(address(vault), uint128(delta.amount1()));
                 vault.settle(key.currency1);
             }
@@ -96,14 +98,13 @@ contract PluginIntegrationHarness is IUnlockCallback {
             _settleCurrency(key.currency1);
         } else if (action == Action.SWAP) {
             IPoolManager.SwapParams memory swapParams = IPoolManager.SwapParams({
-                zeroForOne: true,
-                amountSpecified: int256(val),
-                sqrtPriceLimitX96: TickMathLib.MIN_SQRT_RATIO + 1
+                zeroForOne: true, amountSpecified: int256(val), sqrtPriceLimitX96: TickMathLib.MIN_SQRT_RATIO + 1
             });
 
             BalanceDelta delta = manager.swap(key, swapParams, "");
 
             if (delta.amount0() > 0) {
+                vault.sync(key.currency0);
                 MockPluginToken(Currency.unwrap(key.currency0)).transfer(address(vault), uint128(delta.amount0()));
                 vault.settle(key.currency0);
             }
@@ -120,6 +121,7 @@ contract PluginIntegrationHarness is IUnlockCallback {
         if (d > 0) {
             vault.take(currency, address(this), uint256(d));
         } else if (d < 0) {
+            vault.sync(currency);
             MockPluginToken(Currency.unwrap(currency)).transfer(address(vault), uint256(-d));
             vault.settle(currency);
         }
@@ -215,7 +217,9 @@ contract NativePluginsIntegrationTest is Test, IPluginEvents {
         harness.execute(abi.encode(PluginIntegrationHarness.Action.ADD_LIQUIDITY, lvrPoolKey, uint256(10_000_000)));
 
         // Swap moves pool tick; afterSwap must persist the post-swap tick.
-        harness.execute(abi.encode(PluginIntegrationHarness.Action.SWAP, lvrPoolKey, uint256(100_000)));
+        // Sized to stay inside [-120, 120] liquidity (~60k token0 capacity). With SDX-004 gap crossing an
+        // oversized exact-in swap now runs to the price limit instead of silently partial-filling.
+        harness.execute(abi.encode(PluginIntegrationHarness.Action.SWAP, lvrPoolKey, uint256(20_000)));
         int24 tickAfterSwap1 = Slot0Library.tick(manager.getSlot0(poolId));
         assertEq(oracle.latestTicks(poolId), tickAfterSwap1, "oracle tick must match post-swap slot0");
 
@@ -227,7 +231,7 @@ contract NativePluginsIntegrationTest is Test, IPluginEvents {
         oracle.write(poolId, uint32(block.timestamp), spikedTick, 1_000_000);
 
         vm.recordLogs();
-        harness.execute(abi.encode(PluginIntegrationHarness.Action.SWAP, lvrPoolKey, uint256(50_000)));
+        harness.execute(abi.encode(PluginIntegrationHarness.Action.SWAP, lvrPoolKey, uint256(10_000)));
         Vm.Log[] memory entries = vm.getRecordedLogs();
         uint24 observedFee = _feeFromDynamicFeeUpdated(entries, poolId);
         assertGt(observedFee, 3000, "adaptive fee should elevate under rapid tick volatility");
@@ -239,7 +243,7 @@ contract NativePluginsIntegrationTest is Test, IPluginEvents {
         oracle.write(poolId, uint32(block.timestamp), spikedTick, 1_000_000);
 
         vm.recordLogs();
-        harness.execute(abi.encode(PluginIntegrationHarness.Action.SWAP, lvrPoolKey, uint256(10_000)));
+        harness.execute(abi.encode(PluginIntegrationHarness.Action.SWAP, lvrPoolKey, uint256(5_000)));
         entries = vm.getRecordedLogs();
         uint24 decayedFee = _feeFromDynamicFeeUpdated(entries, poolId);
         assertLe(decayedFee, observedFee, "fee should not increase after idle half-lives");

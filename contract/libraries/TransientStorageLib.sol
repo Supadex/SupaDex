@@ -12,35 +12,32 @@ library TransientStorageLib {
     /**
      * @dev Slot offset constant for vault reentrancy lock: keccak256("supadex.vault.lock.slot")
      */
-    bytes32 internal constant LOCK_SLOT = 0xd5f187902d33458bf59c3e4a9058b8f36c5df5eb8c74fb90b62140a33c2a66e6;
+    bytes32 internal constant LOCK_SLOT = keccak256("supadex.vault.lock.slot");
 
     /**
      * @dev Slot offset constant for currency delta map prefix: keccak256("supadex.vault.delta.prefix")
      */
-    bytes32 internal constant DELTA_PREFIX = 0xb24d08ceee77d853e4b7bfe3da4821ef9a2c342fb835567c2e3dd740c0378ce1;
+    bytes32 internal constant DELTA_PREFIX = keccak256("supadex.vault.delta.prefix");
 
     /**
      * @dev Slot offset constant for vault locker: keccak256("supadex.vault.locker.slot")
      */
-    bytes32 internal constant LOCKER_SLOT = 0x6e8ff5f340be1e7fce95d85ee229d479cb20aa54b03692d9d95f8846be09db17;
+    bytes32 internal constant LOCKER_SLOT = keccak256("supadex.vault.locker.slot");
 
     /**
      * @dev Slot offset constant for nonzero delta count: keccak256("supadex.vault.nonzero.delta.count")
      */
-    bytes32 internal constant NONZERO_DELTA_COUNT_SLOT =
-        0x3d386d34b46c6fc3aa478672224da1c7fe68eb7810ecba14aa0fe77209353982;
+    bytes32 internal constant NONZERO_DELTA_COUNT_SLOT = keccak256("supadex.vault.nonzero.delta.count");
 
     /**
      * @dev Last non-zero unsettled currency: keccak256("supadex.vault.last.unsettled.currency")
      */
-    bytes32 internal constant LAST_UNSETTLED_CURRENCY_SLOT =
-        0x8c0e6f3a1b2d4e5f60718293a4b5c6d7e8f90123456789abcdef0123456789ab;
+    bytes32 internal constant LAST_UNSETTLED_CURRENCY_SLOT = keccak256("supadex.vault.last.unsettled.currency");
 
     /**
      * @dev Last non-zero unsettled delta: keccak256("supadex.vault.last.unsettled.delta")
      */
-    bytes32 internal constant LAST_UNSETTLED_DELTA_SLOT =
-        0x9d1f7e4b2c3a5d6e708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7;
+    bytes32 internal constant LAST_UNSETTLED_DELTA_SLOT = keccak256("supadex.vault.last.unsettled.delta");
 
     /**
      * @notice Acquires transient reentrancy lock. Reverts if already locked.
@@ -184,6 +181,57 @@ library TransientStorageLib {
                     tstore(countSlot, sub(count, 1))
                 }
             }
+        }
+    }
+
+    /**
+     * @dev Synced currency slot: uint256(keccak256("supadex.vault.synced.currency")) - 1
+     */
+    bytes32 internal constant SYNCED_CURRENCY_SLOT = bytes32(uint256(keccak256("supadex.vault.synced.currency")) - 1);
+
+    /**
+     * @dev Synced balance slot: uint256(keccak256("supadex.vault.synced.balance")) - 1
+     */
+    bytes32 internal constant SYNCED_BALANCE_SLOT = bytes32(uint256(keccak256("supadex.vault.synced.balance")) - 1);
+
+    /**
+     * @dev Synced flag slot: uint256(keccak256("supadex.vault.synced.flag")) - 1
+     */
+    bytes32 internal constant SYNCED_FLAG_SLOT = bytes32(uint256(keccak256("supadex.vault.synced.flag")) - 1);
+
+    function setSynced(Currency currency, uint256 bal) internal {
+        bytes32 cSlot = SYNCED_CURRENCY_SLOT;
+        bytes32 bSlot = SYNCED_BALANCE_SLOT;
+        bytes32 fSlot = SYNCED_FLAG_SLOT;
+        address c = Currency.unwrap(currency);
+        assembly {
+            tstore(cSlot, c)
+            tstore(bSlot, bal)
+            tstore(fSlot, 1)
+        }
+    }
+
+    function getSynced() internal view returns (bool isSynced, Currency currency, uint256 bal) {
+        bytes32 cSlot = SYNCED_CURRENCY_SLOT;
+        bytes32 bSlot = SYNCED_BALANCE_SLOT;
+        bytes32 fSlot = SYNCED_FLAG_SLOT;
+        address c;
+        assembly {
+            isSynced := tload(fSlot)
+            c := tload(cSlot)
+            bal := tload(bSlot)
+        }
+        currency = Currency.wrap(c);
+    }
+
+    function clearSynced() internal {
+        bytes32 cSlot = SYNCED_CURRENCY_SLOT;
+        bytes32 bSlot = SYNCED_BALANCE_SLOT;
+        bytes32 fSlot = SYNCED_FLAG_SLOT;
+        assembly {
+            tstore(cSlot, 0)
+            tstore(bSlot, 0)
+            tstore(fSlot, 0)
         }
     }
 }

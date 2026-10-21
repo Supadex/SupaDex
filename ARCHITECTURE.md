@@ -1,5 +1,19 @@
 # SupaDex Architecture Specification (V1)
 
+> **Implementation status (updated 2026-10-21, security-fix branch `fix/baseline-security-2026-10-21`).**
+> The diagrams below describe the design intent. Where they differ, this box is authoritative for the code:
+> - **SupaPoolManager is NOT upgradeable.** It is a plain contract with immutable engines; upgrading it means redeploying and migrating. Only `SupaVault` is upgradeable (UUPS behind an ERC1967 proxy, storage slots 0–6 plus a 43-slot `__gap`).
+> - **No transient-storage fallback.** Flash accounting uses EIP-1153 `TSTORE/TLOAD` only; the contracts require a Cancun-compatible chain.
+> - **Settlement is v4-style `sync → transfer → settle`** (ADR-0002). `settle` credits only what arrived since the caller's `sync`; native ETH is credited from `msg.value`. Unsolicited balance (donations, positive rebases) is surplus that only the vault owner can move, via `sweepSurplus`. Rebasing/fee-on-transfer tokens remain unsupported: a negative rebase leaves the vault holding less than `reservesOf`.
+> - **`accountDelta` is PoolManager-only.** The vault owner has no path to credit itself (ADR-0005).
+> - **Circuit breaker = withdraw-only.** When the vault, a pool or a curve is paused, swaps, donations, initializations and liquidity additions revert. Liquidity removals, fee collection and ERC-6909 claim withdrawals keep working.
+> - **Plugin permissions are cached at pool initialization.** A plugin cannot change its own hooks later. If the permission read fails, `initialize` reverts. If a plugin is delisted, liquidity removal still works with all hooks skipped; adds and swaps revert.
+> - **BinAMM pool creation is disabled** (`binAmmEnabled() == false`, ADR-0004). The engine has a single active bin with a fixed price and no traversal.
+> - **StableAMM** uses one Curve 2-coin invariant (Ann = 4A) for both D and Y. It reverts on non-convergence, rounds against the trader, and uses proportional LP shares with a 1,000-share first-deposit lock (ADR-0001). It requires equal token decimals and a hard-coded A = 100; decimal scaling and A-ramping are not implemented (SDX-013).
+> - **The LVR surcharge applies only to CLAMM pools** (ADR-0003). The signal is the realised |Δtick| over the trailing 12 s window, so a constant tick means no surcharge. The signal is endogenous, so pool trades can manipulate it. It is not a CEX/fair-price oracle. Fee bounds are governance-only and capped at 10%.
+> - **Anti-JIT vesting** evaluates the haircut on every liquidity modification, including additions. Adding liquidity restarts the position's residency clock.
+> - No independent external audit has been performed.
+
 ## 1. Executive Summary
 **SupaDex** is a next-generation decentralized Automated Market Maker (AMM) engineered to surpass Uniswap V4. By addressing systemic flaws in current singleton and concentrated liquidity designs—notably Loss-Versus-Rebalancing (LVR), JIT liquidity exploitation, hook gas overhead, rigid non-upgradeable singletons, and multi-curve inflexibility—SupaDex establishes a high-performance, LVR-resistant, multi-curve exchange engine.
 
@@ -104,7 +118,7 @@
 - In SupaDex, all swaps, liquidity modifications, and donations do not trigger immediate ERC-20 transfers.
 - Instead, operations modify a transient balance delta: `BalanceDelta = (int128 amount0, int128 amount1)`.
 - The caller must resolve all non-zero deltas before the end of the `unlock` callback via:
-  1. `settle(Currency currency)`: Payer transfers tokens to the Vault.
+  1. `sync(Currency currency)` then transfer, then `settle(Currency currency)`: the vault credits exactly the tokens that arrived since `sync` (native ETH: `msg.value`).
   2. `take(Currency currency, address recipient, uint256 amount)`: Vault sends tokens to recipient.
   3. `mint(Currency currency, address recipient, uint256 amount)`: Vault mints ERC-6909 claim tokens.
   4. `burn(Currency currency, uint256 amount)`: Vault burns ERC-6909 claim tokens to offset delta.
@@ -117,7 +131,7 @@
 
 ### 4.3 Anti-JIT Liquidity Vesting Shield
 - JIT attackers provide liquidity for single-block trades and extract fees with zero inventory risk.
-- SupaDex tracks a liquidity-weighted average deposit block per position and linearly vests accrued swap fees:
+- SupaDex tracks a deposit block per position (reset on every top-up) and linearly vests accrued swap fees, evaluated on every liquidity modification:
   - $\text{vestedBps} = \min(\lfloor \Delta_{\text{blocks}} \cdot 10\,000 / K \rfloor,\, 10\,000)$ where $K = \texttt{minResidencyBlocks}$.
   - Unvested fee share is confiscated via `feesHookDelta` (principal is never haircut) and credited to remaining in-range LPs through engine fee-growth `donate` (or `protocolFeesAccrued` if active liquidity is zero after exit).
   - Fee-collect pokes (`liquidityDelta = 0`) are subject to the same vesting schedule.
@@ -127,6 +141,7 @@
    - Optimized Q64.96 square root price math with bitmap-searched initialized ticks.
 2. **BinAMM (Discretized Bins)**:
    - Liquidity is deposited into discrete price bins with zero slippage inside each bin, enabling active liquidity management with minimal math overhead.
+   - **Status:** the current engine has one fixed-price active bin and no traversal, so pool creation is disabled (ADR-0004).
 3. **StableAMM (Amplified Invariant Curve)**:
    - High capital efficiency for correlated pairs (e.g., LSTs, stablecoins).
 

@@ -143,7 +143,7 @@ contract SupaPositionManagerTest is Test {
             recipient: alice,
             deadline: block.timestamp + 100,
             hookData: "",
-        payWithClaims: false
+            payWithClaims: false
         });
 
         (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1) = posManager.mint(params);
@@ -174,7 +174,7 @@ contract SupaPositionManagerTest is Test {
             recipient: alice,
             deadline: block.timestamp + 100,
             hookData: "",
-        payWithClaims: false
+            payWithClaims: false
         });
 
         (uint256 tokenId,,,) = posManager.mint(params);
@@ -206,7 +206,7 @@ contract SupaPositionManagerTest is Test {
             recipient: alice,
             deadline: block.timestamp + 100,
             hookData: "",
-        payWithClaims: false
+            payWithClaims: false
         });
         (uint256 tokenId,,,) = posManager.mint(mintParams);
 
@@ -218,7 +218,7 @@ contract SupaPositionManagerTest is Test {
             amount1Max: 5 ether,
             deadline: block.timestamp + 100,
             hookData: "",
-        payWithClaims: false
+            payWithClaims: false
         });
         (uint128 totalLiq,,) = posManager.increaseLiquidity(incParams);
         assertEq(totalLiq, 15 ether);
@@ -254,7 +254,7 @@ contract SupaPositionManagerTest is Test {
             recipient: alice,
             deadline: block.timestamp + 100,
             hookData: "",
-        payWithClaims: false
+            payWithClaims: false
         });
         (uint256 tokenId,,,) = posManager.mint(mintParams);
 
@@ -297,7 +297,7 @@ contract SupaPositionManagerTest is Test {
             recipient: alice,
             deadline: block.timestamp + 100,
             hookData: "",
-        payWithClaims: false
+            payWithClaims: false
         });
         (uint256 tokenId,,,) = posManager.mint(mintParams);
 
@@ -339,7 +339,7 @@ contract SupaPositionManagerTest is Test {
             recipient: alice,
             deadline: block.timestamp + 100,
             hookData: "",
-        payWithClaims: false
+            payWithClaims: false
         });
         (uint256 tokenId,,,) = posManager.mint(mintParams);
         vm.stopPrank();
@@ -371,10 +371,7 @@ contract SupaPositionManagerTest is Test {
         vm.prank(alice);
         (uint256 collected0, uint256 collected1) = posManager.collect(
             ISupaPositionManager.CollectParams({
-                tokenId: tokenId,
-                recipient: alice,
-                amount0Max: type(uint128).max,
-                amount1Max: type(uint128).max
+                tokenId: tokenId, recipient: alice, amount0Max: type(uint128).max, amount1Max: type(uint128).max
             })
         );
 
@@ -408,18 +405,22 @@ contract SwapHelper is IUnlockCallback {
         IPoolManager.SwapParams memory params = IPoolManager.SwapParams({
             zeroForOne: zeroForOne,
             amountSpecified: int256(amountIn),
-            sqrtPriceLimitX96: zeroForOne ? uint160(4295128740) : uint160(1461446703485210103287273052203988822378723970341)
+            sqrtPriceLimitX96: zeroForOne
+                ? uint160(4295128740)
+                : uint160(1461446703485210103287273052203988822378723970341)
         });
 
         BalanceDelta delta = manager.swap(key, params, "");
 
         if (delta.amount0() > 0) {
             uint256 amt = uint256(uint128(delta.amount0()));
+            vault.sync(key.currency0);
             MockPosToken(Currency.unwrap(key.currency0)).transfer(address(vault), amt);
             vault.settle(key.currency0);
         }
         if (delta.amount1() > 0) {
             uint256 amt = uint256(uint128(delta.amount1()));
+            vault.sync(key.currency1);
             MockPosToken(Currency.unwrap(key.currency1)).transfer(address(vault), amt);
             vault.settle(key.currency1);
         }

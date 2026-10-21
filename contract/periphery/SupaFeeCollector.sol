@@ -103,8 +103,7 @@ contract SupaFeeCollector is ISupaFeeCollector, IUnlockCallback, PeripheryPaymen
     function unlockCallback(bytes calldata data) external override returns (bytes memory) {
         if (msg.sender != address(_vault)) revert FeeCollectorErrors.Unauthorized();
 
-        (Currency[] memory currencies, bool asClaims, address caller) =
-            abi.decode(data, (Currency[], bool, address));
+        (Currency[] memory currencies, bool asClaims, address caller) = abi.decode(data, (Currency[], bool, address));
 
         uint256 len = currencies.length;
         for (uint256 i; i < len;) {

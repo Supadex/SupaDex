@@ -17,7 +17,13 @@ contract TestMintableERC20 {
     event Transfer(address indexed from, address indexed to, uint256 value);
     event Approval(address indexed owner, address indexed spender, uint256 value);
 
-    constructor(string memory _name, string memory _symbol, uint8 _decimals, address initialRecipient, uint256 initialAmount) {
+    constructor(
+        string memory _name,
+        string memory _symbol,
+        uint8 _decimals,
+        address initialRecipient,
+        uint256 initialAmount
+    ) {
         name = _name;
         symbol = _symbol;
         decimals = _decimals;

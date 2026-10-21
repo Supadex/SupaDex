@@ -58,17 +58,8 @@ contract LVRShieldPluginTest is Test {
 
     function test_afterInitializeSetsBaseState() public view {
         PoolId id = key.toId();
-        (
-            uint24 baseFee,
-            uint24 lastFee,
-            uint32 lastSwap,
-            int24 lastTick,
-            uint32 decayHalfLife,
-            ,
-            ,
-            ,
-            bool init
-        ) = plugin.poolLVRStates(id);
+        (uint24 baseFee, uint24 lastFee, uint32 lastSwap, int24 lastTick, uint32 decayHalfLife,,,, bool init) =
+            plugin.poolLVRStates(id);
 
         assertEq(baseFee, 3000);
         assertEq(lastFee, 3000);
@@ -138,15 +129,23 @@ contract LVRShieldPluginTest is Test {
     }
 
     function test_setMinFeeRevertsWhenAboveMax() public {
-        vm.expectRevert(abi.encodeWithSelector(PluginErrors.InvalidFeeBounds.selector, uint24(150_000), uint24(100_000)));
-        // max is 100_000 by default; set min above it
-        plugin.setMinFeeBps(key, 150_000);
+        plugin.setMaxFeePips(key, 50_000);
+        vm.expectRevert(abi.encodeWithSelector(PluginErrors.InvalidFeeBounds.selector, uint24(80_000), uint24(50_000)));
+        plugin.setMinFeePips(key, 80_000);
+    }
+
+    /// APUS-SUPADEX-009: bounds above the 10% cap revert.
+    function test_setFeeBoundsAboveCapRevert() public {
+        vm.expectRevert(abi.encodeWithSelector(PluginErrors.InvalidFeeParameter.selector, uint24(150_000)));
+        plugin.setMinFeePips(key, 150_000);
+        vm.expectRevert(abi.encodeWithSelector(PluginErrors.InvalidFeeParameter.selector, uint24(990_000)));
+        plugin.setMaxFeePips(key, 990_000);
     }
 
     function test_setMaxFeeRevertsWhenBelowMin() public {
-        plugin.setMinFeeBps(key, 2000);
+        plugin.setMinFeePips(key, 2000);
         vm.expectRevert(abi.encodeWithSelector(PluginErrors.InvalidFeeBounds.selector, uint24(2000), uint24(1000)));
-        plugin.setMaxFeeBps(key, 1000);
+        plugin.setMaxFeePips(key, 1000);
     }
 
     function test_setDecayParametersRevertsOnInvalidBounds() public {

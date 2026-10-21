@@ -71,10 +71,12 @@ contract DeltaConservationHandler is Test, IUnlockCallback {
             });
             (BalanceDelta delta,) = manager.modifyLiquidity(key, params, "");
             if (delta.amount0() > 0) {
+                vault.sync(key.currency0);
                 token0.transfer(address(vault), uint128(delta.amount0()));
                 vault.settle(key.currency0);
             }
             if (delta.amount1() > 0) {
+                vault.sync(key.currency1);
                 token1.transfer(address(vault), uint128(delta.amount1()));
                 vault.settle(key.currency1);
             }
@@ -84,6 +86,7 @@ contract DeltaConservationHandler is Test, IUnlockCallback {
                 IPoolManager.SwapParams({zeroForOne: true, amountSpecified: int256(amount), sqrtPriceLimitX96: 0});
             BalanceDelta delta = manager.swap(key, swapParams, "");
             if (delta.amount0() > 0) {
+                vault.sync(key.currency0);
                 token0.transfer(address(vault), uint128(delta.amount0()));
                 vault.settle(key.currency0);
             }

@@ -64,10 +64,7 @@ contract BinAMMEngineTest is Test {
 
         // Deposit 20 ether of token0 — token1 ≈ 20e18 * 3e-9 = 6e10 (≈ 60000 of 6-dec)
         IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
-            tickLower: int24(uint24(activeId)),
-            tickUpper: 0,
-            liquidityDelta: 20 ether,
-            salt: bytes32(0)
+            tickLower: int24(uint24(activeId)), tickUpper: 0, liquidityDelta: 20 ether, salt: bytes32(0)
         });
         (BalanceDelta delta,) = engine.modifyLiquidity(key, params, address(this));
         assertEq(delta.amount0(), int128(int256(20 ether)));

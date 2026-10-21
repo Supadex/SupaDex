@@ -46,13 +46,10 @@ contract SupaClaimsRouter is ISupaClaimsRouter, IUnlockCallback, IPeripheryEvent
         if (amount == 0) revert PeripheryErrors.ZeroAmount();
         if (to == address(0)) revert PeripheryErrors.Unauthorized();
 
-        if (currency.isNative()) {
-            if (msg.value < amount) revert PeripheryErrors.InsufficientETH(amount, msg.value);
-        } else {
-            currency.toAddress().safeTransferFrom(msg.sender, address(_vault), amount);
-        }
+        if (currency.isNative() && msg.value < amount) revert PeripheryErrors.InsufficientETH(amount, msg.value);
 
-        _vault.unlock(abi.encode(Action.DEPOSIT, currency, to, amount));
+        // ERC-20 pull happens inside the unlock callback, after `sync` (ADR-0002).
+        _vault.unlock(abi.encode(Action.DEPOSIT, currency, to, amount, msg.sender));
         emit ClaimDeposited(msg.sender, to, currency, amount);
 
         // Refund dust ETH
@@ -70,7 +67,7 @@ contract SupaClaimsRouter is ISupaClaimsRouter, IUnlockCallback, IPeripheryEvent
 
         // Pull claims from user into this contract (requires operator or id allowance)
         _vault.transferFrom(msg.sender, address(this), currency.toId(), amount);
-        _vault.unlock(abi.encode(Action.WITHDRAW, currency, to, amount));
+        _vault.unlock(abi.encode(Action.WITHDRAW, currency, to, amount, msg.sender));
         emit ClaimWithdrawn(msg.sender, to, currency, amount);
     }
 
@@ -78,13 +75,15 @@ contract SupaClaimsRouter is ISupaClaimsRouter, IUnlockCallback, IPeripheryEvent
      * @inheritdoc IUnlockCallback
      */
     function unlockCallback(bytes calldata data) external override onlyVault returns (bytes memory) {
-        (Action action, Currency currency, address to, uint256 amount) =
-            abi.decode(data, (Action, Currency, address, uint256));
+        (Action action, Currency currency, address to, uint256 amount, address payer) =
+            abi.decode(data, (Action, Currency, address, uint256, address));
 
         if (action == Action.DEPOSIT) {
             if (currency.isNative()) {
                 _vault.settle{value: amount}(currency);
             } else {
+                _vault.sync(currency);
+                currency.toAddress().safeTransferFrom(payer, address(_vault), amount);
                 _vault.settle(currency);
             }
             _vault.mint(currency, to, amount);

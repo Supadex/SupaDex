@@ -5,6 +5,7 @@ import {ICurveEngine} from "../../interfaces/ICurveEngine.sol";
 import {IPoolManager} from "../../interfaces/IPoolManager.sol";
 import {PoolKey} from "../../types/PoolKey.sol";
 import {PoolId} from "../../types/PoolId.sol";
+import {Currency} from "../../types/Currency.sol";
 import {BalanceDelta, toBalanceDelta} from "../../types/BalanceDelta.sol";
 import {Slot0, Slot0Library} from "../../types/Slot0.sol";
 import {Position} from "../../types/Position.sol";
@@ -16,15 +17,30 @@ import {TickMathLib} from "../../libraries/TickMathLib.sol";
 
 /**
  * @title StableAMMEngine
- * @notice Stableswap AMM with global fee growth accrual to LP positions.
+ * @notice Two-coin StableSwap engine (Curve invariant, n = 2) with proportional LP shares and
+ * global fee-growth accrual to LP positions.
+ * @dev ADR-0001:
+ *  - ONE invariant is used everywhere: A·n^n·Σx + D = A·n^n·D + D^(n+1) / (n^n·Πx), with Ann = A·4.
+ *    `computeD` and `computeY` are the reference Curve Newton iterations for that same invariant.
+ *  - Newton iterations revert (`StableMathNotConverged`) instead of returning a stale value.
+ *  - Swap outputs round down and swap inputs round up (always against the trader).
+ *  - LP shares are minted proportionally to reserves (`shares · reserve / totalShares`, rounded up
+ *    for deposits, down for withdrawals); the first deposit locks `MINIMUM_LIQUIDITY` shares forever.
+ *  - Both tokens must report the same `decimals()` (enforced at initialize). Decimal scaling and
+ *    A-ramping are follow-up work (SDX-013); the amplification parameter is fixed at `DEFAULT_A`.
+ *  - `liquidityDelta` is denominated in LP shares. For the first deposit, `liquidityDelta` units of
+ *    token0 are deposited together with token1 at the pool's initial price.
  */
 contract StableAMMEngine is ICurveEngine {
     using Slot0Library for Slot0;
 
-    uint256 internal constant DEFAULT_A = 100;
+    uint256 public constant DEFAULT_A = 100;
+    uint256 internal constant N_COINS = 2;
     uint256 internal constant MAX_LOOP_LIMIT = 255;
     uint256 internal constant Q128 = 1 << 128;
     uint24 internal constant MAX_FEE_PIPS = 1_000_000;
+    /// @notice LP shares permanently locked on the first deposit (first-depositor protection).
+    uint128 public constant MINIMUM_LIQUIDITY = 1000;
 
     address public immutable override poolManager;
 
@@ -62,8 +78,16 @@ contract StableAMMEngine is ICurveEngine {
             revert PoolErrors.PoolAlreadyInitialized(id);
         }
         if (key.fee >= MAX_FEE_PIPS) revert PoolErrors.InvalidFee(key.fee);
+        if (sqrtPriceX96 <= TickMathLib.MIN_SQRT_RATIO || sqrtPriceX96 >= TickMathLib.MAX_SQRT_RATIO) {
+            revert PoolErrors.PriceLimitOutOfBounds(sqrtPriceX96);
+        }
+
+        uint8 d0 = _decimals(key.currency0);
+        uint8 d1 = _decimals(key.currency1);
+        if (d0 != d1) revert PoolErrors.StableDecimalsMismatch(d0, d1);
 
         pools[id].amplificationParameter = DEFAULT_A;
+        // Tick is not meaningful for StableSwap and is kept at 0 (LVR is disabled on STABLE pools).
         pools[id].slot0 = Slot0Library.pack(sqrtPriceX96, 0, 0, key.fee, true);
         tick = 0;
     }
@@ -98,31 +122,45 @@ contract StableAMMEngine is ICurveEngine {
         }
 
         if (params.liquidityDelta > 0) {
-            uint256 amount0 = uint256(params.liquidityDelta);
-            uint160 sqrtP = pool.slot0.sqrtPriceX96();
-            uint256 amount1 = amount0;
-            if (sqrtP > 0) {
-                uint256 num = FullMathLib.mulDiv(uint256(sqrtP), uint256(sqrtP), 1 << 96);
-                amount1 = FullMathLib.mulDiv(amount0, num, 1 << 96);
-                if (amount0 > 0 && amount1 == 0) amount1 = 1;
+            uint128 shares = SafeCastLib.toUint128(uint256(params.liquidityDelta));
+            uint128 totalShares = pool.totalLiquidity;
+            uint256 amount0;
+            uint256 amount1;
+
+            if (totalShares == 0) {
+                if (shares <= MINIMUM_LIQUIDITY) {
+                    revert PoolErrors.InsufficientInitialLiquidity(shares, MINIMUM_LIQUIDITY);
+                }
+                amount0 = shares;
+                uint160 sqrtP = pool.slot0.sqrtPriceX96();
+                uint256 priceX96 = FullMathLib.mulDiv(uint256(sqrtP), uint256(sqrtP), 1 << 96);
+                amount1 = FullMathLib.mulDivRoundingUp(amount0, priceX96, 1 << 96);
+                if (amount1 == 0) revert PoolErrors.InsufficientLiquidity();
+                pool.totalLiquidity = shares;
+                // MINIMUM_LIQUIDITY shares are owned by nobody and can never be withdrawn.
+                position.liquidity = positionLiquidity + (shares - MINIMUM_LIQUIDITY);
+            } else {
+                amount0 = FullMathLib.mulDivRoundingUp(shares, pool.reserve0, totalShares);
+                amount1 = FullMathLib.mulDivRoundingUp(shares, pool.reserve1, totalShares);
+                pool.totalLiquidity = totalShares + shares;
+                position.liquidity = positionLiquidity + shares;
             }
 
             pool.reserve0 += amount0;
             pool.reserve1 += amount1;
-            pool.totalLiquidity += uint128(amount0);
-            position.liquidity = positionLiquidity + uint128(amount0);
             callerDelta = toBalanceDelta(SafeCastLib.toInt128(int256(amount0)), SafeCastLib.toInt128(int256(amount1)));
         } else if (params.liquidityDelta < 0) {
             uint256 shares = uint256(-params.liquidityDelta);
-            if (positionLiquidity < shares || pool.totalLiquidity == 0) {
+            uint128 totalShares = pool.totalLiquidity;
+            if (positionLiquidity < shares || totalShares == 0) {
                 revert PoolErrors.LiquidityOverflow();
             }
-            uint256 amount0 = FullMathLib.mulDiv(shares, pool.reserve0, pool.totalLiquidity);
-            uint256 amount1 = FullMathLib.mulDiv(shares, pool.reserve1, pool.totalLiquidity);
+            uint256 amount0 = FullMathLib.mulDiv(shares, pool.reserve0, totalShares);
+            uint256 amount1 = FullMathLib.mulDiv(shares, pool.reserve1, totalShares);
 
             pool.reserve0 -= amount0;
             pool.reserve1 -= amount1;
-            pool.totalLiquidity -= uint128(shares);
+            pool.totalLiquidity = totalShares - uint128(shares);
             position.liquidity = positionLiquidity - uint128(shares);
             callerDelta = toBalanceDelta(-SafeCastLib.toInt128(int256(amount0)), -SafeCastLib.toInt128(int256(amount1)));
         } else {
@@ -153,105 +191,71 @@ contract StableAMMEngine is ICurveEngine {
         if (params.amountSpecified == 0) revert PoolErrors.ZeroSwapAmount();
         if (fee >= MAX_FEE_PIPS) revert PoolErrors.InvalidFee(fee);
 
-        uint256 x = pool.reserve0;
-        uint256 y = pool.reserve1;
+        // Reserves oriented as (in, out).
+        (uint256 rIn, uint256 rOut) =
+            params.zeroForOne ? (pool.reserve0, pool.reserve1) : (pool.reserve1, pool.reserve0);
+        if (rIn == 0 || rOut == 0) revert PoolErrors.InsufficientLiquidity();
         uint256 A = pool.amplificationParameter;
+        uint256 D = computeD(pool.reserve0, pool.reserve1, A);
 
-        if (params.sqrtPriceLimitX96 != 0) {
-            uint160 current = pool.slot0.sqrtPriceX96();
-            if (params.zeroForOne) {
-                if (params.sqrtPriceLimitX96 >= current || params.sqrtPriceLimitX96 <= TickMathLib.MIN_SQRT_RATIO) {
-                    revert PoolErrors.PriceLimitAlreadyExceeded(current, params.sqrtPriceLimitX96);
-                }
-            } else if (
-                params.sqrtPriceLimitX96 <= current || params.sqrtPriceLimitX96 >= TickMathLib.MAX_SQRT_RATIO
-            ) {
-                revert PoolErrors.PriceLimitAlreadyExceeded(current, params.sqrtPriceLimitX96);
-            }
-        }
-
-        bool exactInput = params.amountSpecified > 0;
         uint256 amountIn;
         uint256 amountOut;
+        uint256 amountInAfterFee;
 
-        if (exactInput) {
+        if (params.amountSpecified > 0) {
             amountIn = uint256(params.amountSpecified);
-            uint256 feeAmount = FullMathLib.mulDivRoundingUp(amountIn, fee, 1e6);
-            uint256 amountInAfterFee = amountIn > feeAmount ? amountIn - feeAmount : 0;
+            uint256 feeAmount = FullMathLib.mulDivRoundingUp(amountIn, fee, MAX_FEE_PIPS);
+            if (feeAmount >= amountIn) revert PoolErrors.ZeroSwapAmount();
+            amountInAfterFee = amountIn - feeAmount;
 
-            uint256 lpFee;
-            (lpFee, protocolFeeAmount) = ProtocolFeeLib.splitFee(feeAmount, protocolFee);
-            _accrueStableFee(pool, lpFee, params.zeroForOne);
-
-            if (params.zeroForOne) {
-                uint256 newX = x + amountInAfterFee;
-                uint256 newY = computeY(newX, x, y, A);
-                amountOut = y > newY ? y - newY : 0;
-                if (amountOut == 0) revert PoolErrors.InsufficientLiquidity();
-                pool.reserve0 = newX;
-                pool.reserve1 = newY;
-                swapDelta =
-                    toBalanceDelta(SafeCastLib.toInt128(int256(amountIn)), -SafeCastLib.toInt128(int256(amountOut)));
-            } else {
-                uint256 newY = y + amountInAfterFee;
-                uint256 newX = computeY(newY, y, x, A);
-                amountOut = x > newX ? x - newX : 0;
-                if (amountOut == 0) revert PoolErrors.InsufficientLiquidity();
-                pool.reserve0 = newX;
-                pool.reserve1 = newY;
-                swapDelta =
-                    toBalanceDelta(-SafeCastLib.toInt128(int256(amountOut)), SafeCastLib.toInt128(int256(amountIn)));
-            }
+            uint256 newOut = _getY(rIn + amountInAfterFee, D, A);
+            // Round against the trader: measure from min(rOut, solved y at the CURRENT x) so integer error in D
+            // cannot be paid out, then give 1 wei less than the exact invariant solution.
+            uint256 baseOut = _getY(rIn, D, A);
+            if (baseOut > rOut) baseOut = rOut;
+            if (newOut + 1 >= baseOut) revert PoolErrors.InsufficientLiquidity();
+            amountOut = baseOut - newOut - 1;
         } else {
             amountOut = uint256(-params.amountSpecified);
-            if (params.zeroForOne) {
-                if (y < amountOut) revert PoolErrors.InsufficientLiquidity();
-                uint256 newY = y - amountOut;
-                // Given new Y, solve for X under the same invariant (axes swapped).
-                uint256 newX = _computeIndependentForDependent(newY, y, x, A);
-                if (newX <= x) revert PoolErrors.InsufficientLiquidity();
-                uint256 amountInAfterFee = newX - x;
-                amountIn = FullMathLib.mulDivRoundingUp(amountInAfterFee, 1e6, 1e6 - fee);
-                uint256 feeAmount = amountIn - amountInAfterFee;
+            if (amountOut >= rOut) revert PoolErrors.InsufficientLiquidity();
+            // Round against the trader: require 1 wei more input than the exact solution.
+            uint256 newIn = _getY(rOut - amountOut, D, A) + 1;
+            // Round against the trader: measure from min(rIn, solved x at the CURRENT y).
+            uint256 baseIn = _getY(rOut, D, A);
+            if (baseIn > rIn) baseIn = rIn;
+            if (newIn <= baseIn) revert PoolErrors.InsufficientLiquidity();
+            amountInAfterFee = newIn - baseIn;
+            amountIn = FullMathLib.mulDivRoundingUp(amountInAfterFee, MAX_FEE_PIPS, MAX_FEE_PIPS - fee);
+        }
 
-                uint256 lpFee;
-                (lpFee, protocolFeeAmount) = ProtocolFeeLib.splitFee(feeAmount, protocolFee);
-                _accrueStableFee(pool, lpFee, true);
+        {
+            uint256 lpFee;
+            (lpFee, protocolFeeAmount) = ProtocolFeeLib.splitFee(amountIn - amountInAfterFee, protocolFee);
+            _accrueStableFee(pool, lpFee, params.zeroForOne);
+        }
 
-                pool.reserve0 = x + amountInAfterFee;
-                pool.reserve1 = newY;
-                swapDelta =
-                    toBalanceDelta(SafeCastLib.toInt128(int256(amountIn)), -SafeCastLib.toInt128(int256(amountOut)));
-            } else {
-                if (x < amountOut) revert PoolErrors.InsufficientLiquidity();
-                uint256 newX = x - amountOut;
-                uint256 newY = computeY(newX, x, y, A);
-                if (newY <= y) revert PoolErrors.InsufficientLiquidity();
-                uint256 amountInAfterFee = newY - y;
-                amountIn = FullMathLib.mulDivRoundingUp(amountInAfterFee, 1e6, 1e6 - fee);
-                uint256 feeAmount = amountIn - amountInAfterFee;
+        if (params.zeroForOne) {
+            pool.reserve0 = rIn + amountInAfterFee;
+            pool.reserve1 = rOut - amountOut;
+            swapDelta = toBalanceDelta(SafeCastLib.toInt128(int256(amountIn)), -SafeCastLib.toInt128(int256(amountOut)));
+        } else {
+            pool.reserve1 = rIn + amountInAfterFee;
+            pool.reserve0 = rOut - amountOut;
+            swapDelta = toBalanceDelta(-SafeCastLib.toInt128(int256(amountOut)), SafeCastLib.toInt128(int256(amountIn)));
+        }
 
-                uint256 lpFee;
-                (lpFee, protocolFeeAmount) = ProtocolFeeLib.splitFee(feeAmount, protocolFee);
-                _accrueStableFee(pool, lpFee, false);
-
-                pool.reserve0 = newX;
-                pool.reserve1 = y + amountInAfterFee;
-                swapDelta =
-                    toBalanceDelta(-SafeCastLib.toInt128(int256(amountOut)), SafeCastLib.toInt128(int256(amountIn)));
+        // Price-limit check against the post-swap spot (reserve ratio).
+        uint160 newSqrt = _spotSqrtPriceX96(pool.reserve0, pool.reserve1);
+        if (params.sqrtPriceLimitX96 != 0) {
+            if (params.zeroForOne ? newSqrt < params.sqrtPriceLimitX96 : newSqrt > params.sqrtPriceLimitX96) {
+                revert PoolErrors.PriceLimitAlreadyExceeded(newSqrt, params.sqrtPriceLimitX96);
             }
         }
-
-        // Update spot sqrt price from reserves for limit checks on subsequent swaps
-        if (pool.reserve0 > 0 && pool.reserve1 > 0) {
-            // price1/0 ~= reserve1/reserve0; sqrtPriceX96 ~= sqrt(price) * 2^96
-            uint256 ratioX192 = FullMathLib.mulDiv(pool.reserve1, uint256(1) << 192, pool.reserve0);
-            uint160 newSqrt = _sqrtPriceX96(ratioX192);
-            pool.slot0 = pool.slot0.setSqrtPriceX96(newSqrt);
-        }
+        pool.slot0 = pool.slot0.setSqrtPriceX96(newSqrt);
     }
 
     function _accrueStableFee(StablePoolState storage pool, uint256 lpFee, bool zeroForOne) internal {
+        // totalLiquidity >= MINIMUM_LIQUIDITY whenever reserves are non-zero, so fees are never orphaned.
         if (lpFee > 0 && pool.totalLiquidity > 0) {
             uint256 delta = FullMathLib.mulDiv(lpFee, Q128, pool.totalLiquidity);
             if (zeroForOne) {
@@ -262,74 +266,93 @@ contract StableAMMEngine is ICurveEngine {
         }
     }
 
-    /// @dev Given a new dependent reserve, solve for the independent reserve under the same D.
-    function _computeIndependentForDependent(uint256 newDep, uint256 oldDep, uint256 oldInd, uint256 A)
-        internal
-        pure
-        returns (uint256)
-    {
-        // Reuse computeY with swapped coordinates: treat dep as x-like input
-        return computeY(newDep, oldDep, oldInd, A);
+    /**
+     * @dev Integer sqrt of reserve ratio in Q192 space → sqrtPriceX96 (clamped into TickMath bounds).
+     *      This is the reserve-ratio indicator reported in slot0, NOT the exact StableSwap marginal price
+     *      (which stays near 1 inside the flat region of the curve). Swaps use the invariant, not this value,
+     *      except for `sqrtPriceLimitX96` checks against the post-swap indicator.
+     */
+    function _spotSqrtPriceX96(uint256 reserve0, uint256 reserve1) internal pure returns (uint160) {
+        uint256 r;
+        if (reserve1 / reserve0 < (uint256(1) << 63)) {
+            r = _sqrt(FullMathLib.mulDiv(reserve1, uint256(1) << 192, reserve0));
+        } else {
+            // Avoid mulDiv overflow for extreme ratios: sqrt(ratio·2^128)·2^32 (lower precision, still monotone).
+            r = _sqrt(FullMathLib.mulDiv(reserve1, uint256(1) << 128, reserve0)) << 32;
+        }
+        if (r <= TickMathLib.MIN_SQRT_RATIO) return TickMathLib.MIN_SQRT_RATIO + 1;
+        if (r >= TickMathLib.MAX_SQRT_RATIO) return TickMathLib.MAX_SQRT_RATIO - 1;
+        return uint160(r);
+    }
+
+    function _sqrt(uint256 x) internal pure returns (uint256 y) {
+        if (x == 0) return 0;
+        uint256 z = (x >> 1) + 1;
+        y = x;
+        while (z < y) {
+            y = z;
+            z = (x / z + z) >> 1;
+        }
     }
 
     /**
-     * @dev Integer sqrt of reserve ratio in Q192 space → sqrtPriceX96.
-     * Reverts instead of truncating if the result does not fit in uint160.
+     * @notice StableSwap invariant D for balances (x, y) and amplification A (Curve, n = 2).
+     * @dev Reverts if either balance is zero or the iteration does not converge.
      */
-    function _sqrtPriceX96(uint256 ratioX192) internal pure returns (uint160) {
-        if (ratioX192 == 0) revert PoolErrors.PriceLimitOutOfBounds(0);
-        uint256 z = (ratioX192 + 1) / 2;
-        uint256 y = ratioX192;
-        while (z < y) {
-            y = z;
-            z = (ratioX192 / z + z) / 2;
-        }
-        if (y > type(uint160).max) revert PoolErrors.PriceLimitOutOfBounds(type(uint160).max);
-        uint160 sqrtP = uint160(y);
-        if (sqrtP <= TickMathLib.MIN_SQRT_RATIO || sqrtP >= TickMathLib.MAX_SQRT_RATIO) {
-            revert PoolErrors.PriceLimitOutOfBounds(sqrtP);
-        }
-        return sqrtP;
-    }
-
     function computeD(uint256 x, uint256 y, uint256 A) public pure returns (uint256 D) {
         uint256 S = x + y;
         if (S == 0) return 0;
+        if (x == 0 || y == 0) revert PoolErrors.InsufficientLiquidity();
 
-        uint256 prevD;
+        uint256 Ann = A * N_COINS * N_COINS;
         D = S;
-        uint256 Ann = A * 4;
-
         for (uint256 i = 0; i < MAX_LOOP_LIMIT; i++) {
             uint256 D_P = D;
-            D_P = (D_P * D) / (x * 2);
-            D_P = (D_P * D) / (y * 2);
-            prevD = D;
-            uint256 numerator = D * ((Ann * S) / 4 + D_P * 2);
-            uint256 denominator = ((Ann - 1) * D) / 4 + D_P * 3;
-            D = numerator / denominator;
+            D_P = (D_P * D) / (x * N_COINS);
+            D_P = (D_P * D) / (y * N_COINS);
+            uint256 prevD = D;
+            D = ((Ann * S + D_P * N_COINS) * D) / ((Ann - 1) * D + (N_COINS + 1) * D_P);
             if (D > prevD ? D - prevD <= 1 : prevD - D <= 1) {
                 return D;
             }
         }
+        revert PoolErrors.StableMathNotConverged();
     }
 
-    function computeY(uint256 newX, uint256 x, uint256 y, uint256 A) public pure returns (uint256 Y) {
-        uint256 D = computeD(x, y, A);
-        uint256 Ann = A * 4;
-        uint256 c = (D * D) / (newX * 2);
-        c = (c * D) / (Ann * 2);
-        uint256 b = newX + (D / Ann);
+    /**
+     * @notice Solves the other balance given a new balance `newX` and the invariant of (x, y).
+     * @dev Uses the SAME invariant as `computeD`, so computeY(x, x, y, A) == y ± 1.
+     */
+    function computeY(uint256 newX, uint256 x, uint256 y, uint256 A) public pure returns (uint256) {
+        return _getY(newX, computeD(x, y, A), A);
+    }
 
-        uint256 prevY;
+    function _getY(uint256 newX, uint256 D, uint256 A) internal pure returns (uint256 Y) {
+        if (newX == 0) revert PoolErrors.InsufficientLiquidity();
+        uint256 Ann = A * N_COINS * N_COINS;
+        uint256 c = (D * D) / (newX * N_COINS);
+        c = (c * D) / (Ann * N_COINS);
+        uint256 b = newX + D / Ann;
+
         Y = D;
         for (uint256 i = 0; i < MAX_LOOP_LIMIT; i++) {
-            prevY = Y;
+            uint256 prevY = Y;
             Y = (Y * Y + c) / (2 * Y + b - D);
             if (Y > prevY ? Y - prevY <= 1 : prevY - Y <= 1) {
                 return Y;
             }
         }
+        revert PoolErrors.StableMathNotConverged();
+    }
+
+    function _decimals(Currency currency) internal view returns (uint8) {
+        address token = Currency.unwrap(currency);
+        if (token == address(0)) return 18;
+        (bool ok, bytes memory data) = token.staticcall(abi.encodeWithSignature("decimals()"));
+        if (!ok || data.length < 32) revert PoolErrors.StableDecimalsMismatch(0, 0);
+        uint256 dec = abi.decode(data, (uint256));
+        if (dec > 255) revert PoolErrors.StableDecimalsMismatch(0, 0);
+        return uint8(dec);
     }
 
     /// @inheritdoc ICurveEngine

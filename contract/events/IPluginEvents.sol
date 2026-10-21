@@ -52,10 +52,6 @@ interface IPluginEvents {
      * @notice Emitted when LVR calibration parameters are updated for a pool.
      */
     event LVRParametersUpdated(
-        PoolId indexed poolId,
-        uint32 decayHalfLife,
-        uint24 volatilityAlpha,
-        uint24 minFeeBps,
-        uint24 maxFeeBps
+        PoolId indexed poolId, uint32 decayHalfLife, uint24 volatilityAlpha, uint24 minFeePips, uint24 maxFeePips
     );
 }

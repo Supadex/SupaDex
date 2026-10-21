@@ -43,13 +43,10 @@ contract SupaTimelock is ISupaTimelock {
     mapping(address => bool) public isCanceller;
     address public admin;
 
-    /**
-     * @dev Modifier to restrict access to admin
-     */
-    modifier onlyAdmin() {
-        if (msg.sender != admin) revert GovernanceErrors.UnauthorizedCaller();
-        _;
-    }
+    event ProposerSet(address indexed account, bool status);
+    event ExecutorSet(address indexed account, bool status);
+    event CancellerSet(address indexed account, bool status);
+    event AdminSet(address indexed previousAdmin, address indexed newAdmin);
 
     /**
      * @dev Modifier to restrict access to this timelock contract itself
@@ -245,31 +242,35 @@ contract SupaTimelock is ISupaTimelock {
     }
 
     /**
-     * @notice Admin management of proposer role
+     * @notice Proposer role change. ADR-0005: only via a scheduled + delayed self-call (`schedule` → `execute`).
      */
-    function setProposer(address account, bool status) external onlyAdmin {
+    function setProposer(address account, bool status) external onlySelf {
         isProposer[account] = status;
+        emit ProposerSet(account, status);
     }
 
     /**
-     * @notice Admin management of executor role
+     * @notice Executor role change. ADR-0005: only via a scheduled + delayed self-call.
      */
-    function setExecutor(address account, bool status) external onlyAdmin {
+    function setExecutor(address account, bool status) external onlySelf {
         isExecutor[account] = status;
+        emit ExecutorSet(account, status);
     }
 
     /**
-     * @notice Admin management of canceller role
+     * @notice Canceller role change. ADR-0005: only via a scheduled + delayed self-call.
      */
-    function setCanceller(address account, bool status) external onlyAdmin {
+    function setCanceller(address account, bool status) external onlySelf {
         isCanceller[account] = status;
+        emit CancellerSet(account, status);
     }
 
     /**
-     * @notice Transfers admin authority (e.g. to address(this) for pure self-governance)
+     * @notice Updates the informational `admin` label. ADR-0005: only via a scheduled + delayed self-call; `admin` holds no direct power.
      */
-    function setAdmin(address newAdmin) external onlyAdmin {
+    function setAdmin(address newAdmin) external onlySelf {
         if (newAdmin == address(0)) revert GovernanceErrors.ZeroAddressAdmin();
+        emit AdminSet(admin, newAdmin);
         admin = newAdmin;
     }
 }

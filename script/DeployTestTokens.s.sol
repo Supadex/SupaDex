@@ -41,11 +41,7 @@ contract DeployTestTokens is Script {
 
         for (uint256 i = 0; i < tokens.length; i++) {
             TestMintableERC20 token = new TestMintableERC20(
-                tokens[i].name,
-                tokens[i].symbol,
-                tokens[i].decimals,
-                deployer,
-                tokens[i].initialSupply
+                tokens[i].name, tokens[i].symbol, tokens[i].decimals, deployer, tokens[i].initialSupply
             );
             console2.log(string.concat(tokens[i].symbol, ":"), address(token));
         }

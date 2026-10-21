@@ -42,7 +42,9 @@ contract VaultSolvencyHandler is Test, IUnlockCallback {
     function unlockCallback(bytes calldata data) external override returns (bytes memory) {
         (uint8 action, uint256 amount) = abi.decode(data, (uint8, uint256));
         if (action == 0) {
-            // Settle + Mint Claim
+            // Sync + pay + settle + Mint Claim
+            vault.sync(currency);
+            token.mint(address(vault), amount);
             vault.settle(currency);
             vault.mint(currency, address(this), amount);
             totalMintedClaims += amount;
@@ -60,7 +62,6 @@ contract VaultSolvencyHandler is Test, IUnlockCallback {
 
     function mintClaims(uint256 amount) external {
         amount = bound(amount, 1, 1_000_000 ether);
-        token.mint(address(vault), amount);
         vault.unlock(abi.encode(uint8(0), amount));
     }
 

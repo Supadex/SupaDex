@@ -11,12 +11,20 @@ import {SafeCastLib} from "../libraries/SafeCastLib.sol";
 
 import {UUPSUpgradeable} from "solady/utils/UUPSUpgradeable.sol";
 import {ICircuitBreaker} from "../interfaces/ICircuitBreaker.sol";
-import {CircuitBreakerErrors} from "../errors/CircuitBreakerErrors.sol";
 
 /**
  * @title SupaVault
  * @notice Core singleton Vault providing physical token custody, standard ERC-6909 internal claims,
  * and flash accounting transient balance delta management.
+ * @dev Storage layout (UUPS; MUST stay append-only, verified against the 2026-10 testnet implementation):
+ *   slot 0 owner | 1 circuitBreaker | 2 isPoolManager | 3 reservesOf | 4 balanceOf | 5 allowance |
+ *   6 isOperator | 7..49 __gap (43 slots reserved for future variables).
+ * Settlement (ADR-0002): ERC-20 payments must be bracketed by `sync(currency)` → transfer → `settle`.
+ * Tokens that reach the vault outside that bracket (donations, positive rebases) are unaccounted surplus:
+ * they never affect any caller's delta and can only be swept by the owner (timelock) via `sweepSurplus`.
+ * Pause semantics (SDX-008): the vault itself is never paused, so users can always exit. The circuit
+ * breaker is enforced by the PoolManager (swaps, donations and liquidity additions are blocked;
+ * liquidity removals, fee collection and claim withdrawals keep working).
  */
 contract SupaVault is IVault, UUPSUpgradeable {
     using CurrencyLibrary for Currency;
@@ -57,6 +65,11 @@ contract SupaVault is IVault, UUPSUpgradeable {
     mapping(address => mapping(address => bool)) public override isOperator;
 
     /**
+     * @dev Reserved storage for future upgrades (SDX-014). Shrink when appending new variables.
+     */
+    uint256[43] private __gap;
+
+    /**
      * @dev Modifier ensuring caller is owner.
      */
     modifier onlyOwner() {
@@ -69,16 +82,6 @@ contract SupaVault is IVault, UUPSUpgradeable {
      */
     modifier onlyUnlocked() {
         if (!TransientStorageLib.isUnlocked()) revert VaultErrors.VaultNotUnlocked();
-        _;
-    }
-
-    /**
-     * @dev Modifier ensuring vault is not paused by circuit breaker.
-     */
-    modifier whenNotPaused() {
-        if (address(circuitBreaker) != address(0) && circuitBreaker.isVaultPaused()) {
-            revert CircuitBreakerErrors.VaultPaused();
-        }
         _;
     }
 
@@ -106,6 +109,7 @@ contract SupaVault is IVault, UUPSUpgradeable {
      */
     function setCircuitBreaker(ICircuitBreaker _circuitBreaker) external onlyOwner {
         circuitBreaker = _circuitBreaker;
+        emit CircuitBreakerSet(address(_circuitBreaker));
     }
 
     /**
@@ -113,6 +117,7 @@ contract SupaVault is IVault, UUPSUpgradeable {
      */
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert VaultErrors.Unauthorized();
+        emit OwnershipTransferred(owner, newOwner);
         owner = newOwner;
     }
 
@@ -128,12 +133,29 @@ contract SupaVault is IVault, UUPSUpgradeable {
      */
     function setPoolManager(address manager, bool approved) external onlyOwner {
         isPoolManager[manager] = approved;
+        emit PoolManagerSet(manager, approved);
+    }
+
+    /**
+     * @notice Sweeps unaccounted surplus (balance above recorded reserves) of `currency` to `to`.
+     * @dev Only callable outside an unlock so in-flight settlements can never be swept.
+     * Surplus policy (ADR-0002): donations / positive rebases belong to the protocol (timelock).
+     */
+    function sweepSurplus(Currency currency, address to) external onlyOwner returns (uint256 amount) {
+        if (TransientStorageLib.isUnlocked()) revert VaultErrors.Unauthorized();
+        if (to == address(0)) revert VaultErrors.Unauthorized();
+        uint256 balance = currency.balanceOfSelf();
+        uint256 reserves = reservesOf[currency];
+        if (balance <= reserves) revert VaultErrors.ZeroAmount();
+        amount = balance - reserves;
+        currency.transfer(to, amount);
+        emit SurplusSwept(currency, to, amount);
     }
 
     /**
      * @inheritdoc IVault
      */
-    function unlock(bytes calldata data) external override whenNotPaused returns (bytes memory result) {
+    function unlock(bytes calldata data) external override returns (bytes memory result) {
         TransientStorageLib.acquireLock();
         TransientStorageLib.setLocker(msg.sender);
         emit LockAcquired(msg.sender);
@@ -145,6 +167,7 @@ contract SupaVault is IVault, UUPSUpgradeable {
             revert VaultErrors.CurrencyNotSettled(unsettled, unsettledDelta);
         }
 
+        TransientStorageLib.clearSynced();
         TransientStorageLib.releaseLock();
         TransientStorageLib.setLocker(address(0));
         emit LockReleased(msg.sender);
@@ -167,16 +190,36 @@ contract SupaVault is IVault, UUPSUpgradeable {
     /**
      * @inheritdoc IVault
      */
-    function settle(Currency currency) external payable override onlyUnlocked whenNotPaused returns (uint256 paid) {
-        uint256 balance = currency.balanceOfSelf();
-        uint256 reserves = reservesOf[currency];
-        if (balance < reserves) {
-            revert VaultErrors.NegativeRebaseUnsupported(currency, reserves, balance);
+    function sync(Currency currency) external override onlyUnlocked {
+        if (currency.isNative()) {
+            // Native ETH is settled by msg.value; nothing to snapshot.
+            TransientStorageLib.clearSynced();
+            return;
         }
-        paid = balance - reserves;
+        uint256 balance = currency.balanceOfSelf();
+        TransientStorageLib.setSynced(currency, balance);
+        emit Sync(currency, balance);
+    }
+
+    /**
+     * @inheritdoc IVault
+     */
+    function settle(Currency currency) external payable override onlyUnlocked returns (uint256 paid) {
+        if (currency.isNative()) {
+            paid = msg.value;
+        } else {
+            if (msg.value != 0) revert VaultErrors.NonZeroNativeValue();
+            (bool isSynced, Currency synced, uint256 syncedBalance) = TransientStorageLib.getSynced();
+            if (!isSynced || Currency.unwrap(synced) != Currency.unwrap(currency)) {
+                revert VaultErrors.CurrencyNotSynced(currency);
+            }
+            // Credit exactly what arrived since `sync`; donations made outside the bracket are surplus.
+            paid = currency.balanceOfSelf() - syncedBalance;
+            TransientStorageLib.clearSynced();
+        }
         if (paid == 0) revert VaultErrors.ZeroAmount();
 
-        reservesOf[currency] = balance;
+        reservesOf[currency] += paid;
         TransientStorageLib.applyDelta(msg.sender, currency, SafeCastLib.toInt256(paid));
         emit Settle(currency, msg.sender, paid);
     }
@@ -184,7 +227,7 @@ contract SupaVault is IVault, UUPSUpgradeable {
     /**
      * @inheritdoc IVault
      */
-    function take(Currency currency, address to, uint256 amount) external override onlyUnlocked whenNotPaused {
+    function take(Currency currency, address to, uint256 amount) external override onlyUnlocked {
         if (amount == 0) revert VaultErrors.ZeroAmount();
         uint256 reserves = reservesOf[currency];
         if (reserves < amount) {
@@ -200,7 +243,7 @@ contract SupaVault is IVault, UUPSUpgradeable {
     /**
      * @inheritdoc IVault
      */
-    function mint(Currency currency, address to, uint256 amount) external override onlyUnlocked whenNotPaused {
+    function mint(Currency currency, address to, uint256 amount) external override onlyUnlocked {
         if (amount == 0) revert VaultErrors.ZeroAmount();
         TransientStorageLib.applyDelta(msg.sender, currency, -SafeCastLib.toInt256(amount));
 
@@ -213,7 +256,7 @@ contract SupaVault is IVault, UUPSUpgradeable {
     /**
      * @inheritdoc IVault
      */
-    function burn(Currency currency, uint256 amount) external override onlyUnlocked whenNotPaused {
+    function burn(Currency currency, uint256 amount) external override onlyUnlocked {
         if (amount == 0) revert VaultErrors.ZeroAmount();
         uint256 id = currency.toId();
         uint256 currentBal = balanceOf[msg.sender][id];
@@ -231,9 +274,8 @@ contract SupaVault is IVault, UUPSUpgradeable {
      * @inheritdoc IVault
      */
     function accountDelta(address account, Currency currency, int256 delta) external override onlyUnlocked {
-        if (!isPoolManager[msg.sender] && msg.sender != owner) {
-            revert VaultErrors.Unauthorized();
-        }
+        // ADR-0005: only authorized pool managers may move deltas (no owner self-credit path).
+        if (!isPoolManager[msg.sender]) revert VaultErrors.Unauthorized();
         TransientStorageLib.applyDelta(account, currency, delta);
     }
 

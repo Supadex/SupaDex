@@ -22,11 +22,29 @@ import {CircuitBreakerErrors} from "../errors/CircuitBreakerErrors.sol";
  * @title SupaPoolManager
  * @notice Core singleton AMM contract coordinating multi-curve pool state, flash accounting,
  * and plugin lifecycles.
+ * @dev NOT upgradeable (plain contract; engines are immutables). Upgrading means redeploying and migrating.
+ * Circuit breaker = withdraw-only mode (SDX-008): when the vault, pool or curve is paused, swaps, donations
+ * and liquidity additions revert, while liquidity removals and fee collection (liquidityDelta <= 0) stay open.
+ * BIN_AMM pool creation is disabled (ADR-0004, `binAmmEnabled() == false`) until a multi-bin traversal engine exists.
  */
 contract SupaPoolManager is IPoolManager {
     using Slot0Library for Slot0;
 
     uint24 internal constant MAX_FEE_PIPS = 1_000_000;
+
+    /**
+     * @notice ADR-0004: BinAMM is a single frozen-price bin; new BIN_AMM pools are disabled until multi-bin lands.
+     * @dev `virtual` only so the test suite can keep exercising BinAMM engine accounting through a test-only
+     * subclass (test/helpers/SecurityTestSetup.sol). The production contract always returns false.
+     */
+    function binAmmEnabled() public pure virtual returns (bool) {
+        return false;
+    }
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event CircuitBreakerSet(address indexed circuitBreaker);
+    event PluginWhitelistSet(address indexed whitelist);
+    event ProtocolFeeControllerSet(address indexed controller);
 
     address public owner;
     ICircuitBreaker public circuitBreaker;
@@ -41,6 +59,8 @@ contract SupaPoolManager is IPoolManager {
     mapping(PoolId => Slot0) internal poolSlot0;
     mapping(PoolId => uint128) internal poolLiquidity;
     mapping(Currency => uint256) public override protocolFeesAccrued;
+    /// @notice Plugin permission bitmask cached at initialize; plugins cannot change it afterwards.
+    mapping(PoolId => uint32) public pluginPermissions;
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert VaultErrors.Unauthorized();
@@ -76,21 +96,25 @@ contract SupaPoolManager is IPoolManager {
 
     function setCircuitBreaker(ICircuitBreaker _circuitBreaker) external onlyOwner {
         circuitBreaker = _circuitBreaker;
+        emit CircuitBreakerSet(address(_circuitBreaker));
     }
 
     function setPluginWhitelist(IPluginWhitelist _whitelist) external onlyOwner {
         // Never allow disabling the whitelist once configured.
         if (address(_whitelist) == address(0)) revert PoolErrors.PluginWhitelistRequired();
         pluginWhitelist = _whitelist;
+        emit PluginWhitelistSet(address(_whitelist));
     }
 
     function setProtocolFeeController(address controller) external onlyOwner {
         if (controller == address(0)) revert VaultErrors.Unauthorized();
         protocolFeeController = controller;
+        emit ProtocolFeeControllerSet(controller);
     }
 
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert VaultErrors.Unauthorized();
+        emit OwnershipTransferred(owner, newOwner);
         owner = newOwner;
     }
 
@@ -111,6 +135,10 @@ contract SupaPoolManager is IPoolManager {
 
     function _abs128(int128 x) internal pure returns (uint256) {
         return uint256(uint128(x < 0 ? -x : x));
+    }
+
+    function _isPluginAllowed(address plugin) internal view returns (bool) {
+        return address(pluginWhitelist) != address(0) && pluginWhitelist.isPluginWhitelisted(plugin);
     }
 
     function _requirePluginAllowed(address plugin) internal view {
@@ -170,7 +198,11 @@ contract SupaPoolManager is IPoolManager {
     }
 
     /// @inheritdoc IPoolManager
-    function initialize(PoolKey memory key, uint160 sqrtPriceX96, bytes calldata /* hookData */ )
+    function initialize(
+        PoolKey memory key,
+        uint160 sqrtPriceX96,
+        bytes calldata /* hookData */
+    )
         external
         override
         returns (int24 tick)
@@ -180,6 +212,9 @@ contract SupaPoolManager is IPoolManager {
         }
         if (key.tickSpacing <= 0) revert PoolErrors.InvalidTickSpacing(key.tickSpacing);
         if (key.fee >= MAX_FEE_PIPS) revert PoolErrors.InvalidFee(key.fee);
+        if (key.curveType == CurveType.BIN_AMM && !binAmmEnabled()) {
+            revert PoolErrors.CurveDisabled(uint8(CurveType.BIN_AMM));
+        }
 
         _requirePluginAllowed(key.plugin);
 
@@ -191,7 +226,10 @@ contract SupaPoolManager is IPoolManager {
         PoolId id = key.toId();
         if (poolSlot0[id].isInitialized()) revert PoolErrors.PoolAlreadyInitialized(id);
 
-        PluginDispatcher.dispatchBeforeInitialize(key.plugin, msg.sender, key, sqrtPriceX96);
+        uint32 permissions = PluginDispatcher.readPermissions(key.plugin);
+        pluginPermissions[id] = permissions;
+
+        PluginDispatcher.dispatchBeforeInitialize(key.plugin, permissions, msg.sender, key, sqrtPriceX96);
 
         ICurveEngine engine = getCurveEngine(key.curveType);
         tick = engine.initialize(key, sqrtPriceX96);
@@ -201,7 +239,7 @@ contract SupaPoolManager is IPoolManager {
 
         emit Initialize(id, key.currency0, key.currency1, key.fee, key.tickSpacing, key.plugin, sqrtPriceX96, tick);
 
-        PluginDispatcher.dispatchAfterInitialize(key.plugin, msg.sender, key, sqrtPriceX96, tick);
+        PluginDispatcher.dispatchAfterInitialize(key.plugin, permissions, msg.sender, key, sqrtPriceX96, tick);
     }
 
     /// @inheritdoc IPoolManager
@@ -212,12 +250,19 @@ contract SupaPoolManager is IPoolManager {
         returns (BalanceDelta callerDelta, BalanceDelta feesAccrued)
     {
         PoolId id = key.toId();
-        _checkCircuitBreaker(id, key.curveType);
+        // Withdraw-only pause: removals / fee pokes (liquidityDelta <= 0) are always allowed.
+        if (params.liquidityDelta > 0) _checkCircuitBreaker(id, key.curveType);
         if (!poolSlot0[id].isInitialized()) revert PoolErrors.PoolNotInitialized(id);
-        // Delisting must disable hooks on already-initialized pools.
-        _requirePluginAllowed(key.plugin);
+        uint32 permissions = pluginPermissions[id];
+        // Delisting disables the plugin on already-initialized pools. APUS-SUPADEX-011: instead of trapping LP
+        // principal, removals / fee pokes still go through with ALL hooks skipped; only adds revert.
+        if (params.liquidityDelta > 0) {
+            _requirePluginAllowed(key.plugin);
+        } else if (!_isPluginAllowed(key.plugin)) {
+            permissions = 0;
+        }
 
-        PluginDispatcher.dispatchBeforeModifyLiquidity(key.plugin, msg.sender, key, params, hookData);
+        PluginDispatcher.dispatchBeforeModifyLiquidity(key.plugin, permissions, msg.sender, key, params, hookData);
 
         ICurveEngine engine = getCurveEngine(key.curveType);
         (callerDelta, feesAccrued) = engine.modifyLiquidity(key, params, msg.sender);
@@ -227,7 +272,7 @@ contract SupaPoolManager is IPoolManager {
         poolLiquidity[id] = engine.getLiquidity(id);
 
         (BalanceDelta hookDelta, BalanceDelta feesHookDelta) = PluginDispatcher.dispatchAfterModifyLiquidity(
-            key.plugin, msg.sender, key, params, callerDelta, feesAccrued, hookData
+            key.plugin, permissions, msg.sender, key, params, callerDelta, feesAccrued, hookData
         );
 
         if (BalanceDelta.unwrap(hookDelta) != 0) {
@@ -241,10 +286,7 @@ contract SupaPoolManager is IPoolManager {
             _validateFeesHookDelta(key.plugin, feesHookDelta.amount1(), feesAccrued.amount1());
             feesAccrued = feesAccrued.sub(feesHookDelta);
             _redistributeConfiscatedFees(
-                key,
-                engine,
-                uint256(uint128(feesHookDelta.amount0())),
-                uint256(uint128(feesHookDelta.amount1()))
+                key, engine, uint256(uint128(feesHookDelta.amount0())), uint256(uint128(feesHookDelta.amount1()))
             );
         }
 
@@ -274,7 +316,8 @@ contract SupaPoolManager is IPoolManager {
         // Delisting must disable hooks on already-initialized pools.
         _requirePluginAllowed(key.plugin);
 
-        uint24 fee = PluginDispatcher.dispatchBeforeSwap(key.plugin, msg.sender, key, params, hookData);
+        uint24 fee =
+            PluginDispatcher.dispatchBeforeSwap(key.plugin, pluginPermissions[id], msg.sender, key, params, hookData);
         if (fee == 0) fee = key.fee;
         // 100% fee (1e6) bricks swaps in engines; reject equality as well as overflow.
         if (fee >= MAX_FEE_PIPS) revert PoolErrors.InvalidFee(fee);
@@ -320,8 +363,9 @@ contract SupaPoolManager is IPoolManager {
         BalanceDelta swapDelta,
         bytes calldata hookData
     ) internal returns (BalanceDelta) {
-        int128 hookDeltaSpecified =
-            PluginDispatcher.dispatchAfterSwap(key.plugin, msg.sender, key, params, swapDelta, hookData);
+        int128 hookDeltaSpecified = PluginDispatcher.dispatchAfterSwap(
+            key.plugin, pluginPermissions[key.toId()], msg.sender, key, params, swapDelta, hookData
+        );
         if (hookDeltaSpecified == 0) return swapDelta;
 
         int128 referenceAmount = params.zeroForOne ? swapDelta.amount0() : swapDelta.amount1();
@@ -380,7 +424,9 @@ contract SupaPoolManager is IPoolManager {
         // Delisting must disable donate hooks on already-initialized pools.
         _requirePluginAllowed(key.plugin);
 
-        PluginDispatcher.dispatchBeforeDonate(key.plugin, msg.sender, key, amount0, amount1, hookData);
+        PluginDispatcher.dispatchBeforeDonate(
+            key.plugin, pluginPermissions[id], msg.sender, key, amount0, amount1, hookData
+        );
 
         if (amount0 != 0) {
             vault.accountDelta(msg.sender, key.currency0, -SafeCastLib.toInt256(amount0));
@@ -397,7 +443,9 @@ contract SupaPoolManager is IPoolManager {
         );
         emit Donate(id, msg.sender, amount0, amount1);
 
-        PluginDispatcher.dispatchAfterDonate(key.plugin, msg.sender, key, amount0, amount1, hookData);
+        PluginDispatcher.dispatchAfterDonate(
+            key.plugin, pluginPermissions[id], msg.sender, key, amount0, amount1, hookData
+        );
     }
 
     /// @inheritdoc IPoolManager

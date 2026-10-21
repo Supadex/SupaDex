@@ -17,6 +17,9 @@ import {ProtocolFeeLib} from "../../libraries/ProtocolFeeLib.sol";
 /**
  * @title BinAMMEngine
  * @notice Discretized Liquidity AMM with per-bin fee growth accrual to LP positions.
+ * @dev LIMITATION (ADR-0004): only ONE active bin exists and its price never moves (no bin traversal), so LPs
+ * would be fully exposed to stale-price arbitrage. `SupaPoolManager` therefore refuses to create BIN_AMM pools
+ * (`BIN_AMM_ENABLED = false`). Do not enable until a multi-bin engine has its own ADR, tests and review.
  */
 contract BinAMMEngine is ICurveEngine {
     using Slot0Library for Slot0;
@@ -79,7 +82,8 @@ contract BinAMMEngine is ICurveEngine {
         pools[id].activeBinId = binId;
         pools[id].binStep = binStep;
         pools[id].activePriceX128 = priceX128;
-        int24 binTick = int24(uint24(binId));
+        // Tick is the signed offset from the center bin (the center bin id 2^23 does not fit in int24).
+        int24 binTick = int24(int256(uint256(binId)) - int256(uint256(BinMathLib.CENTER_BIN_ID)));
         pools[id].slot0 = Slot0Library.pack(sqrtPriceX96, binTick, 0, key.fee, true);
         tick = binTick;
     }
@@ -109,27 +113,34 @@ contract BinAMMEngine is ICurveEngine {
         uint256 fees1;
         if (positionLiquidity > 0) {
             unchecked {
-                fees0 = FullMathLib.mulDiv(
-                    positionLiquidity, bin.feeGrowth0X128 - position.feeGrowthInside0LastX128, Q128
-                );
-                fees1 = FullMathLib.mulDiv(
-                    positionLiquidity, bin.feeGrowth1X128 - position.feeGrowthInside1LastX128, Q128
-                );
+                fees0 =
+                    FullMathLib.mulDiv(positionLiquidity, bin.feeGrowth0X128 - position.feeGrowthInside0LastX128, Q128);
+                fees1 =
+                    FullMathLib.mulDiv(positionLiquidity, bin.feeGrowth1X128 - position.feeGrowthInside1LastX128, Q128);
             }
         }
 
         if (params.liquidityDelta > 0) {
-            uint256 amount0 = uint256(params.liquidityDelta);
-            uint256 amount1 = (amount0 * priceX128) >> BinMathLib.SCALE_OFFSET;
-            if (amount0 > 0 && amount1 == 0 && priceX128 > 0) amount1 = 1;
+            // APUS-SUPADEX-012: liquidityDelta is a SHARE amount. Existing bins charge a proportional slice of
+            // current reserves (rounded up, against the depositor) so add→remove can never profit; the first
+            // deposit seeds amount0 = shares and amount1 = ceil(shares · price).
+            uint256 shares = uint256(params.liquidityDelta);
+            uint256 amount0;
+            uint256 amount1;
+            uint256 total = bin.totalLiquidity;
+            if (total == 0) {
+                amount0 = shares;
+                amount1 = FullMathLib.mulDivRoundingUp(shares, priceX128, BinMathLib.SCALE);
+            } else {
+                amount0 = FullMathLib.mulDivRoundingUp(shares, bin.reserve0, total);
+                amount1 = FullMathLib.mulDivRoundingUp(shares, bin.reserve1, total);
+            }
 
-            bin.reserve0 += uint128(amount0);
-            bin.reserve1 += uint128(amount1);
-            bin.totalLiquidity += uint128(amount0);
-            position.liquidity = positionLiquidity + uint128(amount0);
-            callerDelta = toBalanceDelta(
-                SafeCastLib.toInt128(int256(amount0)), SafeCastLib.toInt128(int256(amount1))
-            );
+            bin.reserve0 += SafeCastLib.toUint128(amount0);
+            bin.reserve1 += SafeCastLib.toUint128(amount1);
+            bin.totalLiquidity += SafeCastLib.toUint128(shares);
+            position.liquidity = positionLiquidity + SafeCastLib.toUint128(shares);
+            callerDelta = toBalanceDelta(SafeCastLib.toInt128(int256(amount0)), SafeCastLib.toInt128(int256(amount1)));
         } else if (params.liquidityDelta < 0) {
             uint256 shares = uint256(-params.liquidityDelta);
             if (positionLiquidity < shares || bin.totalLiquidity == 0) {
@@ -143,9 +154,7 @@ contract BinAMMEngine is ICurveEngine {
             bin.reserve1 -= uint128(amount1);
             bin.totalLiquidity -= uint128(shares);
             position.liquidity = positionLiquidity - uint128(shares);
-            callerDelta = toBalanceDelta(
-                -SafeCastLib.toInt128(int256(amount0)), -SafeCastLib.toInt128(int256(amount1))
-            );
+            callerDelta = toBalanceDelta(-SafeCastLib.toInt128(int256(amount0)), -SafeCastLib.toInt128(int256(amount1)));
         } else {
             callerDelta = toBalanceDelta(0, 0);
         }
@@ -239,7 +248,9 @@ contract BinAMMEngine is ICurveEngine {
         bool checkLiquidity
     ) internal returns (BalanceDelta) {
         if (zeroForOne) {
-            if (checkLiquidity && activeBin.reserve1 < amountOut) revert PoolErrors.InsufficientLiquidity();
+            if (checkLiquidity && activeBin.reserve1 < amountOut) {
+                revert PoolErrors.InsufficientLiquidity();
+            }
             activeBin.reserve0 += uint128(amountInAfterFee);
             activeBin.reserve1 -= uint128(amountOut);
             return toBalanceDelta(SafeCastLib.toInt128(int256(amountIn)), -SafeCastLib.toInt128(int256(amountOut)));

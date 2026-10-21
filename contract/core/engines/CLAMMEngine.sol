@@ -101,10 +101,10 @@ contract CLAMMEngine is ICurveEngine {
                 feeGrowthInside0X128 = feeGrowthGlobal0X128 - feeGrowthBelow0 - upper.feeGrowthOutside0X128;
                 feeGrowthInside1X128 = feeGrowthGlobal1X128 - feeGrowthBelow1 - upper.feeGrowthOutside1X128;
             } else {
-                feeGrowthInside0X128 = feeGrowthGlobal0X128 - feeGrowthBelow0
-                    - (feeGrowthGlobal0X128 - upper.feeGrowthOutside0X128);
-                feeGrowthInside1X128 = feeGrowthGlobal1X128 - feeGrowthBelow1
-                    - (feeGrowthGlobal1X128 - upper.feeGrowthOutside1X128);
+                feeGrowthInside0X128 =
+                    feeGrowthGlobal0X128 - feeGrowthBelow0 - (feeGrowthGlobal0X128 - upper.feeGrowthOutside0X128);
+                feeGrowthInside1X128 =
+                    feeGrowthGlobal1X128 - feeGrowthBelow1 - (feeGrowthGlobal1X128 - upper.feeGrowthOutside1X128);
             }
         }
     }
@@ -222,13 +222,11 @@ contract CLAMMEngine is ICurveEngine {
                 key.tickSpacing
             );
 
-            (amount0, amount1) = _computeModifyAmounts(
-                slot0.sqrtPriceX96(), currentTick, params.tickLower, params.tickUpper, delta128
-            );
+            (amount0, amount1) =
+                _computeModifyAmounts(slot0.sqrtPriceX96(), currentTick, params.tickLower, params.tickUpper, delta128);
 
             if (currentTick >= params.tickLower && currentTick < params.tickUpper) {
-                pool.liquidity =
-                    delta128 < 0 ? pool.liquidity - uint128(-delta128) : pool.liquidity + uint128(delta128);
+                pool.liquidity = delta128 < 0 ? pool.liquidity - uint128(-delta128) : pool.liquidity + uint128(delta128);
             }
 
             if (delta128 < 0) {
@@ -262,14 +260,10 @@ contract CLAMMEngine is ICurveEngine {
 
         int128 d0 = params.liquidityDelta > 0
             ? SafeCastLib.toInt128(SafeCastLib.toInt256(amount0))
-            : params.liquidityDelta < 0
-                ? -SafeCastLib.toInt128(SafeCastLib.toInt256(amount0))
-                : int128(0);
+            : params.liquidityDelta < 0 ? -SafeCastLib.toInt128(SafeCastLib.toInt256(amount0)) : int128(0);
         int128 d1 = params.liquidityDelta > 0
             ? SafeCastLib.toInt128(SafeCastLib.toInt256(amount1))
-            : params.liquidityDelta < 0
-                ? -SafeCastLib.toInt128(SafeCastLib.toInt256(amount1))
-                : int128(0);
+            : params.liquidityDelta < 0 ? -SafeCastLib.toInt128(SafeCastLib.toInt256(amount1)) : int128(0);
 
         callerDelta = toBalanceDelta(d0, d1);
         feesAccrued = toBalanceDelta(
@@ -315,8 +309,7 @@ contract CLAMMEngine is ICurveEngine {
         // 0 means no limit (periphery default); otherwise enforce against current price.
         uint160 sqrtPriceLimitX96 = params.sqrtPriceLimitX96;
         if (sqrtPriceLimitX96 == 0) {
-            sqrtPriceLimitX96 =
-                params.zeroForOne ? TickMathLib.MIN_SQRT_RATIO + 1 : TickMathLib.MAX_SQRT_RATIO - 1;
+            sqrtPriceLimitX96 = params.zeroForOne ? TickMathLib.MIN_SQRT_RATIO + 1 : TickMathLib.MAX_SQRT_RATIO - 1;
         } else if (params.zeroForOne) {
             if (sqrtPriceLimitX96 >= state.sqrtPriceX96 || sqrtPriceLimitX96 <= TickMathLib.MIN_SQRT_RATIO) {
                 revert PoolErrors.PriceLimitAlreadyExceeded(state.sqrtPriceX96, sqrtPriceLimitX96);
@@ -325,13 +318,11 @@ contract CLAMMEngine is ICurveEngine {
             revert PoolErrors.PriceLimitAlreadyExceeded(state.sqrtPriceX96, sqrtPriceLimitX96);
         }
 
-        while (
-            state.amountSpecifiedRemaining > 0 && state.liquidity > 0
-                && state.sqrtPriceX96 != sqrtPriceLimitX96
-        ) {
-            (int24 nextTick, bool initialized) = pool.tickBitmap.nextInitializedTickWithinOneWord(
-                state.currentTick, key.tickSpacing, params.zeroForOne
-            );
+        // SDX-004: keep stepping through zero-liquidity ranges (gaps) to the next initialized tick, as in
+        // Uniswap v3/v4. A zero-liquidity step moves the price to the step target with zero amounts.
+        while (state.amountSpecifiedRemaining > 0 && state.sqrtPriceX96 != sqrtPriceLimitX96) {
+            (int24 nextTick, bool initialized) =
+                pool.tickBitmap.nextInitializedTickWithinOneWord(state.currentTick, key.tickSpacing, params.zeroForOne);
 
             if (nextTick < TickMathLib.MIN_TICK) nextTick = TickMathLib.MIN_TICK;
             if (nextTick > TickMathLib.MAX_TICK) nextTick = TickMathLib.MAX_TICK;
@@ -344,16 +335,15 @@ contract CLAMMEngine is ICurveEngine {
                 sqrtPriceTargetX96 = sqrtPriceLimitX96;
             }
 
-            (uint160 sqrtPriceAfterStepX96, uint256 amountInStep, uint256 amountOutStep, uint256 feeAmountStep) =
-                computeSwapStep(
-                    state.sqrtPriceX96,
-                    sqrtPriceTargetX96,
-                    state.liquidity,
-                    state.amountSpecifiedRemaining,
-                    fee,
-                    params.zeroForOne,
-                    state.exactInput
-                );
+            (uint160 sqrtPriceAfterStepX96, uint256 amountInStep, uint256 amountOutStep, uint256 feeAmountStep) = computeSwapStep(
+                state.sqrtPriceX96,
+                sqrtPriceTargetX96,
+                state.liquidity,
+                state.amountSpecifiedRemaining,
+                fee,
+                params.zeroForOne,
+                state.exactInput
+            );
 
             if (state.exactInput) {
                 state.amountSpecifiedRemaining -= (amountInStep + feeAmountStep);
@@ -385,10 +375,8 @@ contract CLAMMEngine is ICurveEngine {
                     TickInfo storage tickInfo = pool.ticks[nextTick];
                     // Flip fee growth outside on cross (unchecked wraparound)
                     unchecked {
-                        tickInfo.feeGrowthOutside0X128 =
-                            state.feeGrowthGlobal0X128 - tickInfo.feeGrowthOutside0X128;
-                        tickInfo.feeGrowthOutside1X128 =
-                            state.feeGrowthGlobal1X128 - tickInfo.feeGrowthOutside1X128;
+                        tickInfo.feeGrowthOutside0X128 = state.feeGrowthGlobal0X128 - tickInfo.feeGrowthOutside0X128;
+                        tickInfo.feeGrowthOutside1X128 = state.feeGrowthGlobal1X128 - tickInfo.feeGrowthOutside1X128;
                     }
 
                     int128 net = tickInfo.liquidityNet;

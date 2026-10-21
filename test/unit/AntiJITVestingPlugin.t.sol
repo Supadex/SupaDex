@@ -51,7 +51,8 @@ contract AntiJITVestingPluginTest is Test {
         assertEq(liq, 10_000);
     }
 
-    function test_weightedAverageDepositBlockOnTopUp() public {
+    /// APUS-SUPADEX-014: a top-up restarts the residency clock (no liquidity-weighted averaging).
+    function test_topUpResetsDepositBlock() public {
         uint32 start = uint32(block.number);
         plugin.beforeModifyLiquidity(
             address(0xA),
@@ -74,7 +75,7 @@ contract AntiJITVestingPluginTest is Test {
 
         bytes32 posKey = keccak256(abi.encodePacked(address(0xA), int24(-120), int24(120), bytes32(0)));
         (uint32 lastBlock,, uint128 liq) = plugin.residencies(key.toId(), posKey);
-        assertEq(lastBlock, start + 5);
+        assertEq(lastBlock, start + 10);
         assertEq(liq, 2000);
     }
 
@@ -209,18 +210,14 @@ contract AntiJITVestingPluginTest is Test {
         plugin.beforeModifyLiquidity(
             address(0xA),
             key,
-            IPoolManager.ModifyLiquidityParams({
-                tickLower: -120, tickUpper: 120, liquidityDelta: 0, salt: bytes32(0)
-            }),
+            IPoolManager.ModifyLiquidityParams({tickLower: -120, tickUpper: 120, liquidityDelta: 0, salt: bytes32(0)}),
             ""
         );
 
         (,, BalanceDelta feesHook) = plugin.afterModifyLiquidity(
             address(0xA),
             key,
-            IPoolManager.ModifyLiquidityParams({
-                tickLower: -120, tickUpper: 120, liquidityDelta: 0, salt: bytes32(0)
-            }),
+            IPoolManager.ModifyLiquidityParams({tickLower: -120, tickUpper: 120, liquidityDelta: 0, salt: bytes32(0)}),
             toBalanceDelta(0, 0),
             toBalanceDelta(200, 0),
             ""
