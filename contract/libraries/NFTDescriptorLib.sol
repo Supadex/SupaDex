@@ -47,9 +47,8 @@ library NFTDescriptorLib {
 
         string memory image = string.concat("data:image/svg+xml;base64,", Base64.encode(bytes(svg)));
 
-        string memory name_ = string.concat(
-            "SupaDex ", curveLabel, " - ", symbol0, "/", symbol1, " #", tokenId.toString()
-        );
+        string memory name_ =
+            string.concat("SupaDex ", curveLabel, " - ", symbol0, "/", symbol1, " #", tokenId.toString());
         string memory description = string.concat(
             "SupaDex liquidity position NFT (",
             curveLabel,

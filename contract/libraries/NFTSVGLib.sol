@@ -34,19 +34,19 @@ library NFTSVGLib {
 
         return string.concat(
             '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">',
-            '<defs>',
+            "<defs>",
             '<radialGradient id="gBg" cx="38%" cy="28%" r="78%">',
             '<stop offset="0%" stop-color="#16181D"/>',
             '<stop offset="55%" stop-color="#0C0D10"/>',
             '<stop offset="100%" stop-color="#08090B"/>',
-            '</radialGradient>',
+            "</radialGradient>",
             '<linearGradient id="gRing" x1="0" y1="0" x2="1" y2="1">',
             '<stop offset="0%" stop-color="#E8EAED" stop-opacity="0.92"/>',
             '<stop offset="100%" stop-color="#94A3B8" stop-opacity="0.35"/>',
-            '</linearGradient>',
+            "</linearGradient>",
             '<filter id="glow"><feGaussianBlur stdDeviation="2.2" result="b"/>',
             '<feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>',
-            '</defs>',
+            "</defs>",
             '<rect width="512" height="512" fill="url(#gBg)"/>',
             // hairline frame
             '<rect x="18" y="18" width="476" height="476" rx="28" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>',
@@ -68,31 +68,31 @@ library NFTSVGLib {
             '<text x="44" y="86" fill="#64748B" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" letter-spacing="1.5">POSITION LATTICE</text>',
             '<text x="468" y="64" text-anchor="end" fill="#94A3B8" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12">#',
             p.tokenId.toString(),
-            '</text>',
+            "</text>",
             // pair
             '<text x="256" y="400" text-anchor="middle" fill="#F8FAFC" font-family="ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="28" font-weight="700">',
             _escape(p.symbol0),
-            ' / ',
+            " / ",
             _escape(p.symbol1),
-            '</text>',
+            "</text>",
             // badges
             '<rect x="118" y="420" width="110" height="28" rx="8" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.08)"/>',
             '<text x="173" y="439" text-anchor="middle" fill="',
             accent,
             '" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" font-weight="600">',
             p.curveLabel,
-            '</text>',
+            "</text>",
             '<rect x="240" y="420" width="72" height="28" rx="8" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.08)"/>',
             '<text x="276" y="439" text-anchor="middle" fill="#CBD5E1" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" font-weight="600">',
             p.feeLabel,
-            '</text>',
+            "</text>",
             '<rect x="324" y="420" width="70" height="28" rx="8" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.08)"/>',
             '<text x="359" y="439" text-anchor="middle" fill="#94A3B8" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10">LP NFT</text>',
             // footer ticks
             '<text x="256" y="472" text-anchor="middle" fill="#475569" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10">',
             _tickLabel(p.tickLower, p.tickUpper, p.curveType),
-            '</text>',
-            '</svg>'
+            "</text>",
+            "</svg>"
         );
     }
 
@@ -115,7 +115,7 @@ library NFTSVGLib {
                 '<rect x="18" y="18" width="14" height="14" rx="2" fill="',
                 accent,
                 '" fill-opacity="0.35"/>',
-                '</g>'
+                "</g>"
             );
         }
         if (curveType == 2) {
@@ -126,7 +126,7 @@ library NFTSVGLib {
                 '" stroke-width="1.5" opacity="0.95">',
                 '<ellipse cx="14" cy="14" rx="16" ry="9"/>',
                 '<ellipse cx="14" cy="14" rx="9" ry="16"/>',
-                '</g>'
+                "</g>"
             );
         }
         // CLAMM chevron / concentrated wedge
@@ -136,7 +136,7 @@ library NFTSVGLib {
             '" stroke-width="1.6" opacity="0.95">',
             '<path d="M4 28 L18 4 L32 28"/>',
             '<path d="M10 28 L18 14 L26 28" opacity="0.55"/>',
-            '</g>'
+            "</g>"
         );
     }
 
@@ -167,11 +167,7 @@ library NFTSVGLib {
         spanDeg = mapped;
     }
 
-    function _rangePath(uint256 startDeg, uint256 spanDeg, string memory accent)
-        private
-        pure
-        returns (string memory)
-    {
+    function _rangePath(uint256 startDeg, uint256 spanDeg, string memory accent) private pure returns (string memory) {
         // Approximate arc with stroke-dasharray on circle (C ≈ 804)
         uint256 circ = 804;
         uint256 dash = (spanDeg * circ) / 360;
@@ -183,7 +179,7 @@ library NFTSVGLib {
             'stroke-linecap="round" fill="none" filter="url(#glow)" ',
             'stroke-dasharray="',
             dash.toString(),
-            ' ',
+            " ",
             gap.toString(),
             '" transform="rotate(',
             rot.toString(),
@@ -194,7 +190,7 @@ library NFTSVGLib {
             'stroke-linecap="round" fill="none" ',
             'stroke-dasharray="',
             dash.toString(),
-            ' ',
+            " ",
             gap.toString(),
             '" transform="rotate(',
             rot.toString(),
@@ -202,11 +198,7 @@ library NFTSVGLib {
         );
     }
 
-    function _constellation(uint256 tokenId, address c0, address c1)
-        private
-        pure
-        returns (string memory)
-    {
+    function _constellation(uint256 tokenId, address c0, address c1) private pure returns (string memory) {
         bytes32 seed = keccak256(abi.encodePacked(tokenId, c0, c1));
         string memory out;
         // 7 deterministic stars
@@ -233,11 +225,7 @@ library NFTSVGLib {
         return out;
     }
 
-    function _tickLabel(int24 tickLower, int24 tickUpper, uint8 curveType)
-        private
-        pure
-        returns (string memory)
-    {
+    function _tickLabel(int24 tickLower, int24 tickUpper, uint8 curveType) private pure returns (string memory) {
         if (curveType == 1) {
             return string.concat("BIN ", _int24ToString(tickLower));
         }

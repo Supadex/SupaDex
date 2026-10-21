@@ -116,7 +116,7 @@ contract PositionNFTHandler is Test {
             recipient: actor,
             deadline: block.timestamp + 100,
             hookData: "",
-        payWithClaims: false
+            payWithClaims: false
         });
 
         (uint256 tokenId, uint128 liq,,) = posManager.mint(params);
@@ -149,7 +149,7 @@ contract PositionNFTHandler is Test {
             amount1Max: type(uint128).max,
             deadline: block.timestamp + 100,
             hookData: "",
-        payWithClaims: false
+            payWithClaims: false
         });
 
         (uint128 liq,,) = posManager.increaseLiquidity(params);

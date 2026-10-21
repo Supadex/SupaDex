@@ -262,7 +262,7 @@ contract SupaPositionManager is
             (uint256 amount0, uint256 amount1) = _handleDecrease(payer, params);
             return abi.encode(amount0, amount1);
         } else if (action == Action.SYNC_FEES) {
-            (, , uint256 tokenId) = abi.decode(data, (Action, address, uint256));
+            (,, uint256 tokenId) = abi.decode(data, (Action, address, uint256));
             (uint256 fees0, uint256 fees1) = _accrueFees(tokenId);
             if (fees0 > 0 || fees1 > 0) {
                 emit FeesSynced(tokenId, fees0, fees1);
@@ -284,10 +284,7 @@ contract SupaPositionManager is
         if (pos.liquidity == 0) return (0, 0);
 
         IPoolManager.ModifyLiquidityParams memory modParams = IPoolManager.ModifyLiquidityParams({
-            tickLower: pos.tickLower,
-            tickUpper: pos.tickUpper,
-            liquidityDelta: 0,
-            salt: bytes32(tokenId)
+            tickLower: pos.tickLower, tickUpper: pos.tickUpper, liquidityDelta: 0, salt: bytes32(tokenId)
         });
 
         (, BalanceDelta feesAccrued) = poolManager.modifyLiquidity(pos.poolKey, modParams, "");
