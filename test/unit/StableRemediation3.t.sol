@@ -405,12 +405,17 @@ contract StableRemediation3Test is Test {
         return int256(4 * x * y) * (int256(4 * A * (x + y)) - int256(4 * A - 1) * int256(D)) - int256(D) ** 3;
     }
 
-    /// @notice Stronger than the Jexi residual check: D is never below floor(root) and at most 2 wei above it
-    ///         (trader-adverse: a larger D yields a larger post-swap y). Python reference over 200k cases:
-    ///         D = floor(root) 98.3%, +1 1.7%, +2 0.001%.
+    /// @notice Stronger than the Jexi residual check. Safety side (exact): D is never below floor(root), because an
+    ///         under-estimated D would let a trader take value from the pool. Over-estimate side (empirical): D is at most
+    ///         8 wei above floor(root). An over-estimate is trader-adverse: a larger D gives a larger post-swap y.
+    ///         CORRECTION (remediation-3): this test first asserted "+2 at most" from a 200k-case Python sample that was
+    ///         biased toward balanced pools. Random seed 0xf2d3b6c9195e77f0 (20000 runs) found +3 at x=1e23, y=1e20+3, A=1.
+    ///         An edge-weighted Python scan (56k cases at 9000:1 to 10000:1, A in {1..10000}) measured a maximum of +6
+    ///         (A=1), +3 (A=10), +2 (A=100), +1 (A=10000), and never a value below floor. The domain now covers the full
+    ///         10,000:1 bound. The 8-wei bound is empirical, not proven.
     function testFuzz_computeD_isFloorOfRoot(uint256 x, uint256 y, uint256 A) public view {
         x = bound(x, 1e6, 1e23);
-        y = bound(y, x / 1000 + 1, x * 1000 > 1e23 ? 1e23 : x * 1000);
+        y = bound(y, x / 10_000 + 1, x * 10_000 > 1e23 ? 1e23 : x * 10_000);
         A = bound(A, 1, 10_000);
         uint256 D;
         try engine.computeD(x, y, A) returns (uint256 d_) {
@@ -419,7 +424,19 @@ contract StableRemediation3Test is Test {
             return; // non-convergence is a named revert (covered by the liveness tests)
         }
         assertLt(_h(x, y, A, D + 1), 0, "D >= floor(root)");
-        assertGe(_h(x, y, A, D - 2), 0, "D <= floor(root) + 2");
+        assertGe(_h(x, y, A, D - 8), 0, "D <= floor(root) + 8");
+    }
+
+    /// @notice Regression for the seed-0xf2d3b6c9195e77f0 counterexample: D = floor(root) + 3, which is not below the floor.
+    function test_computeD_randomSeedCounterexample_overshootIs3() public view {
+        uint256 x = 1e23;
+        uint256 y = 1e20 + 3;
+        uint256 D = engine.computeD(x, y, 1);
+        assertEq(D, 23_622_172_999_225_343_762_235);
+        uint256 floorRoot = 23_622_172_999_225_343_762_232; // exact integer bisection (Python)
+        assertGe(_h(x, y, 1, floorRoot), 0);
+        assertLt(_h(x, y, 1, floorRoot + 1), 0);
+        assertEq(D - floorRoot, 3);
     }
 
     function test_computeD_seedCounterexample_isExactFloor() public view {
