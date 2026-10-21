@@ -75,9 +75,7 @@ contract QuoterHelperLP is IUnlockCallback {
 
     function unlockCallback(bytes calldata data) external override returns (bytes memory) {
         (PoolKey memory key, uint256 amount) = abi.decode(data, (PoolKey, uint256));
-        IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
-            tickLower: -120, tickUpper: 120, liquidityDelta: int256(amount), salt: bytes32(0)
-        });
+        IPoolManager.ModifyLiquidityParams memory params = SecurityTestSetup.liquidityParams(key, amount, true);
 
         (BalanceDelta delta,) = manager.modifyLiquidity(key, params, "");
         if (delta.amount0() > 0) {
@@ -280,7 +278,7 @@ contract QuoterRouterEquivalenceInvariantTest is StdInvariant, Test {
         });
 
         stableKey = PoolKey({
-            currency0: cA, currency1: cC, fee: 500, tickSpacing: 1, plugin: address(0), curveType: CurveType.STABLE_AMM
+            currency0: cA, currency1: cC, fee: 500, tickSpacing: 100, plugin: address(0), curveType: CurveType.STABLE_AMM
         });
 
         manager.initialize(clammKey, 1 << 96, "");

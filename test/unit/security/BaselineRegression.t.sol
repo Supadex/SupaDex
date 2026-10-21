@@ -367,7 +367,9 @@ contract BaselineRegressionTest is Test, IUnlockCallback {
     function test_timelockRoleChangesRequireDelay() public {
         address[] memory list = new address[](1);
         list[0] = address(this);
-        SupaTimelock tl = new SupaTimelock(1 days, address(this), list, list, list);
+        address[] memory ex = new address[](1);
+        ex[0] = address(0xE1); // ADR-0010: separate executor
+        SupaTimelock tl = new SupaTimelock(1 days, address(this), list, ex, list);
 
         vm.expectRevert(GovernanceErrors.UnauthorizedCaller.selector);
         tl.setProposer(address(0xBAD), true);
@@ -376,11 +378,13 @@ contract BaselineRegressionTest is Test, IUnlockCallback {
 
         bytes memory data = abi.encodeWithSelector(SupaTimelock.setProposer.selector, address(0xA1), true);
         tl.schedule(address(tl), 0, data, bytes32(0), bytes32(0), 1 days);
+        vm.prank(ex[0]);
         vm.expectRevert(GovernanceErrors.ExecutionDelayNotMet.selector);
         tl.execute(address(tl), 0, data, bytes32(0), bytes32(0));
         vm.warp(block.timestamp + 1 days);
         vm.expectEmit(true, false, false, true, address(tl));
         emit SupaTimelock.ProposerSet(address(0xA1), true);
+        vm.prank(ex[0]);
         tl.execute(address(tl), 0, data, bytes32(0), bytes32(0));
         assertTrue(tl.isProposer(address(0xA1)));
     }
@@ -475,11 +479,18 @@ contract BaselineRegressionTest is Test, IUnlockCallback {
 
     // ------------------------------------------------------------------ SDX-006 BIN gate
 
-    /// PoC-5 inverted: BIN_AMM pools cannot be created on the production manager.
-    function test_PoC5_binPoolsDisabled() public {
-        assertFalse(manager.binAmmEnabled());
-        vm.expectRevert(abi.encodeWithSelector(PoolErrors.CurveDisabled.selector, uint8(CurveType.BIN_AMM)));
-        manager.initialize(_key(CurveType.BIN_AMM), SQRT_1_1, "");
+    /// PoC-5 (frozen single-bin price) fixed for real by ADR-0006: BIN_AMM pools are enabled on the production
+    /// manager AND the price now moves bin to bin under a swap (the old gate was only a mitigation).
+    function test_PoC5_binPriceMovesAcrossBins() public {
+        assertTrue(manager.binAmmEnabled());
+        PoolKey memory key = _key(CurveType.BIN_AMM); // tickSpacing 60 = 0.6% bin step
+        manager.initialize(key, SQRT_1_1, "");
+        _actor(10_000_000 ether).run(key, _one(int256(1000 ether)), -10, 10);
+        uint160 p0 = Slot0Library.sqrtPriceX96(manager.getSlot0(key.toId()));
+        assertGt(_swap(key, true, 3000 ether), 0);
+        int24 active = Slot0Library.tick(manager.getSlot0(key.toId()));
+        assertLt(active, -1, "active bin moved down");
+        assertLt(Slot0Library.sqrtPriceX96(manager.getSlot0(key.toId())), p0, "price moved");
     }
 
     // ------------------------------------------------------------------ SDX-001 / 002 StableAMM
@@ -512,22 +523,38 @@ contract BaselineRegressionTest is Test, IUnlockCallback {
         for (uint128 amt = 2; amt < 2000; amt *= 3) {
             uint256 b0 = t0.balanceOf(address(this));
             uint256 b1 = t1.balanceOf(address(this));
-            try this.swapExt(key, true, amt) {} catch {}
+            try this.swapExt(key, true, amt) {}
+            catch (bytes memory err) {
+                _assertDustRevert(err); // only the documented dust errors; state unchanged on revert
+            }
             assertLe(t1.balanceOf(address(this)) - b1, b0 - t0.balanceOf(address(this)), "tiny 0->1");
         }
     }
 
-    /// PoC-8 inverted: dust swaps cannot drain the stable pool.
+    /// PoC-8 inverted: dust swaps cannot drain the stable pool. Jexi 018: the dust swap must revert with a
+    /// documented error (no blanket catch), state must be unchanged, and a positive control must fill.
     function test_PoC8_stableDustSwapsNoDrain() public {
         PoolKey memory key = _stablePool(100 ether);
         uint256 b1 = t1.balanceOf(address(this));
         uint256 b0 = t0.balanceOf(address(this));
         for (uint256 i; i < 10; i++) {
-            try this.swapExt(key, true, 2) {} catch {}
+            vm.expectRevert(PoolErrors.InsufficientLiquidity.selector);
+            this.swapExt(key, true, 2);
         }
-        uint256 spent = b0 - t0.balanceOf(address(this));
-        uint256 got = t1.balanceOf(address(this)) - b1;
-        assertLe(got, spent, "received <= spent for dust swaps");
+        assertEq(t0.balanceOf(address(this)), b0, "nothing spent");
+        assertEq(t1.balanceOf(address(this)), b1, "nothing received");
+        // positive control: same path, normal size, fills below 1:1
+        uint256 out = this.swapExt(key, true, 1e15);
+        assertGt(out, 0.99e15);
+        assertLt(out, 1e15);
+    }
+
+    function _assertDustRevert(bytes memory err) internal pure {
+        bytes4 sel = bytes4(err);
+        assertTrue(
+            sel == PoolErrors.InsufficientLiquidity.selector || sel == PoolErrors.ZeroSwapAmount.selector,
+            "unexpected revert on dust swap"
+        );
     }
 
     function swapExt(PoolKey memory key, bool zeroForOne, uint128 amountIn) external returns (uint256) {
@@ -593,7 +620,9 @@ contract BaselineRegressionTest is Test, IUnlockCallback {
         PoolKey memory key = _key(CurveType.STABLE_AMM);
         manager.initialize(key, SQRT_1_1, "");
         Actor a = _actor(1 ether);
-        vm.expectRevert();
+        vm.expectRevert(
+            abi.encodeWithSelector(PoolErrors.InsufficientInitialLiquidity.selector, uint256(1000), uint256(1000))
+        );
         a.run(key, _one(int256(1000)), 0, 0);
         a.run(key, _one(int256(1001)), 0, 0);
         assertEq(manager.getLiquidity(key.toId()), 1001);

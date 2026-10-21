@@ -61,9 +61,7 @@ contract PoolManagerTestHarness is IUnlockCallback {
         (Action action, PoolKey memory key, uint256 val) = abi.decode(data, (Action, PoolKey, uint256));
 
         if (action == Action.ADD_LIQUIDITY) {
-            IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
-                tickLower: -120, tickUpper: 120, liquidityDelta: int256(val), salt: bytes32(0)
-            });
+            IPoolManager.ModifyLiquidityParams memory params = SecurityTestSetup.liquidityParams(key, val, true);
 
             (BalanceDelta delta,) = manager.modifyLiquidity(key, params, "");
 
@@ -170,7 +168,7 @@ contract SupaPoolManagerTest is Test {
             currency0: currency0,
             currency1: currency1,
             fee: 400,
-            tickSpacing: 1,
+            tickSpacing: 100, // StableAMM: tickSpacing carries A (ADR-0007); 100 = the previous fixed A
             plugin: address(0),
             curveType: CurveType.STABLE_AMM
         });
