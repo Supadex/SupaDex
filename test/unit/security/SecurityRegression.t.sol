@@ -323,7 +323,7 @@ contract SecurityRegressionTest is Test {
         other.fee = 500;
         // Direct initialize grief blocked
         vm.expectRevert(PoolErrors.NotPoolManager.selector);
-        clamm.initialize(other, 1 << 96);
+        clamm.initialize(other, 1 << 96, "");
     }
 
     /// F3: protocol fee survives modifyLiquidity
@@ -412,11 +412,20 @@ contract SecurityRegressionTest is Test {
             plugin: address(0),
             curveType: CurveType.BIN_AMM
         });
-        // ADR-0004: BIN_AMM pools are disabled on the production PoolManager (single frozen bin).
-        // Bin pro-rata exit accounting is still covered via the test-only bin-enabled manager in
-        // test/unit/SupaPoolManager.t.sol.
-        vm.expectRevert(abi.encodeWithSelector(PoolErrors.CurveDisabled.selector, uint8(CurveType.BIN_AMM)));
+        // ADR-0006: BIN_AMM is enabled on the production manager (multi-bin). F9 restored to its original intent:
+        // the last LP exits fully after the pool was skewed across several bins.
         manager.initialize(binKey, 1 << 96, "");
+        victim.modify(binKey, -5, 5, 10 ether, bytes32(0));
+        uint256 v0 = t0.balanceOf(address(victim));
+        uint256 v1 = t1.balanceOf(address(victim));
+        attacker.swap(binKey, true, 40 ether); // drains token1 from several bins
+        assertLt(BinAMMEngine(address(manager.binEngine())).getActiveBinId(binKey.toId()), 0, "price moved down");
+        victim.modify(binKey, -5, 5, -10 ether, bytes32(0));
+        assertGt(t0.balanceOf(address(victim)), v0, "LP receives the token0 the attacker paid in");
+        assertGt(t1.balanceOf(address(victim)), v1, "and the remaining token1");
+        (uint128 r0, uint128 r1) = BinAMMEngine(address(manager.binEngine())).getBinReserves(binKey.toId(), 0);
+        assertEq(r0, 0);
+        assertEq(r1, 0);
     }
 
     /// M1: delisting a plugin disables modify/swap on already-initialized pools

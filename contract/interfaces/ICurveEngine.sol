@@ -19,8 +19,10 @@ interface ICurveEngine {
 
     /**
      * @notice Initializes pool curve state.
+     * @param initParams Curve-specific creation parameters. CLAMM / BIN: must be empty. STABLE: abi.encode(uint256 A)
+     * (initial amplification chosen by the pool creator, Curve-factory style; see ADR-0007 rev. 2).
      */
-    function initialize(PoolKey memory key, uint160 sqrtPriceX96) external returns (int24 tick);
+    function initialize(PoolKey memory key, uint160 sqrtPriceX96, bytes memory initParams) external returns (int24 tick);
 
     /**
      * @notice Modifies liquidity for the curve.

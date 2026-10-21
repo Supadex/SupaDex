@@ -78,47 +78,57 @@ contract VolatilityTWAPOracle is IVolatilityTWAPOracle {
         returns (uint16 indexUpdated, uint16 cardinalityUpdated)
     {
         OracleState storage state = states[poolId];
-        uint16 cardinality = state.cardinality;
-        if (cardinality == 0) revert PluginErrors.OracleNotInitialized();
+        if (state.cardinality == 0) revert PluginErrors.OracleNotInitialized();
 
         uint16 currentIndex = state.index;
-        Observation memory last = observations[poolId][currentIndex];
-
         // If written in same timestamp, just update latest tick
-        if (last.blockTimestamp == blockTimestamp) {
+        if (observations[poolId][currentIndex].blockTimestamp == blockTimestamp) {
             latestTicks[poolId] = tick;
-            return (currentIndex, cardinality);
+            return (currentIndex, state.cardinality);
         }
 
+        (indexUpdated, cardinalityUpdated) = _advance(state, currentIndex, state.cardinality);
+        observations[poolId][indexUpdated] =
+            _transform(observations[poolId][currentIndex], blockTimestamp, latestTicks[poolId], liquidity);
+        latestTicks[poolId] = tick;
+    }
+
+    /// @dev Ring-buffer index advance (grows cardinality toward cardinalityNext first).
+    function _advance(OracleState storage state, uint16 currentIndex, uint16 cardinality)
+        internal
+        returns (uint16 nextIndex, uint16 newCardinality)
+    {
+        nextIndex = currentIndex + 1;
+        newCardinality = cardinality;
+        if (cardinality < state.cardinalityNext) {
+            newCardinality = cardinality + 1;
+            state.cardinality = newCardinality;
+        } else if (nextIndex >= cardinality) {
+            nextIndex = 0;
+        }
+        state.index = nextIndex;
+    }
+
+    /// @dev Accumulates the PREVIOUS latest tick over the elapsed time (ADR-0003).
+    function _transform(Observation memory last, uint32 blockTimestamp, int24 prevTick, uint128 liquidity)
+        internal
+        pure
+        returns (Observation memory)
+    {
         uint32 delta = blockTimestamp - last.blockTimestamp;
         int56 newTickCumulative;
         uint112 newSecondsPerLiquidity;
         unchecked {
-            newTickCumulative = last.tickCumulative + int56(latestTicks[poolId]) * int56(uint56(delta));
+            newTickCumulative = last.tickCumulative + int56(prevTick) * int56(uint56(delta));
             uint112 liquidityDelta = liquidity > 0 ? uint112((uint256(delta) << 128) / liquidity) : 0;
             newSecondsPerLiquidity = last.secondsPerLiquidityCumulativeX128 + liquidityDelta;
         }
-
-        uint16 nextIndex = currentIndex + 1;
-        uint16 cardinalityNext = state.cardinalityNext;
-
-        if (cardinality < cardinalityNext) {
-            cardinality = cardinality + 1;
-            state.cardinality = cardinality;
-        } else if (nextIndex >= cardinality) {
-            nextIndex = 0;
-        }
-
-        state.index = nextIndex;
-        observations[poolId][nextIndex] = Observation({
+        return Observation({
             blockTimestamp: blockTimestamp,
             tickCumulative: newTickCumulative,
             secondsPerLiquidityCumulativeX128: newSecondsPerLiquidity,
             initialized: true
         });
-
-        latestTicks[poolId] = tick;
-        return (nextIndex, cardinality);
     }
 
     /**
@@ -269,40 +279,45 @@ contract VolatilityTWAPOracle is IVolatilityTWAPOracle {
             return (tickCumulative, newest.secondsPerLiquidityCumulativeX128);
         }
 
-        // Binary search
+        return _search(poolId, targetTime, oldestIndex, cardinality);
+    }
+
+    /// @dev Binary search for the observation pair bracketing `targetTime` (oldest <= target < newest).
+    function _search(PoolId poolId, uint32 targetTime, uint256 oldestIndex, uint256 cardinality)
+        internal
+        view
+        returns (int56, uint112)
+    {
         uint256 l = 0;
         uint256 r = cardinality - 1;
-
         while (true) {
             uint256 mid = (l + r) / 2;
             uint256 midIndex = (oldestIndex + mid) % cardinality;
             Observation memory midObs = observations[poolId][midIndex];
-
             if (midObs.blockTimestamp <= targetTime) {
-                uint256 nextIndex = (midIndex + 1) % cardinality;
-                Observation memory nextObs = observations[poolId][nextIndex];
-
-                if (targetTime < nextObs.blockTimestamp) {
-                    // Linear interpolation between midObs and nextObs
-                    uint32 timeDiff = nextObs.blockTimestamp - midObs.blockTimestamp;
-                    uint32 offset = targetTime - midObs.blockTimestamp;
-
-                    unchecked {
-                        int56 tickDiff = nextObs.tickCumulative - midObs.tickCumulative;
-                        tickCumulative =
-                            midObs.tickCumulative + (tickDiff * int56(uint56(offset))) / int56(uint56(timeDiff));
-
-                        uint112 secDiff =
-                            nextObs.secondsPerLiquidityCumulativeX128 - midObs.secondsPerLiquidityCumulativeX128;
-                        secondsPerLiquidity =
-                            midObs.secondsPerLiquidityCumulativeX128 + uint112((uint256(secDiff) * offset) / timeDiff);
-                    }
-                    return (tickCumulative, secondsPerLiquidity);
-                }
+                Observation memory nextObs = observations[poolId][(midIndex + 1) % cardinality];
+                if (targetTime < nextObs.blockTimestamp) return _interpolate(midObs, nextObs, targetTime);
                 l = mid + 1;
             } else {
                 r = mid - 1;
             }
+        }
+        revert(); // unreachable
+    }
+
+    /// @dev Linear interpolation of the cumulatives between two bracketing observations.
+    function _interpolate(Observation memory a, Observation memory b, uint32 targetTime)
+        internal
+        pure
+        returns (int56 tickCumulative, uint112 secondsPerLiquidity)
+    {
+        uint32 timeDiff = b.blockTimestamp - a.blockTimestamp;
+        uint32 offset = targetTime - a.blockTimestamp;
+        unchecked {
+            int56 tickDiff = b.tickCumulative - a.tickCumulative;
+            tickCumulative = a.tickCumulative + (tickDiff * int56(uint56(offset))) / int56(uint56(timeDiff));
+            uint112 secDiff = b.secondsPerLiquidityCumulativeX128 - a.secondsPerLiquidityCumulativeX128;
+            secondsPerLiquidity = a.secondsPerLiquidityCumulativeX128 + uint112((uint256(secDiff) * offset) / timeDiff);
         }
     }
 }

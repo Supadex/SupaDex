@@ -210,18 +210,25 @@ contract SupaRouter is ISupaRouter, IUnlockCallback, IPeripheryEvents, Periphery
         (, Currency firstIn,,) = path.getFirstPoolKey();
         Currency inputCurrency = firstIn;
         uint256 currentAmountIn = params.amountIn;
+        uint256 amountPaid;
+        bool firstHop = true;
         Currency currentOutputCurrency;
 
         while (true) {
-            (PoolKey memory key,, Currency hopOut, bool zeroForOne) = path.getFirstPoolKey();
-            currentOutputCurrency = hopOut;
-
-            IPoolManager.SwapParams memory swapParams = IPoolManager.SwapParams({
-                zeroForOne: zeroForOne, amountSpecified: int256(currentAmountIn), sqrtPriceLimitX96: 0
-            });
-
-            BalanceDelta delta = poolManager.swap(key, swapParams, "");
-            currentAmountIn = uint256(uint128(zeroForOne ? -delta.amount1() : -delta.amount0()));
+            uint256 consumed;
+            uint256 hopOutAmount;
+            (consumed, hopOutAmount, currentOutputCurrency) = _exactInHop(path, currentAmountIn);
+            // APUS-SUPADEX-025: an exact-in hop may consume slightly less than specified (CLAMM rounding, <= 1 wei
+            // observed). Pay / forward only what was actually consumed so no non-zero delta is left behind.
+            if (firstHop) {
+                amountPaid = consumed;
+                firstHop = false;
+            } else if (consumed < currentAmountIn) {
+                // Unconsumed intermediate output is the trader's: deliver it to the recipient.
+                (, Currency hopIn,,) = path.getFirstPoolKey();
+                _take(hopIn, params.recipient, currentAmountIn - consumed, params.receiveAsClaims);
+            }
+            currentAmountIn = hopOutAmount;
 
             if (path.hasMultiplePools()) {
                 path = path.skipToken();
@@ -235,10 +242,27 @@ contract SupaRouter is ISupaRouter, IUnlockCallback, IPeripheryEvents, Periphery
             revert PeripheryErrors.SlippageExceeded(params.amountOutMinimum, amountOut);
         }
 
-        _pay(inputCurrency, payer, params.amountIn, params.payWithClaims);
+        _pay(inputCurrency, payer, amountPaid, params.payWithClaims);
         _take(currentOutputCurrency, params.recipient, amountOut, params.receiveAsClaims);
 
-        emit SwapRouted(payer, params.recipient, inputCurrency, currentOutputCurrency, params.amountIn, amountOut);
+        emit SwapRouted(payer, params.recipient, inputCurrency, currentOutputCurrency, amountPaid, amountOut);
+    }
+
+    /// @dev One exact-in hop on the first pool of `path`; returns the consumed input, the output and the output currency.
+    function _exactInHop(bytes memory path, uint256 amountIn)
+        internal
+        returns (uint256 consumed, uint256 out, Currency hopOut)
+    {
+        PoolKey memory key;
+        bool zeroForOne;
+        (key,, hopOut, zeroForOne) = path.getFirstPoolKey();
+        BalanceDelta delta = poolManager.swap(
+            key,
+            IPoolManager.SwapParams({zeroForOne: zeroForOne, amountSpecified: int256(amountIn), sqrtPriceLimitX96: 0}),
+            ""
+        );
+        consumed = uint256(uint128(zeroForOne ? delta.amount0() : delta.amount1()));
+        out = uint256(uint128(zeroForOne ? -delta.amount1() : -delta.amount0()));
     }
 
     /**

@@ -1,0 +1,58 @@
+[
+  {
+    "label": "owner",
+    "slot": 0,
+    "offset": 0,
+    "type": "t_address",
+    "bytes": 20
+  },
+  {
+    "label": "circuitBreaker",
+    "slot": 1,
+    "offset": 0,
+    "type": "t_contract(ICircuitBreaker)",
+    "bytes": 20
+  },
+  {
+    "label": "isPoolManager",
+    "slot": 2,
+    "offset": 0,
+    "type": "t_mapping(t_address,t_bool)",
+    "bytes": 32
+  },
+  {
+    "label": "reservesOf",
+    "slot": 3,
+    "offset": 0,
+    "type": "t_mapping(t_userDefinedValueType(Currency),t_uint256)",
+    "bytes": 32
+  },
+  {
+    "label": "balanceOf",
+    "slot": 4,
+    "offset": 0,
+    "type": "t_mapping(t_address,t_mapping(t_uint256,t_uint256))",
+    "bytes": 32
+  },
+  {
+    "label": "allowance",
+    "slot": 5,
+    "offset": 0,
+    "type": "t_mapping(t_address,t_mapping(t_address,t_mapping(t_uint256,t_uint256)))",
+    "bytes": 32
+  },
+  {
+    "label": "isOperator",
+    "slot": 6,
+    "offset": 0,
+    "type": "t_mapping(t_address,t_mapping(t_address,t_bool))",
+    "bytes": 32
+  },
+  {
+    "label": "__gap",
+    "slot": 7,
+    "offset": 0,
+    "type": "t_array(t_uint256)_storage",
+    "bytes": 1376
+  }
+]

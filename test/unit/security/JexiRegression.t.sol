@@ -205,7 +205,8 @@ contract JexiRegressionTest is Test {
     Currency c0;
     Currency c1;
 
-    address constant GOV = address(0x6007);
+    address constant GOV = address(0x6007); // timelock proposer + canceller
+    address constant EXEC = address(0xE7EC); // ADR-0010: separate executor
     address constant GUARD = address(0x6A2D);
     address constant OPERATOR = address(0x0FE2);
     uint160 constant SQRT_1_1 = 79228162514264337593543950336;
@@ -213,7 +214,9 @@ contract JexiRegressionTest is Test {
     function setUp() public {
         address[] memory g = new address[](1);
         g[0] = GOV;
-        timelock = new SupaTimelock(1 days, GOV, g, g, g);
+        address[] memory ex = new address[](1);
+        ex[0] = EXEC;
+        timelock = new SupaTimelock(1 days, GOV, g, ex, g);
         address[] memory gs = new address[](1);
         gs[0] = GUARD;
         cb = new CircuitBreaker(address(timelock), gs);
@@ -322,44 +325,92 @@ contract JexiRegressionTest is Test {
         assertApproxEqAbs(stable.computeY(x, x, x, 100), x, 1, "computeY(x,x,y) == y");
     }
 
+    /// Jexi 018: no try/catch. The dust swap must revert with the SPECIFIC error, the pool state must be unchanged,
+    /// and a positive control proves the same actor/path executes normal swaps.
     function test_001_dustSwapsCannotDrainStablePool() public {
         PoolKey memory k = _key(CurveType.STABLE_AMM, 500, 1, address(0));
-        pm.initialize(k, SQRT_1_1, "");
+        pm.initializeWithParams(k, SQRT_1_1, abi.encode(uint256(100)), "");
         _actor(1e24).exec(_one(_op(0, k, 0, 0, int256(1000e18), false)));
         JFlashActor attacker = new JFlashActor(vault, pm);
         t0.mint(address(attacker), 1e18);
+        (uint256 r0, uint256 r1) = stable.getReserves(k.toId());
+
+        // one 2-wei swap: 0 output => InsufficientLiquidity (never a free fill)
+        vm.expectRevert(PoolErrors.InsufficientLiquidity.selector);
+        attacker.exec(_one(_op(1, k, 0, 0, int256(2), true)));
+
+        // the original 60x dust sequence: same specific revert
         uint256 n = 60;
         JFlashActor.Op[] memory ops = new JFlashActor.Op[](n);
         for (uint256 i; i < n; i++) {
             ops[i] = _op(1, k, 0, 0, int256(2), true);
         }
-        try attacker.exec(ops) {} catch {}
-        uint256 spent0 = 1e18 - t0.balanceOf(address(attacker));
-        assertLe(t1.balanceOf(address(attacker)), spent0, "no free output from dust swaps");
+        vm.expectRevert(PoolErrors.InsufficientLiquidity.selector);
+        attacker.exec(ops);
+
+        (uint256 r0b, uint256 r1b) = stable.getReserves(k.toId());
+        assertEq(r0b, r0, "reserve0 unchanged");
+        assertEq(r1b, r1, "reserve1 unchanged");
+        assertEq(t0.balanceOf(address(attacker)), 1e18, "attacker spent nothing");
+        assertEq(t1.balanceOf(address(attacker)), 0, "attacker received nothing");
+
+        // positive control: the same actor and path executes a normal swap at a fair price
+        attacker.exec(_one(_op(1, k, 0, 0, int256(1e15), true)));
+        uint256 out = t1.balanceOf(address(attacker));
+        assertGt(out, 0.99e15, "control swap fills");
+        assertLt(out, 1e15, "below 1:1 (fee + curve)");
+        assertEq(t0.balanceOf(address(attacker)), 1e18 - 1e15);
     }
 
     // ================================================================== 002 (C2)
+    /// Jexi 018: no try/catch. A zero-capital add->remove in one unlock must extract nothing: the attacker ends with
+    /// zero of both tokens and pool reserves are unchanged. A funded positive control shows the round trip is
+    /// executable and never profitable; the fuzz below covers sizes where rounding leaves an unpayable debt.
     function test_002_zeroCapitalAddRemoveExtractsNothing() public {
         PoolKey memory k = _key(CurveType.STABLE_AMM, 500, 1, address(0));
-        pm.initialize(k, SQRT_1_1, "");
+        pm.initializeWithParams(k, SQRT_1_1, abi.encode(uint256(100)), "");
         _actor(1e24).exec(_one(_op(0, k, 0, 0, int256(1000e18), false)));
         _swap(k, true, 100e18);
+        (uint256 r0, uint256 r1) = stable.getReserves(k.toId());
+
         JFlashActor attacker = new JFlashActor(vault, pm); // zero balance
         JFlashActor.Op[] memory ops = new JFlashActor.Op[](2);
         ops[0] = _op(0, k, 0, 0, int256(1_000_000e18), false);
         ops[1] = _op(0, k, 0, 0, -int256(1_000_000e18), false);
-        // Either the round trip nets a rounding debt the attacker cannot pay (revert) or it nets exactly zero.
-        try attacker.exec(ops) {} catch {}
+        // Measured on the fix: the add (ceil) and remove (floor) net to exactly zero for this size, so the unlock
+        // settles with nothing owed and nothing paid out. (Previously masked by try/catch; now asserted exactly.)
+        attacker.exec(ops);
         assertEq(t0.balanceOf(address(attacker)), 0, "no token0 extracted");
         assertEq(t1.balanceOf(address(attacker)), 0, "no token1 extracted");
+        (uint256 r0b, uint256 r1b) = stable.getReserves(k.toId());
+        assertEq(r0b, r0);
+        assertEq(r1b, r1);
+
+        // positive control: funded actor, same ops, succeeds; net cost is >= 0 and only rounding (<= 2 wei per token)
+        _fundedRoundTripControl(k, ops, r0, r1);
     }
 
-    /// Jexi's property (failed on 68791f6): an atomic add->remove round trip is never profitable.
+    function _fundedRoundTripControl(PoolKey memory k, JFlashActor.Op[] memory ops, uint256 r0, uint256 r1) internal {
+        JFlashActor funded = _actor(1e27);
+        uint256 b0 = t0.balanceOf(address(funded));
+        uint256 b1 = t1.balanceOf(address(funded));
+        funded.exec(ops);
+        uint256 a0 = t0.balanceOf(address(funded));
+        uint256 a1 = t1.balanceOf(address(funded));
+        assertLe(a0, b0, "token0 not profitable");
+        assertLe(a1, b1, "token1 not profitable");
+        assertLe(b0 - a0, 2, "rounding-only cost token0");
+        assertLe(b1 - a1, 2, "rounding-only cost token1");
+        (uint256 r0c, uint256 r1c) = stable.getReserves(k.toId());
+        assertGe(r0c, r0, "LPs not diluted (token0)");
+        assertGe(r1c, r1, "LPs not diluted (token1)");
+    }
+
     function test_fuzz_prop_stableAddRemoveNotProfitable(uint96 tradeIn, uint96 dep) public {
         tradeIn = uint96(bound(tradeIn, 1e15, 400e18));
         dep = uint96(bound(dep, 1e15, 1e24));
         PoolKey memory k = _key(CurveType.STABLE_AMM, 500, 1, address(0));
-        pm.initialize(k, SQRT_1_1, "");
+        pm.initializeWithParams(k, SQRT_1_1, abi.encode(uint256(100)), "");
         _actor(1e26).exec(_one(_op(0, k, 0, 0, int256(1000e18), false)));
         _swap(k, true, tradeIn);
         JFlashActor attacker = _actor(1e26);
@@ -460,10 +511,19 @@ contract JexiRegressionTest is Test {
     }
 
     // ================================================================== 005 (H4)
-    function test_005_binPoolsDisabled() public {
+    /// H4 (frozen single-bin price) is now fixed by the multi-bin engine (ADR-0006) instead of a gate:
+    /// pools can be created on the production manager and a trade moves the price bin to bin.
+    function test_005_binPoolsMultiBinPriceDiscovery() public {
         PoolKey memory k = _key(CurveType.BIN_AMM, 3000, 10, address(0));
-        vm.expectRevert(abi.encodeWithSelector(PoolErrors.CurveDisabled.selector, uint8(CurveType.BIN_AMM)));
         pm.initialize(k, SQRT_1_1, "");
+        _actor(1e27).exec(_one(_op(0, k, -20, 20, 1e21, false)));
+        uint256 out1 = _swap(k, true, 5e21);
+        int24 active = Slot0Library.tick(pm.getSlot0(k.toId()));
+        assertLt(active, -3, "active bin moved");
+        // second identical sell gets a strictly worse price (no frozen price)
+        uint256 out2 = _swap(k, true, 5e21);
+        assertLt(out2, out1, "price discovery: later sells fill lower");
+        assertGt(out2, 0);
     }
 
     // ================================================================== 007 (H5)
@@ -483,8 +543,9 @@ contract JexiRegressionTest is Test {
         bytes memory dataB = abi.encodeCall(SupaVault.accountDelta, (address(h), c0, int256(res0)));
         timelock.schedule(address(vault), 0, dataB, bytes32(0), bytes32("B"), 1 days);
         vm.warp(block.timestamp + 1 days);
-        timelock.execute(address(timelock), 0, setExec, bytes32(0), bytes32("A"));
         vm.stopPrank();
+        vm.prank(EXEC);
+        timelock.execute(address(timelock), 0, setExec, bytes32(0), bytes32("A"));
         assertTrue(timelock.isExecutor(address(h)));
 
         vm.expectRevert(VaultErrors.Unauthorized.selector);
@@ -522,6 +583,36 @@ contract JexiRegressionTest is Test {
         }
         got0 = t0.balanceOf(address(j)) - afterAdd0;
         got1 = t1.balanceOf(address(j)) - afterAdd1;
+    }
+
+    // ================================================================== Issue 4: hook fee accounting
+    /// Hook (AntiJIT) fee confiscation must never create liabilities without assets nor orphan value: after a JIT
+    /// LP is haircut and every LP exits, the vault still covers all protocol-fee liabilities and the residual is
+    /// rounding dust only (confiscated fees reached the resident LP via donate, not a dead balance).
+    function testFuzz_issue4_hookFeeAccounting_liabilitiesLeAssets(uint96 s1, uint96 s2, bool d1) public {
+        PoolKey memory k = _key(CurveType.CLAMM, 3000, 60, address(jit));
+        pm.initialize(k, SQRT_1_1, "");
+        JFlashActor r = _actor(1e27);
+        r.exec(_one(_op(0, k, -600, 600, 1e22, false)));
+        vm.roll(block.number + 100);
+        JFlashActor j = _actor(1e27);
+        j.exec(_one(_op(0, k, -600, 600, 9e22, false)));
+        _swap(k, d1, uint128(bound(s1, 1e15, 50e18)));
+        _swap(k, !d1, uint128(bound(s2, 1e15, 50e18)));
+        uint256 rBefore0 = t0.balanceOf(address(r));
+        j.exec(_one(_op(0, k, -600, 600, -int256(9e22), false))); // early exit => fees haircut
+        _swap(k, d1, 1e18);
+        vm.roll(block.number + 100);
+        r.exec(_one(_op(0, k, -600, 600, -int256(1e22), false)));
+        assertGt(t0.balanceOf(address(r)), rBefore0, "resident exits");
+        uint256 v0 = t0.balanceOf(address(vault));
+        uint256 v1 = t1.balanceOf(address(vault));
+        uint256 p0 = pm.protocolFeesAccrued(c0);
+        uint256 p1 = pm.protocolFeesAccrued(c1);
+        assertGe(v0, p0, "assets >= liabilities token0");
+        assertGe(v1, p1, "assets >= liabilities token1");
+        assertLe(v0 - p0, 1e6, "no orphaned value token0 (rounding dust only)");
+        assertLe(v1 - p1, 1e6, "no orphaned value token1 (rounding dust only)");
     }
 
     // ================================================================== 014 AntiJIT residency dilution
@@ -589,12 +680,12 @@ contract JexiRegressionTest is Test {
     }
 
     // ================================================================== 012 BinAMM share math
-    /// Engine-level (bin pools are gated at the PoolManager): after a trade moves the bin's
+    /// Engine-level: after a trade moves the bin's
     /// reserve mix, an atomic add->remove returns no more of either token than was paid.
     function test_012_binSharesProportionalRoundTrip() public {
         BinAMMEngine e = new BinAMMEngine(address(this));
         PoolKey memory k = _key(CurveType.BIN_AMM, 3000, 10, address(0));
-        e.initialize(k, SQRT_1_1);
+        e.initialize(k, SQRT_1_1, "");
         e.modifyLiquidity(k, IPoolManager.ModifyLiquidityParams(0, 0, int256(1000e18), bytes32(0)), address(1));
         e.swap(k, IPoolManager.SwapParams(true, 300e18, 0), 3000, 0);
         (BalanceDelta add,) =
@@ -609,7 +700,7 @@ contract JexiRegressionTest is Test {
         seed = uint96(bound(seed, 1e6, 1e24));
         BinAMMEngine e = new BinAMMEngine(address(this));
         PoolKey memory k = _key(CurveType.BIN_AMM, 3000, 10, address(0));
-        e.initialize(k, SQRT_1_1);
+        e.initialize(k, SQRT_1_1, "");
         e.modifyLiquidity(k, IPoolManager.ModifyLiquidityParams(0, 0, int256(uint256(seed)), bytes32(0)), address(1));
         tradeIn = uint96(bound(tradeIn, 0, seed / 2));
         if (tradeIn > 1000) {

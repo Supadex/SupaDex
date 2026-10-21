@@ -81,4 +81,12 @@ library PluginErrors {
      * @dev Thrown when decay half-life is zero (division / decay periods undefined).
      */
     error InvalidDecayHalfLife();
+
+    /**
+     * @notice ADR-0009: invalid external-oracle configuration (`code` identifies the failed check).
+     * 1 feed zero/no code, 2 heartbeat out of range, 3 alpha > 100%, 4 deadband >= maxDeviation,
+     * 5 maxDeviation out of range, 6 fallback fee above cap, 7 feed decimals unreadable or > 18,
+     * 8 token decimals unreadable or > 18.
+     */
+    error InvalidOracleConfig(uint8 code);
 }

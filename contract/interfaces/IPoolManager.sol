@@ -48,6 +48,19 @@ interface IPoolManager is IPoolEvents {
     function initialize(PoolKey memory key, uint160 sqrtPriceX96, bytes calldata hookData) external returns (int24 tick);
 
     /**
+     * @notice Initializes a new pool with curve-specific creation parameters.
+     * @dev Required for STABLE pools: `initParams = abi.encode(uint256 initialA)` with `key.tickSpacing == 1`;
+     * A must lie in the StableAMMEngine's governance range [minA, maxA]. CLAMM / BIN: `initParams` must be empty
+     * (equivalent to `initialize`).
+     */
+    function initializeWithParams(
+        PoolKey memory key,
+        uint160 sqrtPriceX96,
+        bytes calldata initParams,
+        bytes calldata hookData
+    ) external returns (int24 tick);
+
+    /**
      * @notice Adds or removes liquidity from a pool.
      * @param key The pool identifier key.
      * @param params Liquidity change parameters.
@@ -86,6 +99,14 @@ interface IPoolManager is IPoolEvents {
      * @notice Returns the current Slot0 state for a pool.
      */
     function getSlot0(PoolId id) external view returns (Slot0);
+
+    /**
+     * @notice LP fee (pips) applied by the most recent swap in the current transaction (transient storage).
+     * @dev Returns 0 outside a transaction that swapped. Intended for quoters / simulations only.
+     *      NOTE: Slot0.dynamicFee is the pool's static key.fee recorded at initialize; it is NOT the per-swap
+     *      plugin fee. Use this (via SupaQuoter.quote*SingleWithFee) or the Swap event's `fee` field instead.
+     */
+    function lastSwapFee() external view returns (uint24);
 
     /**
      * @notice Returns the total active liquidity for a pool.

@@ -72,4 +72,10 @@ library PeripheryErrors {
      * @dev Thrown to bubble up exact-output quote simulation results without persisting state.
      */
     error QuoteOutputSimulation(uint256 amountIn, uint160 sqrtPriceX96, int24 tick);
+
+    /**
+     * @dev Single-hop quote simulation result including the fee (pips) actually applied by the pool manager
+     *      (plugin override or key.fee). `amount` is amountOut for exact-input, amountIn for exact-output.
+     */
+    error QuoteSingleSimulation(uint256 amount, uint160 sqrtPriceX96, int24 tick, uint24 feePips);
 }

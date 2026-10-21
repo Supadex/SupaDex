@@ -32,6 +32,11 @@ library NFTSVGLib {
         string memory stars = _constellation(p.tokenId, p.currency0, p.currency1);
         string memory glyph = _curveGlyph(p.curveType, accent);
 
+        return string.concat(_svgDefs(), stars, _svgOrbit(startDeg, spanDeg, accent, glyph), _svgMeta(p, accent));
+    }
+
+    /// @dev generateSVG is split into parts so the legacy (coverage) codegen stays under the stack limit (Issue 5).
+    function _svgDefs() private pure returns (string memory) {
         return string.concat(
             '<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">',
             "<defs>",
@@ -50,8 +55,16 @@ library NFTSVGLib {
             '<rect width="512" height="512" fill="url(#gBg)"/>',
             // hairline frame
             '<rect x="18" y="18" width="476" height="476" rx="28" stroke="rgba(255,255,255,0.08)" stroke-width="1"/>',
-            '<rect x="28" y="28" width="456" height="456" rx="22" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>',
-            stars,
+            '<rect x="28" y="28" width="456" height="456" rx="22" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>'
+        );
+    }
+
+    function _svgOrbit(uint256 startDeg, uint256 spanDeg, string memory accent, string memory glyph)
+        private
+        pure
+        returns (string memory)
+    {
+        return string.concat(
             // dormant full orbit
             '<circle cx="256" cy="236" r="128" stroke="rgba(148,163,184,0.14)" stroke-width="1.25"/>',
             '<circle cx="256" cy="236" r="96" stroke="rgba(148,163,184,0.08)" stroke-width="1"/>',
@@ -62,19 +75,41 @@ library NFTSVGLib {
             accent,
             '" filter="url(#glow)"/>',
             '<circle cx="256" cy="236" r="2.5" fill="#F8FAFC"/>',
-            glyph,
-            // brand + meta
-            '<text x="44" y="64" fill="#F8FAFC" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15" font-weight="700" letter-spacing="2">SUPADEX</text>',
-            '<text x="44" y="86" fill="#64748B" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" letter-spacing="1.5">POSITION LATTICE</text>',
-            '<text x="468" y="64" text-anchor="end" fill="#94A3B8" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12">#',
-            p.tokenId.toString(),
-            "</text>",
+            glyph
+        );
+    }
+
+    function _svgMeta(SVGParams memory p, string memory accent) private pure returns (string memory) {
+        return string.concat(
+            _svgBrand(p.tokenId),
             // pair
             '<text x="256" y="400" text-anchor="middle" fill="#F8FAFC" font-family="ui-sans-serif,system-ui,-apple-system,sans-serif" font-size="28" font-weight="700">',
             _escape(p.symbol0),
             " / ",
             _escape(p.symbol1),
             "</text>",
+            _svgBadges(p, accent),
+            // footer ticks
+            '<text x="256" y="472" text-anchor="middle" fill="#475569" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10">',
+            _tickLabel(p.tickLower, p.tickUpper, p.curveType),
+            "</text>",
+            "</svg>"
+        );
+    }
+
+    function _svgBrand(uint256 tokenId) private pure returns (string memory) {
+        return string.concat(
+            // brand + meta
+            '<text x="44" y="64" fill="#F8FAFC" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15" font-weight="700" letter-spacing="2">SUPADEX</text>',
+            '<text x="44" y="86" fill="#64748B" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="11" letter-spacing="1.5">POSITION LATTICE</text>',
+            '<text x="468" y="64" text-anchor="end" fill="#94A3B8" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="12">#',
+            tokenId.toString(),
+            "</text>"
+        );
+    }
+
+    function _svgBadges(SVGParams memory p, string memory accent) private pure returns (string memory) {
+        return string.concat(
             // badges
             '<rect x="118" y="420" width="110" height="28" rx="8" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.08)"/>',
             '<text x="173" y="439" text-anchor="middle" fill="',
@@ -87,12 +122,7 @@ library NFTSVGLib {
             p.feeLabel,
             "</text>",
             '<rect x="324" y="420" width="70" height="28" rx="8" fill="rgba(255,255,255,0.04)" stroke="rgba(255,255,255,0.08)"/>',
-            '<text x="359" y="439" text-anchor="middle" fill="#94A3B8" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10">LP NFT</text>',
-            // footer ticks
-            '<text x="256" y="472" text-anchor="middle" fill="#475569" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10">',
-            _tickLabel(p.tickLower, p.tickUpper, p.curveType),
-            "</text>",
-            "</svg>"
+            '<text x="359" y="439" text-anchor="middle" fill="#94A3B8" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="10">LP NFT</text>'
         );
     }
 

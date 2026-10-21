@@ -26,3 +26,10 @@ PROGRESS.md
 .cursorrules
 
 .agents/skills/supadex-development
+out-dev/
+cache-dev/
+out-legacy/
+cache-legacy/
+out-cov/
+cache-cov/
+lcov.info

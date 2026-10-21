@@ -31,7 +31,8 @@ struct PoolKey {
      */
     uint24 fee;
     /**
-     * @dev Tick spacing or bin step granularity.
+     * @dev CLAMM: tick spacing. BIN: bin step in bps [1, 200]. STABLE: must be 1 (A is NOT encoded here; it is a
+     * creator-chosen engine init parameter, see StableAMMEngine / ADR-0007 rev. 2).
      */
     int24 tickSpacing;
     /**

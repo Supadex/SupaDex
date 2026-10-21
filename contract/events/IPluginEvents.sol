@@ -54,4 +54,23 @@ interface IPluginEvents {
     event LVRParametersUpdated(
         PoolId indexed poolId, uint32 decayHalfLife, uint24 volatilityAlpha, uint24 minFeePips, uint24 maxFeePips
     );
+
+    /// @notice ADR-0009: external price feed configured (feed == address(0) means cleared).
+    event LVROracleConfigured(
+        PoolId indexed poolId,
+        address indexed feed,
+        uint32 heartbeat,
+        uint16 deviationAlphaBps,
+        uint16 deadbandBps,
+        uint16 maxDeviationBps,
+        uint24 fallbackFeePips
+    );
+
+    /// @notice ADR-0009: swap priced with the oracle-deviation surcharge (arbitrage direction only).
+    event LVROracleSurcharge(PoolId indexed poolId, uint256 deviationBps, uint24 surchargePips, bool zeroForOne);
+
+    /// @notice ADR-0009: oracle unusable for this swap; fee floored at the fallback fee. `reason` codes:
+    /// 1 call failed/bad return size, 2 answer <= 0, 3 stale (heartbeat), 4 updatedAt in future,
+    /// 5 price conversion overflow, 6 deviation above maxDeviationBps (feed or pool considered unsafe).
+    event LVROracleFallback(PoolId indexed poolId, uint8 reason);
 }

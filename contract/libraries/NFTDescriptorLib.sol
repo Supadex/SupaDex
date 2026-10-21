@@ -20,76 +20,109 @@ library NFTDescriptorLib {
     using CurrencyLibrary for Currency;
     using LibString for uint256;
 
+    struct Labels {
+        string symbol0;
+        string symbol1;
+        string curveLabel;
+        uint8 curveType;
+        string feeLabel;
+    }
+
     function tokenURI(uint256 tokenId, ISupaPositionManager.PositionInfo memory pos)
         internal
         view
         returns (string memory)
     {
-        string memory symbol0 = _safeSymbol(pos.poolKey.currency0);
-        string memory symbol1 = _safeSymbol(pos.poolKey.currency1);
-        (string memory curveLabel, uint8 curveType) = _curveMeta(pos.poolKey.curveType);
-        string memory feeLabel = _feeLabel(pos.poolKey.fee);
+        Labels memory l;
+        l.symbol0 = _safeSymbol(pos.poolKey.currency0);
+        l.symbol1 = _safeSymbol(pos.poolKey.currency1);
+        (l.curveLabel, l.curveType) = _curveMeta(pos.poolKey.curveType);
+        l.feeLabel = _feeLabel(pos.poolKey.fee);
 
+        string memory json = string.concat(
+            _header(tokenId, l),
+            _image(tokenId, pos, l),
+            '","attributes":[',
+            _attributes(l.curveLabel, l.feeLabel, l.symbol0, l.symbol1),
+            _rangeAttributes(pos.tickLower, pos.tickUpper, pos.liquidity),
+            "]}"
+        );
+        return string.concat("data:application/json;base64,", Base64.encode(bytes(json)));
+    }
+
+    function _header(uint256 tokenId, Labels memory l) private pure returns (string memory) {
+        return string.concat(
+            '{"name":"SupaDex ',
+            l.curveLabel,
+            " - ",
+            l.symbol0,
+            "/",
+            l.symbol1,
+            " #",
+            tokenId.toString(),
+            '","description":"SupaDex liquidity position NFT (',
+            l.curveLabel,
+            "). Fee ",
+            l.feeLabel,
+            '. On-chain Obsidian Lattice art generated from pool + tick state.","image":"'
+        );
+    }
+
+    function _image(uint256 tokenId, ISupaPositionManager.PositionInfo memory pos, Labels memory l)
+        private
+        pure
+        returns (string memory)
+    {
         string memory svg = NFTSVGLib.generateSVG(
             NFTSVGLib.SVGParams({
                 tokenId: tokenId,
-                symbol0: symbol0,
-                symbol1: symbol1,
-                curveLabel: curveLabel,
-                curveType: curveType,
-                feeLabel: feeLabel,
+                symbol0: l.symbol0,
+                symbol1: l.symbol1,
+                curveLabel: l.curveLabel,
+                curveType: l.curveType,
+                feeLabel: l.feeLabel,
                 tickLower: pos.tickLower,
                 tickUpper: pos.tickUpper,
                 currency0: pos.poolKey.currency0.toAddress(),
                 currency1: pos.poolKey.currency1.toAddress()
             })
         );
+        return string.concat("data:image/svg+xml;base64,", Base64.encode(bytes(svg)));
+    }
 
-        string memory image = string.concat("data:image/svg+xml;base64,", Base64.encode(bytes(svg)));
-
-        string memory name_ =
-            string.concat("SupaDex ", curveLabel, " - ", symbol0, "/", symbol1, " #", tokenId.toString());
-        string memory description = string.concat(
-            "SupaDex liquidity position NFT (",
-            curveLabel,
-            "). Fee ",
-            feeLabel,
-            ". On-chain Obsidian Lattice art generated from pool + tick state."
-        );
-
-        string memory json = string.concat(
-            '{"name":"',
-            name_,
-            '","description":"',
-            description,
-            '","image":"',
-            image,
-            '","attributes":[',
+    /// @dev Split out of tokenURI so the legacy (coverage) codegen stays under the stack limit (Issue 5).
+    function _attributes(string memory curveLabel, string memory feeLabel, string memory symbol0, string memory symbol1)
+        private
+        pure
+        returns (string memory)
+    {
+        return string.concat(
             '{"trait_type":"Curve","value":"',
             curveLabel,
-            '"},',
-            '{"trait_type":"Fee","value":"',
+            '"},{"trait_type":"Fee","value":"',
             feeLabel,
-            '"},',
-            '{"trait_type":"Token0","value":"',
+            '"},{"trait_type":"Token0","value":"',
             symbol0,
-            '"},',
-            '{"trait_type":"Token1","value":"',
+            '"},{"trait_type":"Token1","value":"',
             symbol1,
-            '"},',
-            '{"trait_type":"Tick Lower","value":"',
-            _int24ToString(pos.tickLower),
-            '"},',
-            '{"trait_type":"Tick Upper","value":"',
-            _int24ToString(pos.tickUpper),
-            '"},',
-            '{"trait_type":"Liquidity","value":"',
-            uint256(pos.liquidity).toString(),
-            '"}',
-            "]}"
+            '"},'
         );
+    }
 
-        return string.concat("data:application/json;base64,", Base64.encode(bytes(json)));
+    function _rangeAttributes(int24 tickLower, int24 tickUpper, uint128 liquidity)
+        private
+        pure
+        returns (string memory)
+    {
+        return string.concat(
+            '{"trait_type":"Tick Lower","value":"',
+            _int24ToString(tickLower),
+            '"},{"trait_type":"Tick Upper","value":"',
+            _int24ToString(tickUpper),
+            '"},{"trait_type":"Liquidity","value":"',
+            uint256(liquidity).toString(),
+            '"}'
+        );
     }
 
     function _safeSymbol(Currency currency) private view returns (string memory) {
@@ -134,6 +167,6 @@ library NFTDescriptorLib {
 
     function _int24ToString(int24 v) private pure returns (string memory) {
         if (v >= 0) return uint256(uint24(v)).toString();
-        return string.concat("-", uint256(uint24(-v)).toString());
+        return string.concat("-", uint256(-int256(v)).toString());
     }
 }

@@ -40,8 +40,13 @@ contract MathBoundaryFuzzTest is Test {
     }
 
     /// @notice Fuzz test TickMathLib bounds enforcement: ticks outside [-887272, 887272] must revert.
-    function testFuzz_tickMathOutOfBoundsReverts(int24 tick) public {
-        vm.assume(tick < TickMathLib.MIN_TICK || tick > TickMathLib.MAX_TICK);
+    ///         Maps the input into the out-of-range region with bound() and does not use vm.assume. Random seed
+    ///         0xf2d3b6c9195e77f0 at 20000 runs hit the 65536-reject cap: the fuzzer's dictionary is biased toward
+    ///         small in-range ticks.
+    function testFuzz_tickMathOutOfBoundsReverts(int24 raw, bool negative) public {
+        int24 tick = negative
+            ? int24(bound(int256(raw), type(int24).min, int256(TickMathLib.MIN_TICK) - 1))
+            : int24(bound(int256(raw), int256(TickMathLib.MAX_TICK) + 1, type(int24).max));
         vm.expectRevert(abi.encodeWithSelector(PoolErrors.TickOutOfBounds.selector, tick));
         harness.getSqrtRatioAtTick(tick);
     }
