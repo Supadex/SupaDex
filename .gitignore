@@ -15,8 +15,7 @@ out/
 tmp/
 
 # Dotenv file
-.env
-.env.*
+temp_auto_push.bat
 !.env.example
 
 # Local AI and tracking files
@@ -33,3 +32,7 @@ cache-legacy/
 out-cov/
 cache-cov/
 lcov.info
+.gitignore
+branch_structure.json
+config.bat
+node_modules
