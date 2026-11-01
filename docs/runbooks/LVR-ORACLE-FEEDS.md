@@ -25,6 +25,62 @@ For each feed, one reviewer copies these fields from the Chainlink feed page (da
 4. Schedule the call on the timelock (48 h minimum delay on value-bearing chains). Publish the calldata, the registry entry and the dry-run output so the canceller and the community can review them during the delay.
 5. After execution, run OracleConfigCheck again against the live chain (read-only).
 
+## Frontend feed allowlist (APUS-SDX070-006): the admin page only
+The SupaDex admin page (Supadex_Admin-page) has a committed allowlist of official Chainlink feeds per chain. It is
+in **`src/config/chainlinkFeeds.ts`** in the Admin-page repo (`CHAINLINK_FEED_ALLOWLIST`, `allowedFeed()`).
+
+**Entries.** Each entry records:
+- the proxy address;
+- the pair or `description()`;
+- decimals;
+- heartbeat;
+- kind (PRICE / SEQUENCER_UPTIME);
+- the source URL and the date it was read.
+
+**Current lists:**
+- **31337:** the seeded local mocks only.
+- **11155111 (Sepolia):** 7 price feeds, copied from docs.chain.link on 2026-11-01.
+- **84532 (Base Sepolia):** deliberately empty. Base is an L2, so the overlay requires a sequencer-uptime feed
+  there, and none exists on Base Sepolia (docs.chain.link lists one only for Base mainnet). Every feed is refused.
+- **Any other chain:** no list, so every feed is refused.
+
+**Enforced only when the op is scheduled or executed from the admin page.** The admin console's timelock chokepoint
+(`consoleRefusal`: schedule and execute) refuses a `setOracleConfig` / `setSequencerUptimeFeed` whose feed is not on
+that chain's list. The console's oracle form checks it before preflight, and so does the RUNBOOK ONLY badge in the
+queue monitor. **The contracts do not enforce it.** An op that is scheduled **and** executed through a Safe, `cast`,
+a script or any other client is **not** stopped by this allowlist. The most the admin page can do for such an op is
+flag it while it is queued and refuse to execute it from the console.
+
+**Manual feed check (required for every Safe / cast / scripted op).** Before signing the schedule, and again before
+signing the execute, a reviewer checks the feed against docs.chain.link
+(<https://docs.chain.link/data-feeds/price-feeds/addresses>, the right network and the "Show more details" view;
+for uptime feeds, <https://docs.chain.link/data-feeds/l2-sequencer-feeds>). Compare these fields:
+1. **Address.** Decode **both levels** of the calldata. `cast calldata-decode` needs the function signature, so:
+   - **Level 1:** decode the timelock `schedule(...)` (or `execute(...)`) call with the timelock's signature and read
+     its target and `data` argument;
+   - **Level 2:** decode that inner `data` as `setOracleConfig(...)` / `setSequencerUptimeFeed(...)` with that
+     function's signature (`cast 4byte-decode` can help identify it, but confirm the selector matches).
+
+   The `feed` argument from the level-2 decode must be exactly the proxy address listed for the **same chain** as
+   the target. Compare the full address; do not stop at the first and last few characters. Decoding only the outer
+   call does not show the feed.
+2. **Description.** `cast call <feed> "description()(string)" --rpc-url <rpc>` must equal the pair on the page
+   exactly. This is the direct pair for the pool, not a composite.
+3. **Decimals.** `cast call <feed> "decimals()(uint8)" --rpc-url <rpc>` must equal the decimals on the page.
+
+Then do the following:
+- **Cross-check the admin-page allowlist.** The feed must also be on the list in `src/config/chainlinkFeeds.ts`, with
+  the same address, description and decimals. If it is not, stop. Add it to the allowlist first through a reviewed
+  Admin-page PR, citing the docs.chain.link source and the date read, then come back to this check.
+- **Second reviewer.** A second reviewer repeats all three checks.
+- **Record.** Write down both reviewers, the URL and the read time (WAT) in the published review notes for the op.
+- **Not exempt.** The steps in "Procedure" above (sequencer feed first, parameters, OracleConfigCheck dry run,
+  publishing during the delay) still apply; this check does not replace them.
+
+**Keeping the list current.** Chainlink can rotate or retire feeds. Any change to this runbook's registry
+(`config/oracle-feeds.json`), or to a feed used in production, needs a matching update of
+`src/config/chainlinkFeeds.ts` in Admin-page, reviewed by Jexi.
+
 ## Known limits (do not over-claim)
 - **Feed lag:** within the heartbeat and below the deviation threshold, the feed can legitimately lag the market. The overlay then charges only on the measured deviation (test `test_feedLag_withinHeartbeat_underCharges`: true price 1.03, feed and pool at 1.00, only the 3,000-pip base fee is charged). The overlay is a surcharge heuristic, not manipulation-resistant pricing.
 - When the feed or sequencer is unusable, swaps never revert. They pay max(endogenous fee, fallbackFee) and the fallback reason is emitted.
