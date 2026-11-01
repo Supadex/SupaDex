@@ -296,6 +296,22 @@ contract SupaRouter is ISupaRouter, IUnlockCallback, IPeripheryEvents, Periphery
             revert PeripheryErrors.SlippageExceeded(params.amountInMaximum, amountIn);
         }
 
+        // APUS-SUPADEX-039 / SDX-073: exact output means exact output.
+        if (actualAmountOut < params.amountOut) {
+            // No price limit (or nothing filled): the pool ran out of liquidity -> revert (Uniswap v3 parity).
+            if (params.sqrtPriceLimitX96 == 0 || actualAmountOut == 0) {
+                revert PeripheryErrors.InsufficientOutputAmount(params.amountOut, actualAmountOut);
+            }
+            // Explicit price limit: a partial fill up to the limit is allowed (v3 semantics), but the per-unit price
+            // may not exceed the one implied by the caller's own bound, amountInMaximum / amountOut. Without this a
+            // sandwich could charge up to amountInMaximum for a tiny fill. Both sides < 2^256 (uint128 * uint128).
+            if (amountIn * params.amountOut > uint256(params.amountInMaximum) * actualAmountOut) {
+                revert PeripheryErrors.SlippageExceeded(
+                    uint256(params.amountInMaximum) * actualAmountOut / params.amountOut, amountIn
+                );
+            }
+        }
+
         _pay(inputCurrency, payer, amountIn, params.payWithClaims);
         _take(outputCurrency, params.recipient, actualAmountOut, params.receiveAsClaims);
 
@@ -328,6 +344,10 @@ contract SupaRouter is ISupaRouter, IUnlockCallback, IPeripheryEvents, Periphery
             });
 
             BalanceDelta delta = poolManager.swap(key, swapParams, "");
+            // APUS-SUPADEX-039: every hop must deliver what the next hop (or the recipient) needs. Previously a short
+            // hop failed closed only via the vault's CurrencyNotSettled; revert with an explicit, decodable error.
+            uint256 hopOut = uint256(uint128(swapZeroForOne ? -delta.amount1() : -delta.amount0()));
+            if (hopOut < currentAmountOut) revert PeripheryErrors.InsufficientOutputAmount(currentAmountOut, hopOut);
             currentAmountOut = uint256(uint128(swapZeroForOne ? delta.amount0() : delta.amount1()));
 
             if (path.hasMultiplePools()) {

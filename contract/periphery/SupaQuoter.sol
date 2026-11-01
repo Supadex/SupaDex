@@ -226,6 +226,16 @@ contract SupaQuoter is ISupaQuoter, IUnlockCallback {
 
             BalanceDelta delta = poolManager.swap(params.poolKey, swapParams, params.hookData);
             uint256 amountIn = uint256(uint128(params.zeroForOne ? delta.amount0() : delta.amount1()));
+            // APUS-SUPADEX-039: never price a partial fill as if it were the full amount. Without a price limit the
+            // router would revert, so the quote reverts too (same error). With a price limit the quote prices the
+            // fill up to the limit (Uniswap v3 QuoterV2 semantics); callers detect it via sqrtPriceX96After == limit.
+            // APUS-SUPADEX-041: a price-limited request that fills NOTHING is rejected by the router
+            // (InsufficientOutputAmount(requested, 0)), so the quote reverts with the same error instead of returning
+            // a success quote for a swap that cannot execute. Mirrors SupaRouter._exactOutputSingle.
+            uint256 delivered = uint256(uint128(params.zeroForOne ? -delta.amount1() : -delta.amount0()));
+            if (delivered < params.amountOut && (params.sqrtPriceLimitX96 == 0 || delivered == 0)) {
+                revert PeripheryErrors.InsufficientOutputAmount(params.amountOut, delivered);
+            }
             Slot0 slot0 = poolManager.getSlot0(params.poolKey.toId());
 
             revert PeripheryErrors.QuoteSingleSimulation(
@@ -246,6 +256,11 @@ contract SupaQuoter is ISupaQuoter, IUnlockCallback {
                 });
 
                 BalanceDelta delta = poolManager.swap(key, swapParams, "");
+                // APUS-SUPADEX-039: a short hop means the route cannot be filled; revert like the router does.
+                uint256 hopOut = uint256(uint128(swapZeroForOne ? -delta.amount1() : -delta.amount0()));
+                if (hopOut < currentAmountOut) {
+                    revert PeripheryErrors.InsufficientOutputAmount(currentAmountOut, hopOut);
+                }
                 currentAmountOut = uint256(uint128(swapZeroForOne ? delta.amount0() : delta.amount1()));
                 lastSlot0 = poolManager.getSlot0(key.toId());
 
