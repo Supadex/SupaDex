@@ -43,7 +43,7 @@ interface ISupaQuoter {
     function vault() external view returns (IVault);
 
     /**
-     * @notice Returns exact output quote for single-hop swap.
+     * @notice Returns the output of a single-hop exact-input swap.
      */
     function quoteExactInputSingle(QuoteExactInputSingleParams memory params)
         external
@@ -58,12 +58,18 @@ interface ISupaQuoter {
         returns (uint256 amountOut, uint160 sqrtPriceX96After, int24 tickAfter, uint24 feePips);
 
     /**
-     * @notice Returns exact output quote for multi-hop swap route.
+     * @notice Returns the output of a multi-hop exact-input route.
      */
     function quoteExactInput(bytes memory path, uint128 amountIn) external returns (uint256 amountOut);
 
     /**
-     * @notice Returns exact input quote for single-hop swap.
+     * @notice Returns the input needed for a single-hop exact-output swap.
+     * @dev APUS-SUPADEX-039: with `sqrtPriceLimitX96 == 0` the quote reverts with
+     *      `PeripheryErrors.InsufficientOutputAmount(requested, deliverable)` when the pool cannot fill `amountOut`
+     *      (the router would revert too). With a price limit it prices the fill up to the limit (Uniswap v3 QuoterV2
+     *      semantics) and does NOT return the deliverable amount: on CLAMM a partial fill shows as
+     *      `sqrtPriceX96After == sqrtPriceLimitX96`; on BIN (discrete bins) that signal is not guaranteed. Integrators
+     *      that need an exact amount should quote and swap with `sqrtPriceLimitX96 == 0`.
      */
     function quoteExactOutputSingle(QuoteExactOutputSingleParams memory params)
         external
@@ -75,7 +81,8 @@ interface ISupaQuoter {
         returns (uint256 amountIn, uint160 sqrtPriceX96After, int24 tickAfter, uint24 feePips);
 
     /**
-     * @notice Returns exact input quote for multi-hop swap route.
+     * @notice Returns the input needed for a multi-hop exact-output route.
+     * @dev Reverts with `PeripheryErrors.InsufficientOutputAmount(requested, delivered)` if any hop cannot fill.
      */
     function quoteExactOutput(bytes memory path, uint128 amountOut) external returns (uint256 amountIn);
 }

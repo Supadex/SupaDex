@@ -95,6 +95,11 @@ interface ISupaRouter {
 
     /**
      * @notice Executes a single-hop exact output swap.
+     * @dev APUS-SUPADEX-039: with `sqrtPriceLimitX96 == 0` the swap delivers exactly `amountOut` or reverts with
+     *      `PeripheryErrors.InsufficientOutputAmount(requested, delivered)` (Uniswap v3 parity). With an explicit price
+     *      limit it may fill partially up to the limit (v3 semantics), but only if
+     *      `amountIn * amountOut <= amountInMaximum * delivered` (per-unit price bound; else `SlippageExceeded`) and
+     *      `delivered > 0`. The delivered amount is in the `SwapRouted` event; the return value is `amountIn` only.
      * @param params ExactOutputSingleParams struct.
      * @return amountIn The actual amount of input token spent.
      */
@@ -102,6 +107,7 @@ interface ISupaRouter {
 
     /**
      * @notice Executes a multi-hop exact output swap across multiple pools/curves.
+     * @dev Every hop must deliver in full; a short hop reverts with `PeripheryErrors.InsufficientOutputAmount`.
      * @param params ExactOutputParams struct with encoded path.
      * @return amountIn The final amount of input token spent.
      */
