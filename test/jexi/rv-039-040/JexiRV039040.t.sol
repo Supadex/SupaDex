@@ -58,11 +58,12 @@ contract RVDeltaPlugin is IPlugin {
         return IPlugin.afterInitialize.selector;
     }
 
-    function beforeModifyLiquidity(address, PoolKey calldata, IPoolManager.ModifyLiquidityParams calldata, bytes calldata)
-        external
-        pure
-        returns (bytes4)
-    {
+    function beforeModifyLiquidity(
+        address,
+        PoolKey calldata,
+        IPoolManager.ModifyLiquidityParams calldata,
+        bytes calldata
+    ) external pure returns (bytes4) {
         return IPlugin.beforeModifyLiquidity.selector;
     }
 
@@ -277,9 +278,9 @@ contract JexiRV039040Test is RouterQuoterFixture {
             bytes4 s = _sel(f.err);
             assertTrue(
                 s == PeripheryErrors.InsufficientOutputAmount.selector || s == PeripheryErrors.SlippageExceeded.selector
-                    || s == PoolErrors.PriceLimitAlreadyExceeded.selector || s == PoolErrors.PriceLimitOutOfBounds.selector
-                    || s == PoolErrors.ZeroSwapAmount.selector || s == PoolErrors.InsufficientLiquidity.selector
-                    || s == PoolErrors.BinIdOutOfBounds.selector,
+                    || s == PoolErrors.PriceLimitAlreadyExceeded.selector
+                    || s == PoolErrors.PriceLimitOutOfBounds.selector || s == PoolErrors.ZeroSwapAmount.selector
+                    || s == PoolErrors.InsufficientLiquidity.selector || s == PoolErrors.BinIdOutOfBounds.selector,
                 "unexpected revert class"
             );
             assertTrue(s != bytes4(0x4e487b71), "no Panic (overflow)");
@@ -298,7 +299,8 @@ contract JexiRV039040Test is RouterQuoterFixture {
         assertEq(VaultErrors.VaultAlreadyLocked.selector, bytes4(keccak256("VaultAlreadyLocked()")));
         assertEq(VaultErrors.VaultAlreadyLocked.selector, bytes4(0xa6c62fd0));
         assertEq(
-            PeripheryErrors.InsufficientOutputAmount.selector, bytes4(keccak256("InsufficientOutputAmount(uint256,uint256)"))
+            PeripheryErrors.InsufficientOutputAmount.selector,
+            bytes4(keccak256("InsufficientOutputAmount(uint256,uint256)"))
         );
         assertEq(PeripheryErrors.InsufficientOutputAmount.selector, bytes4(0xd28d3eb5));
         assertEq(PeripheryErrors.SlippageExceeded.selector, bytes4(keccak256("SlippageExceeded(uint256,uint256)")));
@@ -564,7 +566,10 @@ contract JexiRV039040Test is RouterQuoterFixture {
         hiTick = int24(bound(hiTick, -60_000, -660)) / 60 * 60;
         int24 lo = hiTick - 180;
         atkLiq = uint128(bound(atkLiq, 1 ether, 50_000 ether));
-        try atkLp.modify(k, lo, hiTick, int256(uint256(atkLiq))) {} catch { return; }
+        try atkLp.modify(k, lo, hiTick, int256(uint256(atkLiq))) {}
+        catch {
+            return;
+        }
         pushTick = int24(bound(pushTick, lo - 600, 0));
         ISupaRouter.ExactInputSingleParams memory fr = _inSingle(k, true, attacker, 500_000 ether, 0);
         fr.sqrtPriceLimitX96 = TickMathLib.getSqrtRatioAtTick(pushTick);
