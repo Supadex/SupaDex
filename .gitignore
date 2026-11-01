@@ -15,6 +15,7 @@ out/
 tmp/
 
 # Dotenv file
+temp_auto_push.bat
 .env
 .env.*
 !.env.example
@@ -33,3 +34,5 @@ cache-legacy/
 out-cov/
 cache-cov/
 lcov.info
+.gitignore
+branch_structure.json
