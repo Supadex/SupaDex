@@ -13,6 +13,7 @@ import {PeripheryErrors} from "../../contract/errors/PeripheryErrors.sol";
 import {PoolErrors} from "../../contract/errors/PoolErrors.sol";
 import {VaultErrors} from "../../contract/errors/VaultErrors.sol";
 import {TickMathLib} from "../../contract/libraries/TickMathLib.sol";
+import {SafeTransferLib} from "solady/utils/SafeTransferLib.sol";
 
 /// @dev ERC20 that re-enters the router (or the vault) from inside `transferFrom` once armed. The re-entrant call's
 ///      outcome is recorded (not re-raised), so a test can prove WHY it failed and that the outer swap still settles.
@@ -227,28 +228,41 @@ contract SupaRouterCoverageTest is RouterQuoterFixture, IPeripheryEvents {
         router.exactOutputSingle(_outSingle(binBC, false, bob, 3 ether, type(uint128).max));
     }
 
-    /// @notice FINDING CANDIDATE (reported, not fixed): exactOutputSingle does not require the received amount to
-    ///         equal `amountOut`. When CLAMM liquidity runs out (sqrtPriceLimitX96 == 0) the swap fills partially
-    ///         and the router delivers LESS than the requested exact output without reverting. Uniswap v3's
-    ///         SwapRouter reverts in this case when no price limit is set. The payer is charged only for what was
-    ///         delivered and stays bounded by amountInMaximum, so no funds are lost; it is a semantics gap.
-    function test_PoC_exactOutputSingle_partialFillUnderDelivers_clamm() public {
-        // Thin CLAMM pool: liquidity only in [-60, 60].
-        PoolKey memory thin = _key(tokenA, tokenB, 3000, 60, CurveType.CLAMM);
-        thin.fee = 10000;
-        thin.tickSpacing = 200;
+    /// @notice SDX-073 / APUS-SUPADEX-039 regression (was test_PoC_exactOutputSingle_partialFillUnderDelivers_clamm,
+    ///         which passed while the bug was present). With no price limit, a CLAMM liquidity shortfall must revert
+    ///         with InsufficientOutputAmount instead of silently delivering less. The pre-fix PoC charged 10.15 A for
+    ///         9.95 B (within maxIn, delivered > 0), so maxIn is set where the shortfall, not SlippageExceeded, trips.
+    function test_exactOutputSingle_partialFill_reverts_clamm() public {
+        // Thin CLAMM pool (fee 1%, tick spacing 200): liquidity only in [-200, 200].
+        PoolKey memory thin = _key(tokenA, tokenB, 10000, 200, CurveType.CLAMM);
         manager.initialize(thin, SQRT_1_1, "");
         lp.addLiquidityRange(thin, -200, 200, 1_000 ether);
 
         uint128 requested = 1_000 ether; // far more token1 than the range holds
-        uint256 bobBefore = rawB.balanceOf(bob);
+        uint128 maxIn = 50 ether; // covers what the pre-fix partial fill charged, so only the shortfall check can trip
+        uint256 aliceA = rawA.balanceOf(alice);
+        uint256 bobB = rawB.balanceOf(bob);
         vm.prank(alice);
-        uint256 amountIn = router.exactOutputSingle(_outSingle(thin, true, bob, requested, type(uint128).max));
-        uint256 delivered = rawB.balanceOf(bob) - bobBefore;
-
-        assertLt(delivered, requested, "PoC: router delivered less than the exact amountOut and did not revert");
-        assertGt(amountIn, 0);
+        try router.exactOutputSingle(_outSingle(thin, true, bob, requested, maxIn)) {
+            fail("exact-output shortfall must revert");
+        } catch (bytes memory err) {
+            assertEq(bytes4(err), PeripheryErrors.InsufficientOutputAmount.selector, "error selector");
+            (uint256 req, uint256 delivered) = abi.decode(_args(err), (uint256, uint256));
+            assertEq(req, requested, "requested echoed");
+            assertGt(delivered, 0, "pool could fill part of it");
+            assertLt(delivered, requested / 50, "deliverable < 2% of requested");
+        }
+        assertEq(rawA.balanceOf(alice), aliceA, "payer not charged");
+        assertEq(rawB.balanceOf(bob), bobB, "nothing delivered");
         _assertClean();
+    }
+
+    /// @dev Strips the 4-byte selector from revert data.
+    function _args(bytes memory err) internal pure returns (bytes memory a) {
+        a = new bytes(err.length - 4);
+        for (uint256 i = 0; i < a.length; i++) {
+            a[i] = err[i + 4];
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -444,16 +458,16 @@ contract SupaRouterCoverageTest is RouterQuoterFixture, IPeripheryEvents {
         router.exactOutput(_outMulti(path, alice, 0, type(uint128).max));
     }
 
-    /// @notice Multi-hop exact-out never under-delivers silently: if the last hop cannot fill, the router takes the
-    ///         requested amount anyway and the vault's settlement check reverts the whole trade (fail closed).
+    /// @notice Multi-hop exact-out never under-delivers silently. Before APUS-SUPADEX-039 a short hop failed closed only
+    ///         via the vault's CurrencyNotSettled; every hop now reverts explicitly with InsufficientOutputAmount.
     function test_exactOutput_multiHop_partialFillFailsClosed() public {
         PoolKey memory thin = _key(tokenA, tokenB, 10000, 200, CurveType.CLAMM);
         manager.initialize(thin, SQRT_1_1, "");
         lp.addLiquidityRange(thin, -200, 200, 1_000 ether);
-        // want B (from thin pool, can't fill 1000), pay C via BIN: B <-thin- A <-STABLE- C
+        // want B (from thin pool, can't fill 1000), pay C via STABLE: B <-thin- A <-STABLE- C
         bytes memory path = _path2(tokenB, thin, tokenA, stableAC, tokenC);
         vm.prank(alice);
-        vm.expectPartialRevert(VaultErrors.CurrencyNotSettled.selector);
+        vm.expectPartialRevert(PeripheryErrors.InsufficientOutputAmount.selector);
         router.exactOutput(_outMulti(path, alice, 1_000 ether, type(uint128).max));
     }
 
@@ -517,7 +531,7 @@ contract SupaRouterCoverageTest is RouterQuoterFixture, IPeripheryEvents {
     function test_nativeOutput_toRejectingRecipient_reverts() public {
         ETHRejecter rej = new ETHRejecter();
         vm.prank(alice);
-        vm.expectRevert(); // SafeTransferLib.ETHTransferFailed
+        vm.expectRevert(SafeTransferLib.ETHTransferFailed.selector);
         router.exactInputSingle(_inSingle(clammEthA, false, address(rej), 1 ether, 0));
     }
 
@@ -525,7 +539,7 @@ contract SupaRouterCoverageTest is RouterQuoterFixture, IPeripheryEvents {
         ETHRejecter rej = new ETHRejecter();
         vm.deal(address(rej), 10 ether);
         vm.prank(address(rej));
-        vm.expectRevert(); // excess-ETH refund to a payer that cannot receive ETH
+        vm.expectRevert(SafeTransferLib.ETHTransferFailed.selector); // excess-ETH refund to a payer that rejects ETH
         router.exactInputSingle{value: 2 ether}(_inSingle(clammEthA, true, alice, 1 ether, 0));
     }
 
@@ -669,14 +683,14 @@ contract SupaRouterCoverageTest is RouterQuoterFixture, IPeripheryEvents {
         re.approve(address(router), type(uint256).max);
     }
 
-    /// @dev BUG (reported, not fixed): TransientStorageLib.acquireLock hard-codes 0x5462fc74 as the
-    ///      "VaultErrors.VaultAlreadyLocked" selector, but keccak("VaultAlreadyLocked()")[:4] is 0xa6c62fd0. Re-entry
-    ///      IS blocked; only the revert payload is wrong (undecodable by ABIs/frontends). See the PoC test below.
-    bytes4 internal constant LOCK_REVERT_SELECTOR = 0x5462fc74;
+    /// @dev SDX-072 / APUS-SUPADEX-040 fixed: TransientStorageLib.acquireLock used to revert with a hard-coded selector
+    ///      that matched no declared error. It now reverts with VaultErrors.VaultAlreadyLocked() (0xa6c62fd0).
+    bytes4 internal constant LOCK_REVERT_SELECTOR = 0xa6c62fd0; // == VaultErrors.VaultAlreadyLocked.selector (asserted below)
 
-    function test_PoC_vaultLockRevertSelectorMismatch() public {
+    /// @notice Regression (was test_PoC_vaultLockRevertSelectorMismatch, which asserted the wrong selector).
+    function test_vaultLockRevert_isVaultAlreadyLocked() public {
         assertEq(VaultErrors.VaultAlreadyLocked.selector, bytes4(0xa6c62fd0), "declared error selector");
-        // Re-enter vault.unlock while the router holds the lock: the payload is NOT VaultAlreadyLocked().
+        // Re-enter vault.unlock while the router holds the lock: the payload is exactly VaultAlreadyLocked().
         (ReentrantToken re, PoolKey memory key) = _reentrantPool();
         bool zfo = Currency.unwrap(key.currency0) == address(re);
         re.arm(ReentrantToken.Mode.VAULT, router, abi.encodeWithSignature("unlock(bytes)", bytes("")));
@@ -684,8 +698,7 @@ contract SupaRouterCoverageTest is RouterQuoterFixture, IPeripheryEvents {
         router.exactInputSingle(_inSingle(key, zfo, alice, 1 ether, 0));
         assertFalse(re.lastOk(), "re-entry blocked");
         assertEq(re.lastRet().length, 4);
-        assertEq(bytes4(re.lastRet()), bytes4(0x5462fc74), "PoC: lock reverts with 0x5462fc74");
-        assertTrue(bytes4(re.lastRet()) != VaultErrors.VaultAlreadyLocked.selector, "PoC: selector mismatch");
+        assertEq(re.lastRet(), abi.encodeWithSelector(VaultErrors.VaultAlreadyLocked.selector), "VaultAlreadyLocked()");
     }
 
     function _assertReentryBlocked(ReentrantToken re, bytes4 expected) internal view {
@@ -789,7 +802,7 @@ contract SupaRouterCoverageTest is RouterQuoterFixture, IPeripheryEvents {
         ETHRejecter rej = new ETHRejecter();
         vm.deal(address(router), 1 ether);
         vm.prank(address(rej));
-        vm.expectRevert();
+        vm.expectRevert(SafeTransferLib.ETHTransferFailed.selector);
         router.refundETH();
     }
 
