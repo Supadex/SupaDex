@@ -64,6 +64,12 @@ library PeripheryErrors {
     error InvalidPoolKey();
 
     /**
+     * @notice Thrown when an exact-output swap (or one hop of it) delivers less than requested and partial fills are
+     *         not allowed (no price limit set). APUS-SUPADEX-039 / SDX-073; Uniswap v3 SwapRouter parity.
+     */
+    error InsufficientOutputAmount(uint256 requested, uint256 delivered);
+
+    /**
      * @dev Thrown to bubble up exact-input quote simulation results without persisting state.
      */
     error QuoteInputSimulation(uint256 amountOut, uint160 sqrtPriceX96, int24 tick);
