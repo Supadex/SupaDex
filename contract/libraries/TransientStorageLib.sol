@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import {Currency} from "../types/Currency.sol";
+import {VaultErrors} from "../errors/VaultErrors.sol";
 
 /**
  * @title TransientStorageLib
@@ -44,12 +45,14 @@ library TransientStorageLib {
      */
     function acquireLock() internal {
         bytes32 lockSlot = LOCK_SLOT;
+        bool locked;
         assembly {
-            if tload(lockSlot) {
-                // Revert with VaultErrors.VaultAlreadyLocked selector (0x5462fc74)
-                mstore(0x00, 0x5462fc7400000000000000000000000000000000000000000000000000000000)
-                revert(0x00, 0x04)
-            }
+            locked := tload(lockSlot)
+        }
+        // APUS-SUPADEX-040 / SDX-072: previously a hard-coded selector that matched no declared error. Revert with the
+        // declared error so the payload decodes as VaultAlreadyLocked() (0xa6c62fd0).
+        if (locked) revert VaultErrors.VaultAlreadyLocked();
+        assembly {
             tstore(lockSlot, 1)
         }
     }
