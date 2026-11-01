@@ -229,11 +229,12 @@ contract SupaQuoter is ISupaQuoter, IUnlockCallback {
             // APUS-SUPADEX-039: never price a partial fill as if it were the full amount. Without a price limit the
             // router would revert, so the quote reverts too (same error). With a price limit the quote prices the
             // fill up to the limit (Uniswap v3 QuoterV2 semantics); callers detect it via sqrtPriceX96After == limit.
-            if (params.sqrtPriceLimitX96 == 0) {
-                uint256 delivered = uint256(uint128(params.zeroForOne ? -delta.amount1() : -delta.amount0()));
-                if (delivered < params.amountOut) {
-                    revert PeripheryErrors.InsufficientOutputAmount(params.amountOut, delivered);
-                }
+            // APUS-SUPADEX-041: a price-limited request that fills NOTHING is rejected by the router
+            // (InsufficientOutputAmount(requested, 0)), so the quote reverts with the same error instead of returning
+            // a success quote for a swap that cannot execute. Mirrors SupaRouter._exactOutputSingle.
+            uint256 delivered = uint256(uint128(params.zeroForOne ? -delta.amount1() : -delta.amount0()));
+            if (delivered < params.amountOut && (params.sqrtPriceLimitX96 == 0 || delivered == 0)) {
+                revert PeripheryErrors.InsufficientOutputAmount(params.amountOut, delivered);
             }
             Slot0 slot0 = poolManager.getSlot0(params.poolKey.toId());
 

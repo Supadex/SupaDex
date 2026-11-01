@@ -443,4 +443,81 @@ contract ExactOutputShortfallTest is RouterQuoterFixture {
         vm.expectPartialRevert(PeripheryErrors.InsufficientOutputAmount.selector);
         quoter.quoteExactOutput(_path2(tokenC, stableAC, tokenA, k, tokenB), 1_000 ether);
     }
+
+    // ------------------------------------------------------------------ APUS-SUPADEX-041 (quoter zero-fill parity)
+
+    /// Jexi RV-039-040 repro: a price limit a hair below spot leaves nothing fillable. The router rejects it with
+    /// InsufficientOutputAmount(requested, 0); pre-fix the quoter returned a success quote of 2 wei in. Now both revert
+    /// with the IDENTICAL payload, on both quoter entry points, and nobody is charged.
+    function test_041_quoter_zeroFillWithLimit_revertsLikeRouter() public {
+        PoolKey memory k = _thinClamm();
+        uint128 requested = 10 ether;
+        bytes memory expected =
+            abi.encodeWithSelector(PeripheryErrors.InsufficientOutputAmount.selector, uint256(requested), uint256(0));
+
+        ISupaRouter.ExactOutputSingleParams memory p = _outSingle(k, true, bob, requested, 20 ether);
+        p.sqrtPriceLimitX96 = SQRT_1_1 - 1;
+        ISupaQuoter.QuoteExactOutputSingleParams memory q = _qOut(k, true, requested);
+        q.sqrtPriceLimitX96 = p.sqrtPriceLimitX96;
+
+        bytes memory qErr;
+        try quoter.quoteExactOutputSingle(q) returns (uint256 amountIn, uint160, int24) {
+            emit log_named_uint("quoter amountIn (should not happen)", amountIn);
+            fail("041: zero-fill price-limited quote must revert");
+        } catch (bytes memory err) {
+            qErr = err;
+        }
+        assertEq(qErr, expected, "quoter: InsufficientOutputAmount(requested, 0)");
+
+        bytes memory qfErr;
+        try quoter.quoteExactOutputSingleWithFee(q) returns (uint256, uint160, int24, uint24) {
+            fail("041: zero-fill price-limited quote (WithFee) must revert");
+        } catch (bytes memory err) {
+            qfErr = err;
+        }
+        assertEq(qfErr, expected, "quoterWithFee: InsufficientOutputAmount(requested, 0)");
+
+        uint256 aBefore = rawA.balanceOf(alice);
+        uint256 bBefore = rawB.balanceOf(bob);
+        bytes memory rErr;
+        vm.prank(alice);
+        try router.exactOutputSingle(p) returns (uint256) {
+            fail("router must reject a zero fill");
+        } catch (bytes memory err) {
+            rErr = err;
+        }
+        assertEq(rErr, expected, "router: InsufficientOutputAmount(requested, 0)");
+        assertEq(keccak256(qErr), keccak256(rErr), "quoter/router identical payload");
+        assertEq(rawA.balanceOf(alice), aBefore, "not charged");
+        assertEq(rawB.balanceOf(bob), bBefore, "nothing delivered");
+        _assertClean();
+    }
+
+    /// Control for 041: a price-limited partial fill that delivers SOMETHING (> 0, < requested) still quotes, and the
+    /// quote equals the router's execution. The 041 fix only rejects delivered == 0.
+    function test_041_quoter_priceLimitedPartialFill_nonZero_stillQuotes() public {
+        PoolKey memory k = _thinClamm();
+        uint128 requested = 1_000 ether;
+        ISupaRouter.ExactOutputSingleParams memory p = _outSingle(k, true, bob, requested, type(uint128).max);
+        p.sqrtPriceLimitX96 = TickMathLib.getSqrtRatioAtTick(-10); // small move: a small, non-zero partial fill
+        ISupaQuoter.QuoteExactOutputSingleParams memory q = _qOut(k, true, requested);
+        q.sqrtPriceLimitX96 = p.sqrtPriceLimitX96;
+        (uint256 quoted, uint160 sqrtAfter,) = quoter.quoteExactOutputSingle(q);
+        assertGt(quoted, 0, "non-zero partial fill is quoted");
+        assertEq(sqrtAfter, p.sqrtPriceLimitX96, "quote stops at the limit (partial-fill signal)");
+        (uint256 quotedWithFee,,,) = quoter.quoteExactOutputSingleWithFee(q);
+        assertEq(quotedWithFee, quoted);
+
+        uint256 aBefore = rawA.balanceOf(alice);
+        uint256 bBefore = rawB.balanceOf(bob);
+        vm.prank(alice);
+        uint256 ret = router.exactOutputSingle(p);
+        uint256 paid = aBefore - rawA.balanceOf(alice);
+        uint256 delivered = rawB.balanceOf(bob) - bBefore;
+        assertEq(ret, paid);
+        assertEq(paid, quoted, "price-limited quote == execution");
+        assertGt(delivered, 0, "delivered > 0");
+        assertLt(delivered, requested, "partial fill");
+        _assertClean();
+    }
 }

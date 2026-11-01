@@ -70,6 +70,8 @@ interface ISupaQuoter {
      *      semantics) and does NOT return the deliverable amount: on CLAMM a partial fill shows as
      *      `sqrtPriceX96After == sqrtPriceLimitX96`; on BIN (discrete bins) that signal is not guaranteed. Integrators
      *      that need an exact amount should quote and swap with `sqrtPriceLimitX96 == 0`.
+     *      APUS-SUPADEX-041: with a price limit that allows no fill at all (nothing deliverable before the limit), the
+     *      quote reverts with `PeripheryErrors.InsufficientOutputAmount(requested, 0)`, exactly as the router does.
      */
     function quoteExactOutputSingle(QuoteExactOutputSingleParams memory params)
         external
