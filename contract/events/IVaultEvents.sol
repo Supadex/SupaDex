@@ -49,6 +49,11 @@ interface IVaultEvents {
     event SurplusSwept(Currency indexed currency, address indexed to, uint256 amount);
 
     /**
+     * @notice Emitted when vault ownership is nominated. The nominee must call `acceptOwnership`.
+     */
+    event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
+
+    /**
      * @notice Emitted when vault ownership changes.
      */
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);

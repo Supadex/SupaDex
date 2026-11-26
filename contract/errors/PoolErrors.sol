@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import {PoolId} from "../types/PoolId.sol";
+import {Currency} from "../types/Currency.sol";
 
 /**
  * @title PoolErrors
@@ -209,4 +210,9 @@ library PoolErrors {
      * @notice Caller is not the governance owner of the PoolManager (timelock).
      */
     error NotGovernance();
+
+    /**
+     * @notice Thrown when a pool would pay out more of `currency` than it has recorded (M-01).
+     */
+    error PoolInsolvent(PoolId id, Currency currency, uint256 requested, uint256 available);
 }

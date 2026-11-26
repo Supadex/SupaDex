@@ -138,6 +138,16 @@ contract CrossProtocolHandler is Test {
         }
     }
 
+    /// T-2: 1-wei swaps, including the size that re-crossed a CLAMM tick.
+    function dustSwap(uint256 poolSeed, bool z) external {
+        uint256 p = poolSeed % 3;
+        calls["dustSwap"]++;
+        try trader.exec(_one(_op(1, p, int256(1), z))) {}
+        catch (bytes memory err) {
+            _classify(err);
+        }
+    }
+
     /// Same-block A->B->A round trip by a dedicated arbitrageur. STRICT metric (APUS-SUPADEX-027, replaces the 4d6450e
     /// value metric): a round trip is a violation if the arbitrageur gets back MORE of the input token than it spent,
     /// or if MORE THAN 1 wei of the output token remains (leg 2 is exact-in with the full leg-1 output; an

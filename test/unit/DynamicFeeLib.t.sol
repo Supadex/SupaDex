@@ -30,4 +30,15 @@ contract DynamicFeeLibTest is Test {
         updatedFee = DynamicFeeLib.computeDynamicFee(baseFee, lastFee, 0, 24, 12);
         assertEq(updatedFee, 4000);
     }
+
+    /// L-03: a base fee above the 10% library cap must not be quoted back down to 10%.
+    function test_baseFeeAboveTenPercentIsPreserved() public pure {
+        uint24 baseFee = 200_000; // 20%
+        uint24 updated = DynamicFeeLib.computeDynamicFee(baseFee, baseFee, 0, 0, 12);
+        assertEq(updated, baseFee);
+
+        // Surcharge is allowed up to the caller-supplied ceiling, still not cut to 10%.
+        uint24 spiked = DynamicFeeLib.computeDynamicFee(baseFee, baseFee, 100, 0, 12, 300_000);
+        assertEq(spiked, 205_000);
+    }
 }

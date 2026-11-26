@@ -25,6 +25,23 @@ library DynamicFeeLib {
         uint32 timeElapsed,
         uint32 decayHalfLife
     ) internal pure returns (uint24 updatedFee) {
+        return computeDynamicFee(baseFee, lastFee, tickDelta, timeElapsed, decayHalfLife, MAX_FEE);
+    }
+
+    /**
+     * @notice Same as the 5-argument form, with an explicit ceiling.
+     * @dev The result is never below `baseFee`. A global 10% cap used to override pools whose configured
+     * fee was already above 10% (L-03). `feeCeiling` is the plugin's per-pool max; it is raised to
+     * `baseFee` when the pool's own fee is higher.
+     */
+    function computeDynamicFee(
+        uint24 baseFee,
+        uint24 lastFee,
+        uint24 tickDelta,
+        uint32 timeElapsed,
+        uint32 decayHalfLife,
+        uint24 feeCeiling
+    ) internal pure returns (uint24 updatedFee) {
         // 1. Time decay from previous elevated fee
         uint256 decayedFee = baseFee;
         if (lastFee > baseFee && decayHalfLife > 0) {
@@ -41,10 +58,12 @@ library DynamicFeeLib {
         uint256 volatilitySurcharge = (uint256(tickDelta) * 50);
 
         uint256 total = decayedFee + volatilitySurcharge;
+        uint256 cap = feeCeiling;
+        if (cap < baseFee) cap = baseFee;
 
-        if (total > MAX_FEE) {
-            updatedFee = MAX_FEE;
-        } else if (total < MIN_FEE) {
+        if (total > cap) {
+            updatedFee = uint24(cap);
+        } else if (total < MIN_FEE && uint256(baseFee) < MIN_FEE && cap >= MIN_FEE) {
             updatedFee = MIN_FEE;
         } else {
             updatedFee = uint24(total);

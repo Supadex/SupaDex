@@ -13,5 +13,7 @@ interface IPluginWhitelist is IPluginWhitelistEvents {
     function canPluginReturnDelta(address plugin) external view returns (bool);
     function setPluginWhitelisted(address plugin, bool whitelisted) external;
     function setPluginCanReturnDelta(address plugin, bool allowed) external;
+    function pendingOwner() external view returns (address);
     function transferOwnership(address newOwner) external;
+    function acceptOwnership() external;
 }

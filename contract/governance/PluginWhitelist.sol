@@ -13,6 +13,9 @@ contract PluginWhitelist is IPluginWhitelist {
     mapping(address => bool) private _whitelisted;
     mapping(address => bool) private _canReturnDelta;
 
+    /// @notice Nominated owner. Becomes `owner` only after `acceptOwnership`.
+    address public override pendingOwner;
+
     modifier onlyOwner() {
         if (msg.sender != owner) revert PluginWhitelistErrors.Unauthorized();
         _;
@@ -60,8 +63,15 @@ contract PluginWhitelist is IPluginWhitelist {
 
     function transferOwnership(address newOwner) external override onlyOwner {
         if (newOwner == address(0)) revert PluginWhitelistErrors.ZeroAddress();
+        pendingOwner = newOwner;
+        emit OwnershipTransferStarted(owner, newOwner);
+    }
+
+    function acceptOwnership() external override {
+        if (msg.sender != pendingOwner) revert PluginWhitelistErrors.Unauthorized();
         address previous = owner;
-        owner = newOwner;
-        emit OwnershipTransferred(previous, newOwner);
+        owner = msg.sender;
+        pendingOwner = address(0);
+        emit OwnershipTransferred(previous, msg.sender);
     }
 }

@@ -64,6 +64,11 @@ interface ISupaPositionManager {
         uint128 amount1Min;
         uint256 deadline;
         bytes hookData;
+        /// @dev Address that receives principal. `address(0)` means the NFT owner.
+        address recipient;
+        /// @dev When true, principal is minted as ERC-6909 claims instead of pushed. Required for a
+        /// contract owner that cannot receive native ETH (L-05).
+        bool receiveAsClaims;
     }
 
     /**

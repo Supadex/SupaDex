@@ -61,8 +61,10 @@ contract VaultSolvencyHandler is Test, IUnlockCallback {
     }
 
     function mintClaims(uint256 amount) external {
-        amount = bound(amount, 1, 1_000_000 ether);
-        vault.unlock(abi.encode(uint8(0), amount));
+        // Full uint256 domain, including magnitudes that would wrap an unchecked delta (C-01 / T-1).
+        // Amounts above int128.max revert inside the unlock; successful mints stay backed by a settle.
+        amount = bound(amount, 1, type(uint256).max);
+        try vault.unlock(abi.encode(uint8(0), amount)) {} catch {}
     }
 
     function burnClaims(uint256 amount) external {
@@ -92,5 +94,7 @@ contract VaultSolvencyInvariantTest is StdInvariant, Test {
         uint256 physicalBalance = token.balanceOf(address(vault));
         uint256 claimsTotal = vault.balanceOf(address(handler), Currency.wrap(address(token)).toId());
         assertGe(physicalBalance, claimsTotal);
+        assertGe(vault.reservesOf(Currency.wrap(address(token))), vault.claimSupplyOf(Currency.wrap(address(token))));
+        assertGe(physicalBalance, vault.reservesOf(Currency.wrap(address(token))));
     }
 }

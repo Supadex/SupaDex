@@ -69,16 +69,21 @@ contract DeltaConservationHandler is Test, IUnlockCallback {
             IPoolManager.ModifyLiquidityParams memory params = IPoolManager.ModifyLiquidityParams({
                 tickLower: -120, tickUpper: 120, liquidityDelta: int256(amount), salt: bytes32(0)
             });
-            (BalanceDelta delta,) = manager.modifyLiquidity(key, params, "");
+            (BalanceDelta principal, BalanceDelta fees) = manager.modifyLiquidity(key, params, "");
+            BalanceDelta delta = principal.sub(fees);
             if (delta.amount0() > 0) {
                 vault.sync(key.currency0);
                 token0.transfer(address(vault), uint128(delta.amount0()));
                 vault.settle(key.currency0);
+            } else if (delta.amount0() < 0) {
+                vault.take(key.currency0, address(this), uint128(-delta.amount0()));
             }
             if (delta.amount1() > 0) {
                 vault.sync(key.currency1);
                 token1.transfer(address(vault), uint128(delta.amount1()));
                 vault.settle(key.currency1);
+            } else if (delta.amount1() < 0) {
+                vault.take(key.currency1, address(this), uint128(-delta.amount1()));
             }
         } else if (action == 1) {
             // Swap

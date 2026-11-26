@@ -150,9 +150,7 @@ contract CLAMMTickRecrossRegression is Test {
         );
 
         // Pre-fix, the dust-swapped pool paid 99,450 token1 vs 35,998 here.
-        assertEq(
-            -inflatedDelta.amount1(), -controlDelta.amount1(), "dust-swapped pool must not overpay"
-        );
+        assertEq(-inflatedDelta.amount1(), -controlDelta.amount1(), "dust-swapped pool must not overpay");
     }
 
     /// Mirror-image direction: crossing a LOWER tick must happen once and
@@ -175,5 +173,47 @@ contract CLAMMTickRecrossRegression is Test {
         _dustSwap();
         assertEq(engine.getLiquidity(poolId), 1_000_000, "after 2nd dust swap");
         assertEq(engine.getSlot0(poolId).tick(), -121, "tick after 2nd dust swap");
+    }
+
+    /// Downward dust cross, then a oneForZero swap back across the same tick.
+    /// The tick must be crossed once in each direction (liquidity 1e6 -> 3e6 -> 1e6),
+    /// and a following downward dust swap must cross it once more rather than re-applying it.
+    function test_boundaryReversalAfterDownwardDustCross() public {
+        engine.initialize(key, TickMathLib.getSqrtRatioAtTick(120), "");
+        _mod(-120, 120, 3_000_000);
+        _mod(120, 240, 1_000_000);
+        assertEq(engine.getLiquidity(poolId), 1_000_000, "pre: only B in range");
+
+        _dustSwap();
+        _assertLiquidityInvariant();
+        assertEq(engine.getLiquidity(poolId), 3_000_000, "after downward cross");
+        assertEq(engine.getSlot0(poolId).tick(), 119, "tick parked just below the boundary");
+
+        (BalanceDelta back,) = engine.swap(
+            key,
+            IPoolManager.SwapParams({
+                zeroForOne: false, amountSpecified: 1, sqrtPriceLimitX96: TickMathLib.MAX_SQRT_RATIO - 1
+            }),
+            key.fee,
+            0
+        );
+        back;
+        _assertLiquidityInvariant();
+        assertEq(engine.getLiquidity(poolId), 1_000_000, "upward cross restores B-only liquidity");
+        assertGe(engine.getSlot0(poolId).tick(), 120, "price is back on or above the boundary");
+
+        // Stop inside A's range so the swap crosses tick 120 once and does not exit A at -120.
+        (BalanceDelta down,) = engine.swap(
+            key,
+            IPoolManager.SwapParams({
+                zeroForOne: true, amountSpecified: 100_000, sqrtPriceLimitX96: TickMathLib.getSqrtRatioAtTick(0)
+            }),
+            key.fee,
+            0
+        );
+        down;
+        _assertLiquidityInvariant();
+        assertEq(engine.getLiquidity(poolId), 3_000_000, "return cross applies tick 120 once");
+        assertLt(engine.getSlot0(poolId).tick(), 120, "price is back below the boundary");
     }
 }

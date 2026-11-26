@@ -159,4 +159,14 @@ contract LVRShieldPluginTest is Test {
         vm.expectRevert(abi.encodeWithSelector(PluginErrors.PluginPermissionDenied.selector, address(bare), uint32(0)));
         bare.setDecayHalfLife(key, 24);
     }
+
+    /// L-03: a pool whose base fee is above 10% must not have that fee silently replaced by the 10% cap.
+    function test_highBaseFeeIsNotCappedAtTenPercent() public {
+        PoolKey memory high = key;
+        high.fee = 200_000;
+        plugin.afterInitialize(address(this), high, 100, 0);
+
+        (, uint24 dynamicFee) = plugin.beforeSwap(address(this), high, IPoolManager.SwapParams(true, 1000, 0), "");
+        assertEq(dynamicFee, 200_000);
+    }
 }

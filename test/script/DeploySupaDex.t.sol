@@ -6,7 +6,11 @@ import {DeploySupaDex} from "../../script/DeploySupaDex.s.sol";
 import {VerifyDeployments} from "../../script/VerifyDeployments.s.sol";
 import {DeployEnvironment} from "../../script/DeployEnvironment.sol";
 import {SupaTimelock} from "../../contract/governance/SupaTimelock.sol";
+import {SupaRoles} from "../../contract/governance/SupaRoles.sol";
+import {PluginWhitelist} from "../../contract/governance/PluginWhitelist.sol";
+import {SupaVault} from "../../contract/core/SupaVault.sol";
 import {SupaPoolManager} from "../../contract/core/SupaPoolManager.sol";
+import {SupaFeeCollector} from "../../contract/periphery/SupaFeeCollector.sol";
 import {CircuitBreaker} from "../../contract/security/CircuitBreaker.sol";
 
 /// TEST-ONLY Safe stand-in exposing the two calls the verifier uses to recognise a multisig.
@@ -90,6 +94,19 @@ contract DeploySupaDexTest is Test {
         // deploy() runs inside the script contract, so CREATEs and owner-only wiring originate from it (under
         // `forge script` broadcast both come from the EOA). Use the script address as the deployer.
         res = deployer.deploy(address(deployer), _cfg());
+        _acceptHandoff(res);
+    }
+
+    /// @dev Two-step handoff: the timelock must accept. Tests prank it; production schedules the calls.
+    function _acceptHandoff(DeploySupaDex.DeploymentResult memory res) internal {
+        vm.startPrank(res.timelock);
+        SupaVault(payable(res.vaultProxy)).acceptOwnership();
+        SupaPoolManager(res.poolManager).acceptOwnership();
+        SupaRoles(res.roles).acceptOwnership();
+        PluginWhitelist(res.pluginWhitelist).acceptOwnership();
+        SupaFeeCollector(payable(res.feeCollector)).acceptOwnership();
+        CircuitBreaker(res.circuitBreaker).acceptOwnership();
+        vm.stopPrank();
     }
 
     function test_deterministicDeploymentAndVerification() public {
@@ -134,6 +151,8 @@ contract DeploySupaDexTest is Test {
         // simulate a deployment where the pool manager is owned by someone else
         vm.prank(res.timelock);
         SupaPoolManager(res.poolManager).transferOwnership(address(0xBAD));
+        vm.prank(address(0xBAD));
+        SupaPoolManager(res.poolManager).acceptOwnership();
         vm.expectRevert(bytes(DeployEnvironment.DEPLOYMENT_BLOCKED));
         verifier.verify(res, _cfg(), address(deployer));
     }
@@ -278,6 +297,7 @@ contract DeploySupaDexTest is Test {
         (DeployHarness d, VerifyHarness v) = _forkMainnet();
         DeploySupaDex.RoleConfig memory cfg = _safeCfg();
         DeploySupaDex.DeploymentResult memory res = d.deploy(address(d), cfg);
+        _acceptHandoff(res);
         CircuitBreaker cb = CircuitBreaker(res.circuitBreaker);
         assertTrue(cb.isCurvePaused(1), "BIN_AMM paused at genesis");
         assertFalse(cb.isCurvePaused(0) || cb.isCurvePaused(2), "CLAMM / STABLE live");
@@ -290,6 +310,7 @@ contract DeploySupaDexTest is Test {
     function test_valueBearing_eoaRoleHoldersBlocked() public {
         (DeployHarness d, VerifyHarness v) = _forkMainnet();
         DeploySupaDex.DeploymentResult memory res = d.deploy(address(d), _cfg()); // EOAs
+        _acceptHandoff(res);
         VerifyDeployments.Report memory r = v.check(res, _cfg(), address(d));
         assertEq(r.failures, 5, "proposer, executor, canceller, guardian, operator are not multisigs");
         vm.expectRevert(bytes(DeployEnvironment.DEPLOYMENT_BLOCKED));
@@ -297,6 +318,7 @@ contract DeploySupaDexTest is Test {
         // the same EOA config is fine on a local chain (not value-bearing)
         vm.chainId(31337);
         DeploySupaDex.DeploymentResult memory local = deployer.deploy(address(deployer), _cfg());
+        _acceptHandoff(local);
         assertEq(verifier.verify(local, _cfg(), address(deployer)).failures, 0);
         assertFalse(CircuitBreaker(local.circuitBreaker).isCurvePaused(1), "BIN live on local chains by default");
     }
@@ -305,6 +327,7 @@ contract DeploySupaDexTest is Test {
         (DeployHarness d, VerifyHarness v) = _forkMainnet();
         DeploySupaDex.RoleConfig memory cfg = _safeCfg();
         DeploySupaDex.DeploymentResult memory res = d.deploy(address(d), cfg);
+        _acceptHandoff(res);
         vm.prank(res.timelock);
         CircuitBreaker(res.circuitBreaker).unpauseCurve(1);
         VerifyDeployments.Report memory r = v.check(res, cfg, address(d));
@@ -316,6 +339,7 @@ contract DeploySupaDexTest is Test {
         DeploySupaDex.RoleConfig memory cfg = _safeCfg();
         cfg.guardian = cfg.proposer;
         DeploySupaDex.DeploymentResult memory res = d.deploy(address(d), cfg);
+        _acceptHandoff(res);
         VerifyDeployments.Report memory r = v.check(res, cfg, address(d));
         assertEq(r.failures, 1, "GUARDIAN != PROPOSER");
     }

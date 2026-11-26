@@ -174,7 +174,9 @@ contract PositionNFTHandler is Test {
             amount0Min: 0,
             amount1Min: 0,
             deadline: block.timestamp + 100,
-            hookData: ""
+            hookData: "",
+            recipient: address(0),
+            receiveAsClaims: false
         });
 
         posManager.decreaseLiquidity(params);

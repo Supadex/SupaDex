@@ -41,6 +41,7 @@ contract SupaPoolManager is IPoolManager {
         return true;
     }
 
+    event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event CircuitBreakerSet(address indexed circuitBreaker);
     event PluginWhitelistSet(address indexed whitelist);
@@ -61,6 +62,17 @@ contract SupaPoolManager is IPoolManager {
     mapping(Currency => uint256) public override protocolFeesAccrued;
     /// @notice Plugin permission bitmask cached at initialize; plugins cannot change it afterwards.
     mapping(PoolId => uint32) public pluginPermissions;
+
+    /**
+     * @notice Tokens attributed to a pool, per currency (M-01). Outflows cannot exceed this balance,
+     * so one pool cannot pay out another pool's reserves from the shared vault.
+     * @dev Not a UUPS layout: PoolManager is immutable and redeployed. Protocol fees are booked outside
+     * this pot (`protocolFeesAccrued`) at the moment they are split off the swap input.
+     */
+    mapping(PoolId => mapping(Currency => uint256)) public poolReserves;
+
+    /// @notice Nominated owner. Becomes `owner` only after `acceptOwnership`.
+    address public pendingOwner;
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert VaultErrors.Unauthorized();
@@ -114,8 +126,16 @@ contract SupaPoolManager is IPoolManager {
 
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert VaultErrors.Unauthorized();
-        emit OwnershipTransferred(owner, newOwner);
-        owner = newOwner;
+        pendingOwner = newOwner;
+        emit OwnershipTransferStarted(owner, newOwner);
+    }
+
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert VaultErrors.Unauthorized();
+        address previous = owner;
+        owner = msg.sender;
+        pendingOwner = address(0);
+        emit OwnershipTransferred(previous, msg.sender);
     }
 
     function _checkCircuitBreaker(PoolId id, CurveType curveType) internal view {
@@ -190,8 +210,10 @@ contract SupaPoolManager is IPoolManager {
     {
         if (amount0 == 0 && amount1 == 0) return;
         if (engine.getLiquidity(key.toId()) == 0) {
-            if (amount0 > 0) protocolFeesAccrued[key.currency0] += amount0;
-            if (amount1 > 0) protocolFeesAccrued[key.currency1] += amount1;
+            // No LPs left to donate to. Move the retained tokens out of this pool's pot so they cannot
+            // also be paid out as liquidity, then book them as protocol fees.
+            _moveToProtocol(key.toId(), key.currency0, amount0);
+            _moveToProtocol(key.toId(), key.currency1, amount1);
             return;
         }
         engine.donate(key, amount0, amount1);
@@ -367,9 +389,34 @@ contract SupaPoolManager is IPoolManager {
     }
 
     /// @dev Caller owes positive deltas (vault debit = negative account delta) and is owed negative ones.
+    /// Positive deltas grow this pool's recorded reserves; negative deltas shrink them and revert if the
+    /// pool does not hold the tokens (M-01).
     function _accountCallerDelta(PoolKey memory key, BalanceDelta delta) internal {
-        if (delta.amount0() != 0) vault.accountDelta(msg.sender, key.currency0, -delta.amount0());
-        if (delta.amount1() != 0) vault.accountDelta(msg.sender, key.currency1, -delta.amount1());
+        _applyPoolLeg(key.toId(), key.currency0, delta.amount0());
+        _applyPoolLeg(key.toId(), key.currency1, delta.amount1());
+    }
+
+    function _applyPoolLeg(PoolId id, Currency currency, int128 delta) internal {
+        if (delta == 0) return;
+        if (delta > 0) {
+            poolReserves[id][currency] += uint256(uint128(delta));
+        } else {
+            uint256 owed = uint256(uint128(-delta));
+            uint256 held = poolReserves[id][currency];
+            if (held < owed) revert PoolErrors.PoolInsolvent(id, currency, owed, held);
+            poolReserves[id][currency] = held - owed;
+        }
+        vault.accountDelta(msg.sender, currency, -int256(delta));
+    }
+
+    /// @dev Moves `amount` from the pool pot into the global protocol-fee pot. No vault delta: the tokens
+    /// are already in the vault and become withdrawable only via `collectProtocolFees`.
+    function _moveToProtocol(PoolId id, Currency currency, uint256 amount) internal {
+        if (amount == 0) return;
+        uint256 held = poolReserves[id][currency];
+        if (held < amount) revert PoolErrors.PoolInsolvent(id, currency, amount, held);
+        poolReserves[id][currency] = held - amount;
+        protocolFeesAccrued[currency] += amount;
     }
 
     /// @dev keccak256("supadex.poolmanager.lastSwapFee") - 1
@@ -407,13 +454,8 @@ contract SupaPoolManager is IPoolManager {
 
         uint24 protocolFee = slot0.protocolFee();
         ICurveEngine engine = getCurveEngine(key.curveType);
-        {
-            uint256 protocolFeeAmount;
-            (swapDelta, protocolFeeAmount) = engine.swap(key, params, fee, protocolFee);
-            if (protocolFeeAmount > 0) {
-                protocolFeesAccrued[params.zeroForOne ? key.currency0 : key.currency1] += protocolFeeAmount;
-            }
-        }
+        uint256 protocolFeeAmount;
+        (swapDelta, protocolFeeAmount) = engine.swap(key, params, fee, protocolFee);
 
         // Sync before afterSwap so plugins (e.g. LVR oracle) read post-swap tick/liquidity.
         _syncSlot0FromEngine(id, engine, protocolFee);
@@ -421,7 +463,9 @@ contract SupaPoolManager is IPoolManager {
 
         swapDelta = _applySwapHookDelta(key, params, swapDelta, hookData);
 
+        // Credit the full input (fees included) to the pool, then move the protocol's share out of the pot.
         _accountCallerDelta(key, swapDelta);
+        _moveToProtocol(id, params.zeroForOne ? key.currency0 : key.currency1, protocolFeeAmount);
 
         emit Swap(
             id,
@@ -483,9 +527,12 @@ contract SupaPoolManager is IPoolManager {
         uint256 accrued = protocolFeesAccrued[currency];
         collected = amount > accrued ? accrued : amount;
         if (collected == 0) return 0;
+        // accountDelta is int128-bounded. A larger balance is collected across calls.
+        uint256 cap = uint256(uint128(type(int128).max));
+        if (collected > cap) collected = cap;
 
         protocolFeesAccrued[currency] = accrued - collected;
-        vault.accountDelta(recipient, currency, SafeCastLib.toInt256(collected));
+        vault.accountDelta(recipient, currency, int256(collected));
         emit ProtocolFeesCollected(currency, recipient, collected);
     }
 
@@ -507,10 +554,14 @@ contract SupaPoolManager is IPoolManager {
         );
 
         if (amount0 != 0) {
-            vault.accountDelta(msg.sender, key.currency0, -SafeCastLib.toInt256(amount0));
+            int128 a0 = SafeCastLib.toInt128(amount0);
+            poolReserves[id][key.currency0] += uint256(uint128(a0));
+            vault.accountDelta(msg.sender, key.currency0, -int256(a0));
         }
         if (amount1 != 0) {
-            vault.accountDelta(msg.sender, key.currency1, -SafeCastLib.toInt256(amount1));
+            int128 a1 = SafeCastLib.toInt128(amount1);
+            poolReserves[id][key.currency1] += uint256(uint128(a1));
+            vault.accountDelta(msg.sender, key.currency1, -int256(a1));
         }
 
         ICurveEngine engine = getCurveEngine(key.curveType);

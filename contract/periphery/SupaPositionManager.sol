@@ -12,9 +12,19 @@ import {PoolKey} from "../types/PoolKey.sol";
 import {PoolId} from "../types/PoolId.sol";
 import {Currency, CurrencyLibrary} from "../types/Currency.sol";
 import {BalanceDelta} from "../types/BalanceDelta.sol";
+import {Position} from "../types/Position.sol";
+import {ICurveEngine} from "../interfaces/ICurveEngine.sol";
+import {SupaPoolManager} from "../core/SupaPoolManager.sol";
 import {PeripheryErrors} from "../errors/PeripheryErrors.sol";
 import {VaultErrors} from "../errors/VaultErrors.sol";
 import {ERC721} from "solady/tokens/ERC721.sol";
+
+interface IEnginePositions {
+    function getPosition(PoolId id, address owner, int24 tickLower, int24 tickUpper, bytes32 salt)
+        external
+        view
+        returns (Position.Info memory);
+}
 
 interface IPositionNFTDescriptor {
     function tokenURI(uint256 tokenId, ISupaPositionManager.PositionInfo memory pos)
@@ -337,11 +347,15 @@ contract SupaPositionManager is
         _pay(params.poolKey.currency0, payer, amount0, params.payWithClaims);
         _pay(params.poolKey.currency1, payer, amount1, params.payWithClaims);
 
+        // Store the liquidity the engine actually credited. StableSwap locks MINIMUM_LIQUIDITY on the
+        // first deposit, so the NFT must not record the full requested shares (L-02).
+        liquidity = _creditedLiquidity(params.poolKey, params.tickLower, params.tickUpper, bytes32(tokenId));
+
         _positions[tokenId] = PositionInfo({
             poolKey: params.poolKey,
             tickLower: params.tickLower,
             tickUpper: params.tickUpper,
-            liquidity: params.liquidity,
+            liquidity: liquidity,
             feeGrowthInside0LastX128: 0,
             feeGrowthInside1LastX128: 0,
             tokensOwed0: 0,
@@ -349,7 +363,6 @@ contract SupaPositionManager is
         });
 
         _mint(params.recipient, tokenId);
-        liquidity = params.liquidity;
 
         emit PositionMinted(
             tokenId,
@@ -395,7 +408,7 @@ contract SupaPositionManager is
         _pay(pos.poolKey.currency0, payer, amount0, params.payWithClaims);
         _pay(pos.poolKey.currency1, payer, amount1, params.payWithClaims);
 
-        pos.liquidity += params.liquidity;
+        pos.liquidity = _creditedLiquidity(pos.poolKey, pos.tickLower, pos.tickUpper, bytes32(params.tokenId));
         liquidity = pos.liquidity;
 
         emit LiquidityIncreased(params.tokenId, params.liquidity, amount0, amount1);
@@ -433,13 +446,28 @@ contract SupaPositionManager is
 
         pos.liquidity -= params.liquidity;
 
-        // Deliver withdrawn principal to NFT owner (not an approved operator).
+        // Principal goes to the chosen recipient. `address(0)` keeps the NFT owner. Claims avoid a
+        // native-ETH push that a contract owner may reject (L-05).
         address owner_ = ownerOf(params.tokenId);
+        address recipient = params.recipient == address(0) ? owner_ : params.recipient;
         payer; // authorization already checked at entry
-        _take(pos.poolKey.currency0, owner_, amount0, false);
-        _take(pos.poolKey.currency1, owner_, amount1, false);
+        _take(pos.poolKey.currency0, recipient, amount0, params.receiveAsClaims);
+        _take(pos.poolKey.currency1, recipient, amount1, params.receiveAsClaims);
 
         emit LiquidityDecreased(params.tokenId, params.liquidity, amount0, amount1);
+    }
+
+    /// @dev Liquidity currently stored on the curve engine for this manager's position key.
+    function _creditedLiquidity(PoolKey memory key, int24 tickLower, int24 tickUpper, bytes32 salt)
+        internal
+        view
+        returns (uint128)
+    {
+        ICurveEngine engine = SupaPoolManager(address(poolManager)).getCurveEngine(key.curveType);
+        return
+            IEnginePositions(address(engine))
+            .getPosition(key.toId(), address(this), tickLower, tickUpper, salt)
+            .liquidity;
     }
 
     /**

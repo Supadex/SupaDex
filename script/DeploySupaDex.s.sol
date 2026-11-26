@@ -269,14 +269,17 @@ contract DeploySupaDex is Script {
 
     function _handOff(DeploymentResult memory res) internal {
         SupaVault(payable(res.vaultProxy)).setPoolManager(res.poolManager, true);
+        // L-01: two-step. This nominates the timelock; it is not the owner until it calls acceptOwnership
+        // (schedule + delay + execute). A mistyped timelock never receives ownership, and the deployer can
+        // nominate again. VerifyDeployments requires owner == timelock and pendingOwner == 0, so it passes
+        // only after the timelock accepts.
         SupaVault(payable(res.vaultProxy)).transferOwnership(res.timelock);
         SupaPoolManager(res.poolManager).transferOwnership(res.timelock);
         SupaRoles(res.roles).transferOwnership(res.timelock);
         PluginWhitelist(res.pluginWhitelist).transferOwnership(res.timelock);
         SupaFeeCollector(payable(res.feeCollector)).transferOwnership(res.timelock);
         CircuitBreaker(res.circuitBreaker).transferOwnership(res.timelock);
-        console2.log(
-            "8. Ownership of vault, pool manager, roles, whitelist, fee collector, circuit breaker -> SupaTimelock"
-        );
+        console2.log("8. Timelock NOMINATED as owner of vault, pool manager, roles, whitelist, fee collector, breaker");
+        console2.log("   The timelock must acceptOwnership on each contract before it can administer them.");
     }
 }

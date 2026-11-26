@@ -91,8 +91,8 @@ contract MultiCurveHandler is Test, IUnlockCallback {
             // Modify Liquidity
             IPoolManager.ModifyLiquidityParams memory params =
                 SecurityTestSetup.liquidityParams(selectedKey, amount, true);
-            (BalanceDelta delta,) = manager.modifyLiquidity(selectedKey, params, "");
-            _settleDeltas(selectedKey, delta);
+            (BalanceDelta principal, BalanceDelta fees) = manager.modifyLiquidity(selectedKey, params, "");
+            _settleDeltas(selectedKey, principal.sub(fees));
             successfulLiquidityModifications++;
         } else if (action == 1) {
             // Swap
@@ -128,19 +128,19 @@ contract MultiCurveHandler is Test, IUnlockCallback {
     }
 
     function swapCLAMM(bool zeroForOne, uint256 amount) external {
-        amount = bound(amount, 100, 5_000 ether);
+        amount = bound(amount, 1, 5_000 ether);
         _mintTokensForSwap(clammKey, zeroForOne, amount);
         vault.unlock(abi.encode(uint8(1), uint8(0), zeroForOne, amount));
     }
 
     function swapBinAMM(bool zeroForOne, uint256 amount) external {
-        amount = bound(amount, 100, 5_000 ether);
+        amount = bound(amount, 1, 5_000 ether);
         _mintTokensForSwap(binKey, zeroForOne, amount);
         vault.unlock(abi.encode(uint8(1), uint8(1), zeroForOne, amount));
     }
 
     function swapStableAMM(bool zeroForOne, uint256 amount) external {
-        amount = bound(amount, 100, 5_000 ether);
+        amount = bound(amount, 1, 5_000 ether);
         _mintTokensForSwap(stableKey, zeroForOne, amount);
         vault.unlock(abi.encode(uint8(1), uint8(2), zeroForOne, amount));
     }
@@ -276,5 +276,20 @@ contract MultiCurveSolvencyInvariantTest is StdInvariant, Test {
         assertTrue(tokenA.balanceOf(address(vault)) >= 0);
         assertTrue(tokenB.balanceOf(address(vault)) >= 0);
         assertTrue(tokenC.balanceOf(address(vault)) >= 0);
+    }
+
+    /// @notice T-4: each currency's pool pots + protocol fees + claims are covered by vault reserves.
+    function invariant_perPoolReservesWithinVault() public view {
+        _assertCurrencyIsolated(clammKey.currency0);
+        _assertCurrencyIsolated(clammKey.currency1);
+        _assertCurrencyIsolated(binKey.currency1);
+    }
+
+    function _assertCurrencyIsolated(Currency currency) internal view {
+        uint256 pots = manager.poolReserves(clammKey.toId(), currency) + manager.poolReserves(binKey.toId(), currency)
+            + manager.poolReserves(stableKey.toId(), currency);
+        uint256 owed = pots + manager.protocolFeesAccrued(currency) + vault.claimSupplyOf(currency);
+        assertLe(owed, vault.reservesOf(currency), "pool pots + fees + claims exceed reserves");
+        assertLe(vault.reservesOf(currency), currency.balanceOf(address(vault)), "reserves exceed balance");
     }
 }
