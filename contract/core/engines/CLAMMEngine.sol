@@ -377,9 +377,22 @@ contract CLAMMEngine is ICurveEngine {
         if (nextTick > TickMathLib.MAX_TICK) nextTick = TickMathLib.MAX_TICK;
 
         uint160 sqrtPriceNextX96 = TickMathLib.getSqrtRatioAtTick(nextTick);
+        uint160 sqrtPriceStartX96 = state.sqrtPriceX96;
         _applyStep(state, ctx, sqrtPriceNextX96);
 
-        if (state.sqrtPriceX96 != sqrtPriceNextX96) return false;
+        if (state.sqrtPriceX96 != sqrtPriceNextX96) {
+            // Price did not reach the next tick (Uniswap v3 rule): recompute
+            // the tick from the new price only if the price actually moved.
+            // A zero-movement step must leave the tick untouched. Recomputing
+            // unconditionally let such a step undo a prior downward cross
+            // (tick set to nextTick - 1 below) and re-cross the same tick,
+            // applying its liquidityNet again on every repetition
+            // (KupiaSec hackwatch alert, 25 Nov 2026 — audit fix).
+            if (state.sqrtPriceX96 != sqrtPriceStartX96) {
+                state.currentTick = TickMathLib.getTickAtSqrtRatio(state.sqrtPriceX96);
+            }
+            return false;
+        }
         if (initialized) {
             TickInfo storage tickInfo = pool.ticks[nextTick];
             // Flip fee growth outside on cross (unchecked wraparound)
@@ -441,7 +454,11 @@ contract CLAMMEngine is ICurveEngine {
         }
 
         state.sqrtPriceX96 = sqrtPriceAfterStepX96;
-        state.currentTick = TickMathLib.getTickAtSqrtRatio(sqrtPriceAfterStepX96);
+        // NOTE: the tick is deliberately NOT recomputed here. _swapStep sets
+        // it in exactly one place per step outcome (reached tick / price
+        // moved / price unmoved). An unconditional recompute let a
+        // zero-movement step undo a downward tick cross and re-cross the
+        // same tick (KupiaSec hackwatch alert, 25 Nov 2026 — audit fix).
     }
 
     function _swapDelta(IPoolManager.SwapParams memory params, SwapExecutionState memory state)
