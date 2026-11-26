@@ -28,10 +28,17 @@ contract AntiJITVestingPlugin is BaseHook, IPluginEvents {
 
     /**
      * @dev Pending unvested fee bps for the in-flight modifyLiquidity call.
+     *      I-06 (internal pre-audit 2026-11-26): held in TRANSIENT storage
+     *      (`tstore`/`tload`), not persistent storage. The value only needs to
+     *      travel from `beforeModifyLiquidity` to `afterModifyLiquidity` inside
+     *      the same unlock; persistent storage was more expensive and could leak
+     *      across calls. Transient storage is cleared automatically at the end
+     *      of the transaction, so no explicit clear is needed (afterModify still
+     *      reads-then-zeroes it within the call for defence in depth).
      *      Single slot is safe: PoolManager is non-reentrant across unlock, and before/after
-     *      pair atomically. Cleared in afterModifyLiquidity.
+     *      pair atomically.
      */
-    uint24 private _pendingUnvestedBps;
+    bytes32 internal constant PENDING_UNVESTED_BPS_SLOT = keccak256("supadex.antijit.pendingUnvestedBps");
 
     /**
      * @notice Position residency container.
@@ -76,7 +83,12 @@ contract AntiJITVestingPlugin is BaseHook, IPluginEvents {
 
         // APUS-SUPADEX-008: every modifyLiquidity realises the position's accrued fees (engines pay them on adds
         // too), so the haircut is ALWAYS evaluated against the residency that earned those fees, before any update.
-        _pendingUnvestedBps = _computeUnvestedBps(residency);
+        // I-06: transient storage — the value lives only until `afterModifyLiquidity` in this same unlock.
+        bytes32 slot = PENDING_UNVESTED_BPS_SLOT;
+        uint24 pendingBps = _computeUnvestedBps(residency);
+        assembly ("memory-safe") {
+            tstore(slot, pendingBps)
+        }
 
         if (params.liquidityDelta > 0) {
             uint128 addLiq = uint128(uint256(int256(params.liquidityDelta)));
@@ -121,8 +133,15 @@ contract AntiJITVestingPlugin is BaseHook, IPluginEvents {
         delta; // Principal is never haircut — fees only.
         params;
 
-        uint24 unvestedBps = _pendingUnvestedBps;
-        _pendingUnvestedBps = 0;
+        // I-06: read-then-zero the transient pending value (tstore is also cleared
+        // automatically at the end of the transaction, so a stale value can never leak
+        // into a later call even if this line were skipped).
+        bytes32 slot = PENDING_UNVESTED_BPS_SLOT;
+        uint24 unvestedBps;
+        assembly ("memory-safe") {
+            unvestedBps := tload(slot)
+            tstore(slot, 0)
+        }
         if (unvestedBps == 0) {
             return (this.afterModifyLiquidity.selector, BalanceDelta.wrap(0), BalanceDelta.wrap(0));
         }
