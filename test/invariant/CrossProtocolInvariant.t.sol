@@ -313,6 +313,24 @@ contract CrossProtocolInvariantTest is StdInvariant, Test {
         assertLe(hi, lo * stable.MAX_IMBALANCE_RATIO());
     }
 
+    /// REGRESSION (KNOWN-FAILING until the Stable imbalance check is tightened — see phase-4 report):
+    /// deterministic replay of the invariant_stableImbalanceBounded counterexample found at CI parameters
+    /// (256 runs x depth 128, seed 0x5eed2026). Removing 100% of the sole Stable LP leaves the pool at dust
+    /// reserves (~1000/1000, the MINIMUM_LIQUIDITY lock); a 19,009-wei exact-in swap then drains the low side
+    /// to 2 wei and leaves (20001, 2) — ratio 10,000.5:1, past the documented MAX_IMBALANCE_RATIO:1 bound
+    /// the invariant encodes. StableAMMEngine._checkSwapBounds enforces the bound with floor division
+    /// (`hi / ratio <= lo`), which tolerates hi up to lo*ratio + (ratio-1). Expected to fail until the engine
+    /// check is tightened (or the bound is re-decided by CTO/Jexi). Do NOT weaken this assertion.
+    function test_stableImbalanceBoundedDustRepro() public {
+        h.removeLiquidity(0, 8, 6100);
+        h.swap(14, false, 19009);
+        (uint256 r0, uint256 r1) = stable.getReserves(keys[2].toId());
+        console2.log("repro reserves r0/r1:", r0, r1);
+        uint256 hi = r0 > r1 ? r0 : r1;
+        uint256 lo = r0 > r1 ? r1 : r0;
+        assertLe(hi, lo * stable.MAX_IMBALANCE_RATIO());
+    }
+
     /// Handler health: only documented economic errors may revert (no unexpected failure modes).
     function invariant_noUnexpectedReverts() public view {
         assertEq(h.unexpectedReverts(), 0, "unexpected revert selector");
