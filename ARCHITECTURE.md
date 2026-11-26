@@ -8,7 +8,7 @@
 > - **`accountDelta` is PoolManager-only.** The vault owner has no path to credit itself (ADR-0005).
 > - **Circuit breaker = withdraw-only.** When the vault, a pool or a curve is paused, swaps, donations, initializations and liquidity additions revert. Liquidity removals, fee collection and ERC-6909 claim withdrawals keep working.
 > - **Plugin permissions are cached at pool initialization.** A plugin cannot change its own hooks later. If the permission read fails, `initialize` reverts. If a plugin is delisted, liquidity removal still works with all hooks skipped; adds and swaps revert.
-> - **BinAMM pool creation is disabled** (`binAmmEnabled() == false`, ADR-0004). The engine has a single active bin with a fixed price and no traversal.
+> - **BinAMM pool creation is enabled** (`binAmmEnabled() == true`, ADR-0006, superseding the ADR-0004 gate). The engine is a real multi-bin engine (price moves bin to bin). On value-bearing chains the BIN curve starts **paused at genesis** (`DeploySupaDex.binPausedAtGenesis()` / `CircuitBreaker.pauseCurve(1)`); unpausing is a timelocked action requiring Jexi review and an external audit. (I-02 correction, 2026-11-26: earlier revisions of this file said BIN was disabled.)
 > - **StableAMM** uses one Curve 2-coin invariant (Ann = 4A) for both D and Y. It reverts on non-convergence, rounds against the trader, and uses proportional LP shares with a 1,000-share first-deposit lock (ADR-0001). It requires equal token decimals and a hard-coded A = 100; decimal scaling and A-ramping are not implemented (SDX-013).
 > - **The LVR surcharge applies only to CLAMM pools** (ADR-0003). The signal is the realised |Δtick| over the trailing 12 s window, so a constant tick means no surcharge. The signal is endogenous, so pool trades can manipulate it. It is not a CEX/fair-price oracle. Fee bounds are governance-only and capped at 10%.
 > - **Anti-JIT vesting** evaluates the haircut on every liquidity modification, including additions. Adding liquidity restarts the position's residency clock.
@@ -141,7 +141,7 @@
    - Optimized Q64.96 square root price math with bitmap-searched initialized ticks.
 2. **BinAMM (Discretized Bins)**:
    - Liquidity is deposited into discrete price bins with zero slippage inside each bin, enabling active liquidity management with minimal math overhead.
-   - **Status:** the current engine has one fixed-price active bin and no traversal, so pool creation is disabled (ADR-0004).
+   - **Status:** the current engine is a multi-bin engine (ADR-0006, superseding ADR-0004); pool creation is enabled (`binAmmEnabled() == true`), but the BIN curve is paused at genesis on value-bearing chains until Jexi review and an external audit (see the status box above).
 3. **StableAMM (Amplified Invariant Curve)**:
    - High capital efficiency for **near-1:1 pegged pairs only** (e.g. USDC/USDT, DAI/USDC). Pools always start at the
      normalised 1:1 peg (ADR-0007, deviation (c)), with per-pool A chosen by the creator within the governance range.
