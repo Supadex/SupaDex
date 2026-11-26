@@ -510,6 +510,56 @@ contract SecurityRegressionTest is Test {
         attacker.swap(evilKey, true, 1_000_000);
     }
 
+    /// I-01 / T-8: afterSwap hook deltas are rejected in BOTH directions and BOTH
+    /// exactInput/exactOutput modes, because the reference leg is always the input
+    /// (debit) leg. M3/H1 cover zeroForOne exactInput (both signs); these four cover
+    /// the remaining direction x mode combinations. The rejection is the specified
+    /// behaviour (unsupported by design) — see `_validateHookDelta` NatSpec.
+    function _setupEvilHook(int128 steal) internal returns (PoolKey memory evilKey) {
+        EvilHook evil = new EvilHook(manager);
+        evil.setSteal(steal);
+
+        address[] memory plugins = new address[](1);
+        plugins[0] = address(evil);
+        PluginWhitelist wl = new PluginWhitelist(address(this), plugins);
+        wl.setPluginCanReturnDelta(address(evil), true);
+        manager.setPluginWhitelist(IPluginWhitelist(address(wl)));
+
+        evilKey = key;
+        evilKey.plugin = address(evil);
+        evilKey.fee = 500;
+        manager.initialize(evilKey, 1 << 96, "");
+        victim.modify(evilKey, -120, 120, 10_000_000, bytes32(0));
+    }
+
+    /// I-01: zeroForOne exactOutput (amountSpecified < 0), positive hook delta.
+    function test_I01_afterSwapDeltaRejected_zeroForOne_exactOutput() public {
+        PoolKey memory evilKey = _setupEvilHook(int128(1e6));
+        vm.expectRevert(PoolErrors.HookDeltaCapExceeded.selector);
+        attacker.swap(evilKey, true, -1_000_000);
+    }
+
+    /// I-01: zeroForOne exactOutput, negative hook delta (would reduce the debit).
+    function test_I01_afterSwapDeltaRejected_zeroForOne_exactOutput_negativeSteal() public {
+        PoolKey memory evilKey = _setupEvilHook(-int128(1e5));
+        vm.expectRevert(PoolErrors.HookDeltaCapExceeded.selector);
+        attacker.swap(evilKey, true, -1_000_000);
+    }
+
+    /// I-01: oneForZero exactInput, positive hook delta.
+    function test_I01_afterSwapDeltaRejected_oneForZero_exactInput() public {
+        PoolKey memory evilKey = _setupEvilHook(int128(1e6));
+        vm.expectRevert(PoolErrors.HookDeltaCapExceeded.selector);
+        attacker.swap(evilKey, false, 1_000_000);
+    }
+
+    /// I-01: oneForZero exactOutput, negative hook delta.
+    function test_I01_afterSwapDeltaRejected_oneForZero_exactOutput() public {
+        PoolKey memory evilKey = _setupEvilHook(-int128(1e5));
+        vm.expectRevert(PoolErrors.HookDeltaCapExceeded.selector);
+        attacker.swap(evilKey, false, -1_000_000);
+    }
+
     /// M: delisting blocks donate hooks on initialized pools
     function test_M_delistedPluginBlocksDonate() public {
         BenignHook hook = new BenignHook(manager);

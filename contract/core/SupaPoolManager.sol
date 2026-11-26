@@ -173,6 +173,19 @@ contract SupaPoolManager is IPoolManager {
      * - `referenceAmount > 0` (user debit): any non-zero hook underpays while engine state advances → reject.
      * - `referenceAmount < 0` (user credit): only non-negative haircuts with `hook <= |reference|`.
      * - `referenceAmount == 0`: non-zero hooks create value from nothing → reject.
+     *
+     * @notice I-01 (internal pre-audit 2026-11-26) — afterSwap hook deltas are UNSUPPORTED BY DESIGN:
+     * `_applySwapHookDelta` always passes the INPUT (debit) leg as the reference
+     * (`zeroForOne ? swapDelta.amount0() : swapDelta.amount1()`), so the first rule
+     * above rejects EVERY non-zero afterSwap delta, in both swap directions and for
+     * both exactInput and exactOutput. The path is deliberately dead, not broken:
+     * "fixing" it to use the output leg would strand the haircut — unlike
+     * `_afterModifyLiquidity`, where the haircut is credited to remaining LPs via
+     * fee growth, a swap haircut has no recipient and would sit unaccounted in
+     * `reservesOf`. Removing the feature, or redesigning it with an explicit hook
+     * credit and specified/unspecified leg semantics, is a founder decision (see
+     * the audit-closure report); until then this rejection IS the specified
+     * behaviour, locked in by `test_I01_*` in `test/unit/security/SecurityRegression.t.sol`.
      */
     function _validateHookDelta(address plugin, int128 hookAmount, int128 referenceAmount) internal view {
         if (hookAmount == 0) return;
@@ -479,6 +492,10 @@ contract SupaPoolManager is IPoolManager {
         );
     }
 
+    /// @notice I-01: the reference leg here is always the input (debit) leg, so
+    /// `_validateHookDelta` rejects every non-zero afterSwap delta by design.
+    /// See the NatSpec on `_validateHookDelta`. Do not "fix" the reference leg
+    /// without the founder decision recorded there.
     function _applySwapHookDelta(
         PoolKey memory key,
         SwapParams memory params,
