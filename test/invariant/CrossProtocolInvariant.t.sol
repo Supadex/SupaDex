@@ -130,7 +130,9 @@ contract CrossProtocolHandler is Test {
 
     function swap(uint256 poolSeed, bool z, uint256 amt) external {
         uint256 p = poolSeed % 3;
-        amt = bound(amt, 1e6, 1e23);
+        // T-2: dust swaps start at 1 wei (was 1e6). C-02's trigger is a 1-unit
+        // swap right after a tick cross, below the old lower bound.
+        amt = bound(amt, 1, 1e23);
         calls["swap"]++;
         try trader.exec(_one(_op(1, p, int256(amt), z))) {}
         catch (bytes memory err) {
@@ -155,7 +157,8 @@ contract CrossProtocolHandler is Test {
     /// a sub-fee gain in one token cannot hide behind a loss in the other. Dust events (exactly 1 wei) are counted.
     function roundTrip(uint256 poolSeed, bool z, uint256 amt) external {
         uint256 p = poolSeed % 3;
-        amt = bound(amt, 1e9, 1e22);
+        // T-2: round trips start at 1 wei (was 1e9).
+        amt = bound(amt, 1, 1e22);
         calls["roundTrip"]++;
         uint256 b0 = t0.balanceOf(address(arb));
         uint256 b1 = t1.balanceOf(address(arb));

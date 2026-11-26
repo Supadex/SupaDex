@@ -110,7 +110,8 @@ contract DeltaConservationHandler is Test, IUnlockCallback {
     }
 
     function performSwap(uint256 amount) external {
-        amount = bound(amount, 100, 10_000 ether);
+        // T-2: dust swaps start at 1 wei (was 100).
+        amount = bound(amount, 1, 10_000 ether);
         token0.mint(address(this), amount * 2);
         vault.unlock(abi.encode(uint8(1), amount));
     }
