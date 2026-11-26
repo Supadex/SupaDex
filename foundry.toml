@@ -55,6 +55,22 @@ via_ir = false
 optimizer = true
 optimizer_runs = 200
 
+# Halmos profile (T-5, audit closure): inherits the whole default compiler
+# pipeline and overrides exactly one setting. Foundry 1.10 dynamically links
+# `new` deployments inside test contracts through vm.deployCode by default
+# ("dynamic test linking"), and Halmos 0.3.3 does not implement the deployCode
+# cheatcode, so any formal test that deploys a contract (e.g. CircuitBreaker)
+# fails in setUp() under the default profile. Disabling it here makes every
+# `new` compile to a plain CREATE, which Halmos executes. Scoped to this
+# profile only: default / ci / dev / legacy compilation is unchanged.
+# NOTE: the setting cannot be passed to Halmos's internal `forge build` via a
+# CLI flag (Halmos has no build-args passthrough) and neither
+# FOUNDRY_NO_DYNAMIC_TEST_LINKING nor NO_DYNAMIC_TEST_LINKING is honoured by
+# forge 1.10.0 (both verified to have no effect, 26 Nov 2026), so a profile
+# is the only declarative route. [invariant] / [profile.ci.invariant] untouched.
+[profile.halmos]
+dynamic_test_linking = false
+
 # CI profile (Edith remediation-3 condition 1): same compiler pipeline as default, with a PINNED fuzz seed so CI is
 # reproducible. Randomised seeds run in the separate `fuzz-random-seed` job (.github/workflows/test.yml), which
 # prints its seed so any failure can be replayed with `FOUNDRY_PROFILE=ci forge test --fuzz-seed <seed>`.
