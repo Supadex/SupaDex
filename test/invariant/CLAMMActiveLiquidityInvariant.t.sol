@@ -116,16 +116,16 @@ contract CLAMMLiquidityHandler is Test, IUnlockCallback {
             _settle(first);
             tickTargetedSwapsExecuted++;
             BalanceDelta dust = manager.swap(
-                key,
-                IPoolManager.SwapParams({zeroForOne: zeroForOne, amountSpecified: 1, sqrtPriceLimitX96: 0}),
-                ""
+                key, IPoolManager.SwapParams({zeroForOne: zeroForOne, amountSpecified: 1, sqrtPriceLimitX96: 0}), ""
             );
             _settle(dust);
             dustSwapsExecuted++;
         } else {
             BalanceDelta delta = manager.swap(
                 key,
-                IPoolManager.SwapParams({zeroForOne: zeroForOne, amountSpecified: int256(amount), sqrtPriceLimitX96: 0}),
+                IPoolManager.SwapParams({
+                    zeroForOne: zeroForOne, amountSpecified: int256(amount), sqrtPriceLimitX96: 0
+                }),
                 ""
             );
             _settle(delta);

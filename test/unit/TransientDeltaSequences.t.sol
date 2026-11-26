@@ -100,14 +100,13 @@ contract TransientDeltaSequencesTest is Test {
         assertLe(vault.claimSupplyOf(currency), vault.reservesOf(currency), "claims exceed reserves");
         assertLe(vault.reservesOf(currency), token.balanceOf(address(vault)), "reserves exceed balance");
         assertGe(
-            token.balanceOf(address(vault)),
-            vault.claimSupplyOf(currency),
-            "physical balance below outstanding claims"
+            token.balanceOf(address(vault)), vault.claimSupplyOf(currency), "physical balance below outstanding claims"
         );
     }
 
     function _run(uint8[] memory kinds, uint256[] memory amounts) internal returns (bool reverted) {
-        try actor.run(kinds, amounts) {} catch {
+        try actor.run(kinds, amounts) {}
+        catch {
             reverted = true;
         }
     }

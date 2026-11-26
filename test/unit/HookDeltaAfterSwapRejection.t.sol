@@ -85,7 +85,9 @@ contract SwapActor is IUnlockCallback {
         if (op == 0) {
             (, PoolKey memory key, bool z, int256 amt) = abi.decode(data, (uint8, PoolKey, bool, int256));
             uint160 limit = z ? TickMathLib.MIN_SQRT_RATIO + 1 : TickMathLib.MAX_SQRT_RATIO - 1;
-            manager.swap(key, IPoolManager.SwapParams({zeroForOne: z, amountSpecified: amt, sqrtPriceLimitX96: limit}), "");
+            manager.swap(
+                key, IPoolManager.SwapParams({zeroForOne: z, amountSpecified: amt, sqrtPriceLimitX96: limit}), ""
+            );
             _resolve(key.currency0);
             _resolve(key.currency1);
         } else {

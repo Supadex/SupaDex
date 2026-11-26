@@ -93,15 +93,13 @@ contract PerPoolSolvencyHandler is Test, IUnlockCallback {
     }
 
     function unlockCallback(bytes calldata data) external override returns (bytes memory) {
-        (uint8 action, uint8 poolIdx, bool zeroForOne, uint256 amount) =
-            abi.decode(data, (uint8, uint8, bool, uint256));
+        (uint8 action, uint8 poolIdx, bool zeroForOne, uint256 amount) = abi.decode(data, (uint8, uint8, bool, uint256));
         uint256 p = poolIdx % 3;
         PoolKey memory k = _pool(p);
 
         if (action == 0) {
             // Add liquidity.
-            IPoolManager.ModifyLiquidityParams memory params =
-                SecurityTestSetup.liquidityParams(k, amount, true);
+            IPoolManager.ModifyLiquidityParams memory params = SecurityTestSetup.liquidityParams(k, amount, true);
             (BalanceDelta principal, BalanceDelta fees) = manager.modifyLiquidity(k, params, "");
             _settleAndTrack(k, principal.sub(fees));
             added[p] += amount;
@@ -109,8 +107,7 @@ contract PerPoolSolvencyHandler is Test, IUnlockCallback {
             // Remove liquidity (amount is a params-amount, not a pct).
             if (amount > added[p]) amount = added[p];
             if (amount == 0) return "";
-            IPoolManager.ModifyLiquidityParams memory params =
-                SecurityTestSetup.liquidityParams(k, amount, false);
+            IPoolManager.ModifyLiquidityParams memory params = SecurityTestSetup.liquidityParams(k, amount, false);
             (BalanceDelta principal, BalanceDelta fees) = manager.modifyLiquidity(k, params, "");
             _settleAndTrack(k, principal.sub(fees));
             added[p] -= amount;
@@ -118,7 +115,9 @@ contract PerPoolSolvencyHandler is Test, IUnlockCallback {
             // Swap (1-wei dust included: bound in swap()).
             BalanceDelta delta = manager.swap(
                 k,
-                IPoolManager.SwapParams({zeroForOne: zeroForOne, amountSpecified: int256(amount), sqrtPriceLimitX96: 0}),
+                IPoolManager.SwapParams({
+                    zeroForOne: zeroForOne, amountSpecified: int256(amount), sqrtPriceLimitX96: 0
+                }),
                 ""
             );
             _settleAndTrack(k, delta);
@@ -243,12 +242,7 @@ contract PerPoolSolvencyInvariantTest is StdInvariant, Test {
             currency0: cA, currency1: cB, fee: 2000, tickSpacing: 10, plugin: address(0), curveType: CurveType.BIN_AMM
         });
         stableKey = PoolKey({
-            currency0: cA,
-            currency1: cB,
-            fee: 500,
-            tickSpacing: 1,
-            plugin: address(0),
-            curveType: CurveType.STABLE_AMM
+            currency0: cA, currency1: cB, fee: 500, tickSpacing: 1, plugin: address(0), curveType: CurveType.STABLE_AMM
         });
 
         manager.initialize(clammKey, 1 << 96, "");

@@ -78,9 +78,7 @@ contract StableExitSwapper is IUnlockCallback {
     function unlockCallback(bytes calldata data) external override returns (bytes memory) {
         (PoolKey memory key, bool zeroForOne, int256 amount) = abi.decode(data, (PoolKey, bool, int256));
         BalanceDelta delta = manager.swap(
-            key,
-            IPoolManager.SwapParams({zeroForOne: zeroForOne, amountSpecified: amount, sqrtPriceLimitX96: 0}),
-            ""
+            key, IPoolManager.SwapParams({zeroForOne: zeroForOne, amountSpecified: amount, sqrtPriceLimitX96: 0}), ""
         );
         _leg(key.currency0, delta.amount0());
         _leg(key.currency1, delta.amount1());
