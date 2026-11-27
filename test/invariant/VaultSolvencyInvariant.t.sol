@@ -6,6 +6,7 @@ import {StdInvariant} from "forge-std/StdInvariant.sol";
 import {SupaVault} from "../../contract/core/SupaVault.sol";
 import {Currency, CurrencyLibrary} from "../../contract/types/Currency.sol";
 import {IUnlockCallback} from "../../contract/interfaces/IUnlockCallback.sol";
+import {RevertClassifier, RevertClassifyingHandler} from "./RevertClassifier.sol";
 
 contract MockSolvencyToken {
     string public name = "Solvency Token";
@@ -25,7 +26,7 @@ contract MockSolvencyToken {
     }
 }
 
-contract VaultSolvencyHandler is Test, IUnlockCallback {
+contract VaultSolvencyHandler is Test, IUnlockCallback, RevertClassifyingHandler {
     using CurrencyLibrary for Currency;
 
     SupaVault public vault;
@@ -83,26 +84,53 @@ contract VaultSolvencyHandler is Test, IUnlockCallback {
     function mintClaims(uint256 amount) external {
         // Full uint256 domain, including magnitudes that would wrap an unchecked delta (C-01 / T-1).
         // Amounts above int128.max revert inside the unlock; successful mints stay backed by a settle.
-        amount = bound(amount, 1, type(uint256).max);
-        try vault.unlock(abi.encode(uint8(0), amount)) {} catch {}
+        // T-6 headroom guard: successful mints are each up to int256.max, so repeated
+        // large mints would overflow the mock-token balance / totalMintedClaims (uint256)
+        // and surface as an arithmetic Panic. Stop once < int256.max headroom remains;
+        // the extreme-magnitude behaviour is still exercised by the mints that did run.
+        if (totalMintedClaims > type(uint256).max - uint256(type(int256).max) - 1) return;
+        amount = bound(amount, 1, type(uint256).max - totalMintedClaims);
+        // T-6: was a bare `catch {}` swallowing EVERYTHING. Now classified: only the
+        // extreme-magnitude guards (SafeCastOverflow / DeltaOverflow, C-01 fix working as
+        // designed) are expected here; anything else is counted as unexpected.
+        try vault.unlock(abi.encode(uint8(0), amount)) {}
+        catch (bytes memory err) {
+            _classify(
+                err,
+                RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT | RevertClassifier.CTX_EXTREME,
+                "mintClaims"
+            );
+        }
     }
 
     function burnClaims(uint256 amount) external {
         if (totalMintedClaims == 0) return;
-        // The per-call burn bound is int128.max; the ghost total can exceed
-        // it across many mints, so cap the fuzzed amount there (amounts above
-        // it revert in the vault by design, not by bug).
-        uint256 cap = totalMintedClaims > uint256(uint128(type(int128).max))
-            ? uint256(uint128(type(int128).max))
-            : totalMintedClaims;
+        // Per-call vault ops are int128-bounded by design (SupaVault.burn uses
+        // SafeCastLib.toInt128); cumulative holdings can exceed int128.max, so cap
+        // the single call — otherwise a legitimate burn trips SafeCastOverflow.
+        uint256 cap = totalMintedClaims < uint256(int256(type(int128).max))
+            ? totalMintedClaims
+            : uint256(int256(type(int128).max));
         amount = bound(amount, 1, cap);
-        vault.unlock(abi.encode(uint8(1), amount));
+        try vault.unlock(abi.encode(uint8(1), amount)) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "burnClaims");
+        }
     }
 
     function mintClaims2(uint256 amount) external {
         // Full uint256 domain, including magnitudes that would wrap an unchecked delta (C-01 / T-1).
         amount = bound(amount, 1, type(uint256).max);
-        try vault.unlock(abi.encode(uint8(2), amount)) {} catch {}
+        try vault.unlock(abi.encode(uint8(2), amount)) {}
+        catch (bytes memory err) {
+            // Same full-domain contexts as mintClaims: SafeCast/Delta overflow at
+            // extreme magnitudes is the C-01 guard working as designed (T-6 CTX_EXTREME).
+            _classify(
+                err,
+                RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT | RevertClassifier.CTX_EXTREME,
+                "mintClaims2"
+            );
+        }
     }
 
     function burnClaims2(uint256 amount) external {
@@ -112,7 +140,10 @@ contract VaultSolvencyHandler is Test, IUnlockCallback {
             ? uint256(uint128(type(int128).max))
             : totalMintedClaims2;
         amount = bound(amount, 1, cap);
-        vault.unlock(abi.encode(uint8(3), amount));
+        try vault.unlock(abi.encode(uint8(3), amount)) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "burnClaims2");
+        }
     }
 }
 
@@ -129,6 +160,18 @@ contract VaultSolvencyInvariantTest is StdInvariant, Test {
         handler = new VaultSolvencyHandler(vault, token);
 
         targetContract(address(handler));
+        // Exclude the vault-only unlockCallback from the fuzz surface: a direct
+        // call reverts `onlyVault`, which is correct access control but (under a
+        // strict fail_on_revert profile) would fail the run; the callback is only
+        // ever invoked by the vault during an unlock.
+        bytes4[] memory excluded = new bytes4[](1);
+        excluded[0] = VaultSolvencyHandler.unlockCallback.selector;
+        excludeSelector(FuzzSelector({addr: address(handler), selectors: excluded}));
+    }
+
+    /// @notice T-6: only classified expected reverts may occur; anything else fails the run.
+    function invariant_noUnexpectedReverts() public view {
+        assertEq(handler.unexpectedReverts(), 0, "unexpected revert in VaultSolvency handler");
     }
 
     /// @notice Invariant: Physical token balance held by Vault must always be >= total outstanding ERC-6909 claims.

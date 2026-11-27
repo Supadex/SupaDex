@@ -83,3 +83,20 @@ seed = "0x5eed2026"
 runs = 256
 depth = 128
 fail_on_revert = false
+
+# T-6 strict-revert profile: ONLY this profile sets fail_on_revert = true. The global
+# [invariant] and [profile.ci.invariant] sections stay false (founder constraint):
+# CrossProtocolInvariant handlers intentionally encounter expected economic reverts
+# (slippage, liquidity constraints, configured bounds), and a global flip would turn
+# legitimate economics into false positives. The strict suite
+# (test/invariant/StrictRevertInvariant.t.sol) runs under this profile; its handlers
+# catch every revert and classify it through test/invariant/RevertClassifier.sol, so
+# any uncaught revert fails the run here AND any classified-unexpected revert fails
+# invariant_noUnexpectedReverts under every profile.
+[profile.strict.invariant]
+runs = 256
+depth = 128
+fail_on_revert = true
+
+[profile.strict.fuzz]
+runs = 1024

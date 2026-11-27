@@ -14,6 +14,7 @@ import {IPoolManager} from "../../contract/interfaces/IPoolManager.sol";
 import {IUnlockCallback} from "../../contract/interfaces/IUnlockCallback.sol";
 import {BalanceDelta} from "../../contract/types/BalanceDelta.sol";
 import {SecurityTestSetup} from "../helpers/SecurityTestSetup.sol";
+import {RevertClassifier, RevertClassifyingHandler} from "./RevertClassifier.sol";
 
 contract MockInvariantToken {
     string public name;
@@ -38,7 +39,7 @@ contract MockInvariantToken {
     }
 }
 
-contract DeltaConservationHandler is Test, IUnlockCallback {
+contract DeltaConservationHandler is Test, IUnlockCallback, RevertClassifyingHandler {
     using CurrencyLibrary for Currency;
 
     SupaVault public vault;
@@ -46,6 +47,7 @@ contract DeltaConservationHandler is Test, IUnlockCallback {
     PoolKey public key;
     MockInvariantToken public token0;
     MockInvariantToken public token1;
+    uint256 public successfulOps;
 
     constructor(
         SupaVault _vault,
@@ -99,6 +101,7 @@ contract DeltaConservationHandler is Test, IUnlockCallback {
                 vault.take(key.currency1, address(this), uint128(-delta.amount1()));
             }
         }
+        successfulOps++;
         return "";
     }
 
@@ -106,14 +109,20 @@ contract DeltaConservationHandler is Test, IUnlockCallback {
         amount = bound(amount, 1_000, 100_000 ether);
         token0.mint(address(this), amount * 2);
         token1.mint(address(this), amount * 2);
-        vault.unlock(abi.encode(uint8(0), amount));
+        try vault.unlock(abi.encode(uint8(0), amount)) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "performModifyLiquidity");
+        }
     }
 
     function performSwap(uint256 amount) external {
         // T-2: dust swaps start at 1 wei (was 100).
         amount = bound(amount, 1, 10_000 ether);
         token0.mint(address(this), amount * 2);
-        vault.unlock(abi.encode(uint8(1), amount));
+        try vault.unlock(abi.encode(uint8(1), amount)) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "performSwap");
+        }
     }
 }
 
@@ -162,8 +171,23 @@ contract DeltaConservationInvariantTest is StdInvariant, Test {
 
         // Seed initial liquidity in pool so swaps can execute
         handler.performModifyLiquidity(1_000_000 ether);
+        // T-6: seeding must succeed; a classified revert here fails setUp loudly.
+        assertEq(handler.successfulOps(), 1, "seed liquidity failed");
+        assertEq(handler.unexpectedReverts(), 0, "seed liquidity unexpected revert");
 
         targetContract(address(handler));
+        // Exclude the vault-only unlockCallback from the fuzz surface: a direct
+        // call reverts `onlyVault`, which is correct access control but (under a
+        // strict fail_on_revert profile) would fail the run; the callback is only
+        // ever invoked by the vault during an unlock.
+        bytes4[] memory excluded = new bytes4[](1);
+        excluded[0] = DeltaConservationHandler.unlockCallback.selector;
+        excludeSelector(FuzzSelector({addr: address(handler), selectors: excluded}));
+    }
+
+    /// @notice T-6: only classified expected reverts may occur; anything else fails the run.
+    function invariant_noUnexpectedReverts() public view {
+        assertEq(handler.unexpectedReverts(), 0, "unexpected revert in DeltaConservation handler");
     }
 
     /// @notice Invariant: Transient currency deltas must always equal 0 outside of active unlock sessions.

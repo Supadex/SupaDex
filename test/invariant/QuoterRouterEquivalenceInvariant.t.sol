@@ -19,6 +19,7 @@ import {PoolKey, CurveType} from "../../contract/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "../../contract/types/PoolId.sol";
 import {BalanceDelta} from "../../contract/types/BalanceDelta.sol";
 import {SecurityTestSetup} from "../helpers/SecurityTestSetup.sol";
+import {RevertClassifier, RevertClassifyingHandler} from "./RevertClassifier.sol";
 
 contract MockQuoterInvToken {
     string public name;
@@ -92,7 +93,7 @@ contract QuoterHelperLP is IUnlockCallback {
     }
 }
 
-contract QuoterRouterEquivalenceHandler is Test {
+contract QuoterRouterEquivalenceHandler is Test, RevertClassifyingHandler {
     using CurrencyLibrary for Currency;
     using PoolIdLibrary for PoolKey;
 
@@ -110,6 +111,7 @@ contract QuoterRouterEquivalenceHandler is Test {
     MockQuoterInvToken public tokenC;
 
     uint256 public totalEquivalentQuotes;
+    uint256 public quoteMismatches;
 
     constructor(
         SupaVault _vault,
@@ -142,7 +144,15 @@ contract QuoterRouterEquivalenceHandler is Test {
             poolKey: clammKey, zeroForOne: zeroForOne, amountIn: uint128(amountIn), sqrtPriceLimitX96: 0, hookData: ""
         });
 
-        (uint256 quotedAmountOut,,) = quoter.quoteExactInputSingle(qParams);
+        // T-6: a reverted quote is classified, not silently discarded; the router is
+        // only attempted when the quote succeeded.
+        uint256 quotedAmountOut;
+        try quoter.quoteExactInputSingle(qParams) returns (uint256 q, uint160, int24) {
+            quotedAmountOut = q;
+        } catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "quoteCLAMM");
+            return;
+        }
 
         address swapper = address(0x4444);
         if (zeroForOne) {
@@ -168,10 +178,20 @@ contract QuoterRouterEquivalenceHandler is Test {
             deadline: block.timestamp + 100
         });
 
-        uint256 actualAmountOut = router.exactInputSingle(rParams);
+        // T-6: was `assertEq` inside the handler — an assert failure reverts the handler
+        // call, which fail_on_revert=false silently discards, so a quote/router mismatch
+        // could never fail the suite. Mismatches are now counted and asserted in an invariant.
+        uint256 actualAmountOut;
+        try router.exactInputSingle(rParams) returns (uint256 a) {
+            actualAmountOut = a;
+        } catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "routerCLAMM");
+            vm.stopPrank();
+            return;
+        }
         vm.stopPrank();
 
-        assertEq(quotedAmountOut, actualAmountOut, "Quoted amountOut must match executed amountOut");
+        if (quotedAmountOut != actualAmountOut) quoteMismatches++;
         totalEquivalentQuotes++;
     }
 
@@ -182,7 +202,13 @@ contract QuoterRouterEquivalenceHandler is Test {
             poolKey: binKey, zeroForOne: zeroForOne, amountIn: uint128(amountIn), sqrtPriceLimitX96: 0, hookData: ""
         });
 
-        (uint256 quotedAmountOut,,) = quoter.quoteExactInputSingle(qParams);
+        uint256 quotedAmountOut;
+        try quoter.quoteExactInputSingle(qParams) returns (uint256 q, uint160, int24) {
+            quotedAmountOut = q;
+        } catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "quoteBinAMM");
+            return;
+        }
 
         address swapper = address(0x5555);
         if (zeroForOne) {
@@ -208,10 +234,17 @@ contract QuoterRouterEquivalenceHandler is Test {
             deadline: block.timestamp + 100
         });
 
-        uint256 actualAmountOut = router.exactInputSingle(rParams);
+        uint256 actualAmountOut;
+        try router.exactInputSingle(rParams) returns (uint256 a) {
+            actualAmountOut = a;
+        } catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "routerBinAMM");
+            vm.stopPrank();
+            return;
+        }
         vm.stopPrank();
 
-        assertEq(quotedAmountOut, actualAmountOut, "BinAMM quote must match swap execution");
+        if (quotedAmountOut != actualAmountOut) quoteMismatches++;
         totalEquivalentQuotes++;
     }
 }
@@ -305,6 +338,16 @@ contract QuoterRouterEquivalenceInvariantTest is StdInvariant, Test {
         );
 
         targetContract(address(handler));
+    }
+
+    /// @notice T-6: only classified expected reverts may occur; anything else fails the run.
+    function invariant_noUnexpectedReverts() public view {
+        assertEq(handler.unexpectedReverts(), 0, "unexpected revert in QuoterRouter handler");
+    }
+
+    /// @notice T-6: quote/router mismatches are counted, not asserted-away inside the handler.
+    function invariant_noQuoteMismatches() public view {
+        assertEq(handler.quoteMismatches(), 0, "quoter/router mismatch");
     }
 
     /// @notice Invariant: Quoter and Router must never leave transient deltas or active lock open.

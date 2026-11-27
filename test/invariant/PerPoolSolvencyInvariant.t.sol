@@ -15,6 +15,7 @@ import {IPoolManager} from "../../contract/interfaces/IPoolManager.sol";
 import {IUnlockCallback} from "../../contract/interfaces/IUnlockCallback.sol";
 import {BalanceDelta} from "../../contract/types/BalanceDelta.sol";
 import {SecurityTestSetup} from "../helpers/SecurityTestSetup.sol";
+import {RevertClassifier, RevertClassifyingHandler} from "./RevertClassifier.sol";
 
 contract MockPerPoolToken {
     string public name;
@@ -45,7 +46,7 @@ contract MockPerPoolToken {
 /// negative — for every pool. A cross-pool drain (one pool paying out against
 /// another pool's pot) shows up here as ghost != pot, even while the vault
 /// as a whole still looks solvent.
-contract PerPoolSolvencyHandler is Test, IUnlockCallback {
+contract PerPoolSolvencyHandler is Test, IUnlockCallback, RevertClassifyingHandler {
     using CurrencyLibrary for Currency;
     using PoolIdLibrary for PoolKey;
 
@@ -165,7 +166,10 @@ contract PerPoolSolvencyHandler is Test, IUnlockCallback {
         amount = bound(amount, 1_000, 10_000 ether);
         MockPerPoolToken(Currency.unwrap(k.currency0)).mint(address(this), amount * 4);
         MockPerPoolToken(Currency.unwrap(k.currency1)).mint(address(this), amount * 4);
-        vault.unlock(abi.encode(uint8(0), uint8(p), false, amount));
+        try vault.unlock(abi.encode(uint8(0), uint8(p), false, amount)) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "addLiquidity");
+        }
     }
 
     function removeLiquidity(uint256 poolSeed, uint256 pct) external {
@@ -173,7 +177,10 @@ contract PerPoolSolvencyHandler is Test, IUnlockCallback {
         if (added[p] == 0) return;
         uint256 amount = added[p] * bound(pct, 1, 100) / 100;
         if (amount == 0) return;
-        vault.unlock(abi.encode(uint8(1), uint8(p), false, amount));
+        try vault.unlock(abi.encode(uint8(1), uint8(p), false, amount)) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "removeLiquidity");
+        }
     }
 
     /// T-2 aligned: swap amounts start at 1 wei.
@@ -182,14 +189,20 @@ contract PerPoolSolvencyHandler is Test, IUnlockCallback {
         PoolKey memory k = _pool(p);
         amount = bound(amount, 1, 5_000 ether);
         _mintFor(k, zeroForOne, amount * 2);
-        vault.unlock(abi.encode(uint8(2), uint8(p), zeroForOne, amount));
+        try vault.unlock(abi.encode(uint8(2), uint8(p), zeroForOne, amount)) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "swap");
+        }
     }
 
     function dustSwap(uint256 poolSeed, bool zeroForOne) external {
         uint256 p = poolSeed % 3;
         PoolKey memory k = _pool(p);
         _mintFor(k, zeroForOne, 2);
-        vault.unlock(abi.encode(uint8(2), uint8(p), zeroForOne, uint256(1)));
+        try vault.unlock(abi.encode(uint8(2), uint8(p), zeroForOne, uint256(1))) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "dustSwap");
+        }
     }
 
     function donate(uint256 poolSeed, uint256 amount) external {
@@ -198,7 +211,10 @@ contract PerPoolSolvencyHandler is Test, IUnlockCallback {
         amount = bound(amount, 1, 1_000 ether);
         MockPerPoolToken(Currency.unwrap(k.currency0)).mint(address(this), amount * 2);
         MockPerPoolToken(Currency.unwrap(k.currency1)).mint(address(this), amount * 2);
-        vault.unlock(abi.encode(uint8(3), uint8(p), false, amount));
+        try vault.unlock(abi.encode(uint8(3), uint8(p), false, amount)) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "donate");
+        }
     }
 }
 
@@ -254,6 +270,8 @@ contract PerPoolSolvencyInvariantTest is StdInvariant, Test {
         handler.addLiquidity(0, 10_000 ether);
         handler.addLiquidity(1, 10_000 ether);
         handler.addLiquidity(2, 10_000 ether);
+        // T-6 (integration): seeding must succeed; a classified revert here fails setUp loudly.
+        assertEq(handler.unexpectedReverts(), 0, "seed unexpected revert");
 
         targetContract(address(handler));
     }
@@ -262,6 +280,11 @@ contract PerPoolSolvencyInvariantTest is StdInvariant, Test {
         ks[0] = clammKey;
         ks[1] = binKey;
         ks[2] = stableKey;
+    }
+
+    /// @notice T-6 (integration): only classified expected reverts may occur; anything else fails the run.
+    function invariant_noUnexpectedReverts() public view {
+        assertEq(handler.unexpectedReverts(), 0, "unexpected revert in PerPoolSolvency handler");
     }
 
     /// @notice T-4: for EVERY pool and EVERY currency, the ghost-tracked net

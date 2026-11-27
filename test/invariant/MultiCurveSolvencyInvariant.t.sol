@@ -16,6 +16,7 @@ import {IUnlockCallback} from "../../contract/interfaces/IUnlockCallback.sol";
 import {BalanceDelta} from "../../contract/types/BalanceDelta.sol";
 import {SafeCastLib} from "../../contract/libraries/SafeCastLib.sol";
 import {SecurityTestSetup} from "../helpers/SecurityTestSetup.sol";
+import {RevertClassifier, RevertClassifyingHandler} from "./RevertClassifier.sol";
 
 contract MockMultiCurveToken {
     string public name;
@@ -40,7 +41,7 @@ contract MockMultiCurveToken {
     }
 }
 
-contract MultiCurveHandler is Test, IUnlockCallback {
+contract MultiCurveHandler is Test, IUnlockCallback, RevertClassifyingHandler {
     using CurrencyLibrary for Currency;
     using PoolIdLibrary for PoolKey;
 
@@ -130,37 +131,55 @@ contract MultiCurveHandler is Test, IUnlockCallback {
     function swapCLAMM(bool zeroForOne, uint256 amount) external {
         amount = bound(amount, 1, 5_000 ether);
         _mintTokensForSwap(clammKey, zeroForOne, amount);
-        vault.unlock(abi.encode(uint8(1), uint8(0), zeroForOne, amount));
+        try vault.unlock(abi.encode(uint8(1), uint8(0), zeroForOne, amount)) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "swapCLAMM");
+        }
     }
 
     function swapBinAMM(bool zeroForOne, uint256 amount) external {
         amount = bound(amount, 1, 5_000 ether);
         _mintTokensForSwap(binKey, zeroForOne, amount);
-        vault.unlock(abi.encode(uint8(1), uint8(1), zeroForOne, amount));
+        try vault.unlock(abi.encode(uint8(1), uint8(1), zeroForOne, amount)) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "swapBinAMM");
+        }
     }
 
     function swapStableAMM(bool zeroForOne, uint256 amount) external {
         amount = bound(amount, 1, 5_000 ether);
         _mintTokensForSwap(stableKey, zeroForOne, amount);
-        vault.unlock(abi.encode(uint8(1), uint8(2), zeroForOne, amount));
+        try vault.unlock(abi.encode(uint8(1), uint8(2), zeroForOne, amount)) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "swapStableAMM");
+        }
     }
 
     function addLiquidityCLAMM(uint256 amount) external {
         amount = bound(amount, 1_000, 10_000 ether);
         _mintTokensForLiquidity(clammKey, amount);
-        vault.unlock(abi.encode(uint8(0), uint8(0), false, amount));
+        try vault.unlock(abi.encode(uint8(0), uint8(0), false, amount)) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "addLiquidityCLAMM");
+        }
     }
 
     function addLiquidityBinAMM(uint256 amount) external {
         amount = bound(amount, 1_000, 10_000 ether);
         _mintTokensForLiquidity(binKey, amount);
-        vault.unlock(abi.encode(uint8(0), uint8(1), false, amount));
+        try vault.unlock(abi.encode(uint8(0), uint8(1), false, amount)) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "addLiquidityBinAMM");
+        }
     }
 
     function addLiquidityStableAMM(uint256 amount) external {
         amount = bound(amount, 1_000, 10_000 ether);
         _mintTokensForLiquidity(stableKey, amount);
-        vault.unlock(abi.encode(uint8(0), uint8(2), false, amount));
+        try vault.unlock(abi.encode(uint8(0), uint8(2), false, amount)) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "addLiquidityStableAMM");
+        }
     }
 
     function _mintTokensForSwap(PoolKey memory pKey, bool zeroForOne, uint256 amount) internal {
@@ -256,8 +275,19 @@ contract MultiCurveSolvencyInvariantTest is StdInvariant, Test {
         handler.addLiquidityCLAMM(500_000 ether);
         handler.addLiquidityBinAMM(500_000 ether);
         handler.addLiquidityStableAMM(500_000 ether);
+        // T-6: seeding must succeed — a classified revert here fails setUp loudly
+        // instead of leaving the suite running on unseeded pools.
+        assertEq(handler.successfulLiquidityModifications(), 3, "seed liquidity failed");
+        assertEq(handler.unexpectedReverts(), 0, "seed liquidity unexpected revert");
 
         targetContract(address(handler));
+        // Exclude the vault-only unlockCallback from the fuzz surface: a direct
+        // call reverts `onlyVault`, which is correct access control but (under a
+        // strict fail_on_revert profile) would fail the run; the callback is only
+        // ever invoked by the vault during an unlock.
+        bytes4[] memory excluded = new bytes4[](1);
+        excluded[0] = MultiCurveHandler.unlockCallback.selector;
+        excludeSelector(FuzzSelector({addr: address(handler), selectors: excluded}));
     }
 
     /// @notice Invariant: Transient currency deltas must always equal 0 across all curves.
@@ -276,6 +306,11 @@ contract MultiCurveSolvencyInvariantTest is StdInvariant, Test {
         assertTrue(tokenA.balanceOf(address(vault)) >= 0);
         assertTrue(tokenB.balanceOf(address(vault)) >= 0);
         assertTrue(tokenC.balanceOf(address(vault)) >= 0);
+    }
+
+    /// @notice T-6: only classified expected reverts may occur; anything else fails the run.
+    function invariant_noUnexpectedReverts() public view {
+        assertEq(handler.unexpectedReverts(), 0, "unexpected revert in MultiCurve handler");
     }
 
     /// @notice T-4: each currency's pool pots + protocol fees + claims are covered by vault reserves.
