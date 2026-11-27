@@ -156,13 +156,21 @@ contract TransientDeltaSolvencyFormalProof is Test {
     /// @notice T-1 / C-01: three chained int128 applyDelta calls whose exact sum
     /// is nonzero can NEVER unlock — the checked arithmetic must not wrap the
     /// running delta back to zero modulo 2^256 (the pre-fix C-01 exploit).
+    /// @dev Halmos 0.3.3 does NOT implement vm.expectRevert (any overload), so the
+    /// property asserts the revert reason with a low-level call and a returndata
+    /// comparison instead — the same pattern as check_nonzeroDeltaCannotUnlock
+    /// (T-5, P5-2 fix). The forge mirror below keeps vm.expectRevert (forge
+    /// supports it); the divergence is deliberate. The expected delta is the
+    /// exact int256 sum of the three chained deltas.
     function check_chainedDeltasNonzeroSumCannotUnlock(int128 d1, int128 d2, int128 d3) external {
         vm.assume(int256(d1) + int256(d2) + int256(d3) != 0);
 
         chained.setDeltas(d1, d2, d3);
 
-        vm.expectRevert();
-        chained.unlock();
+        int256 sum = int256(d1) + int256(d2) + int256(d3);
+        (bool ok, bytes memory ret) = address(chained).call(abi.encodeWithSelector(ChainedDeltaCallback.unlock.selector));
+        assertFalse(ok);
+        assertEq(ret, abi.encodeWithSelector(VaultErrors.CurrencyNotSettled.selector, DUMMY, sum));
     }
 
     /// @notice Forge mirror of check_chainedDeltasSumZeroUnlocks (Halmos is not
