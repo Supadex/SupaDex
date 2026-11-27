@@ -120,7 +120,14 @@ contract VaultSolvencyHandler is Test, IUnlockCallback, RevertClassifyingHandler
 
     function mintClaims2(uint256 amount) external {
         // Full uint256 domain, including magnitudes that would wrap an unchecked delta (C-01 / T-1).
-        amount = bound(amount, 1, type(uint256).max);
+        // Amounts above int128.max revert inside the unlock; successful mints stay backed by a settle.
+        // T-6 headroom guard, ported from mintClaims at integration (P5-1): successful
+        // mints are each up to int256.max, so repeated large mints would overflow the
+        // mock-token balance / totalMintedClaims2 (uint256) and surface as an arithmetic
+        // Panic. Stop once < int256.max headroom remains; the extreme-magnitude
+        // behaviour is still exercised by the mints that did run.
+        if (totalMintedClaims2 > type(uint256).max - uint256(type(int256).max) - 1) return;
+        amount = bound(amount, 1, type(uint256).max - totalMintedClaims2);
         try vault.unlock(abi.encode(uint8(2), amount)) {}
         catch (bytes memory err) {
             // Same full-domain contexts as mintClaims: SafeCast/Delta overflow at
