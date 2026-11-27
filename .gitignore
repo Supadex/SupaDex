@@ -15,8 +15,6 @@ out/
 tmp/
 
 # Dotenv file
-.env
-.env.*
 !.env.example
 
 # Local AI and tracking files
@@ -33,3 +31,5 @@ cache-legacy/
 out-cov/
 cache-cov/
 lcov.info
+config.bat
+node_modules

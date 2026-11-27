@@ -36,7 +36,17 @@ jobs:
         run: forge fmt --check
 
       - name: Run Forge build
-        run: forge build --sizes
+        # FormalManagerDeployer (test/formal/HookDeltaFormal.t.sol) is a
+        # formal-test deployer harness, never deployed on-chain: it deploys
+        # manager + engines without cheatcodes so Halmos 0.3.3 can run the
+        # file. Its 75,484-byte runtime exceeds EIP-170 (24,576) by design
+        # of the harness, not as a production risk, so the sizes gate skips
+        # that file. Forge's --skip matches file names (a contract-name
+        # filter does NOT skip it — verified 27 Nov 2026), so the filter is
+        # the file stem; it matches exactly one source file. Every other
+        # contract — all of contract/ and every other test file — is still
+        # size-checked, and the EIP-170 limit itself is unchanged.
+        run: forge build --sizes --skip HookDeltaFormal
 
       - name: Storage layout guard (upgradeable vault; append-only into __gap)
         run: |
