@@ -15,6 +15,7 @@ import {Currency, CurrencyLibrary} from "../../contract/types/Currency.sol";
 import {PoolKey, CurveType} from "../../contract/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "../../contract/types/PoolId.sol";
 import {SecurityTestSetup} from "../helpers/SecurityTestSetup.sol";
+import {RevertClassifier, RevertClassifyingHandler} from "./RevertClassifier.sol";
 
 contract MockPosInvToken {
     string public name;
@@ -56,7 +57,7 @@ contract MockPosInvToken {
     }
 }
 
-contract PositionNFTHandler is Test {
+contract PositionNFTHandler is Test, RevertClassifyingHandler {
     using CurrencyLibrary for Currency;
     using PoolIdLibrary for PoolKey;
 
@@ -119,7 +120,17 @@ contract PositionNFTHandler is Test {
             payWithClaims: false
         });
 
-        (uint256 tokenId, uint128 liq,,) = posManager.mint(params);
+        // T-6: a reverted mint must not be recorded as a live position.
+        uint256 tokenId;
+        uint128 liq;
+        try posManager.mint(params) returns (uint256 _id, uint128 _liq, uint256, uint256) {
+            tokenId = _id;
+            liq = _liq;
+        } catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "mintPosition");
+            vm.stopPrank();
+            return;
+        }
         vm.stopPrank();
 
         mintedTokenIds.push(tokenId);
@@ -152,10 +163,12 @@ contract PositionNFTHandler is Test {
             payWithClaims: false
         });
 
-        (uint128 liq,,) = posManager.increaseLiquidity(params);
+        try posManager.increaseLiquidity(params) returns (uint128 liq, uint256, uint256) {
+            activeLiquidityOfToken[tokenId] += liq;
+        } catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "increasePosition");
+        }
         vm.stopPrank();
-
-        activeLiquidityOfToken[tokenId] += liq;
     }
 
     function decreasePosition(uint256 idIdx, uint128 subLiquidity) external {
@@ -179,10 +192,13 @@ contract PositionNFTHandler is Test {
             receiveAsClaims: false
         });
 
-        posManager.decreaseLiquidity(params);
+        // T-6: only subtract on success — a reverted decrease leaves the position intact.
+        try posManager.decreaseLiquidity(params) {
+            activeLiquidityOfToken[tokenId] -= subLiquidity;
+        } catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "decreasePosition");
+        }
         vm.stopPrank();
-
-        activeLiquidityOfToken[tokenId] -= subLiquidity;
     }
 
     function collectFees(uint256 idIdx) external {
@@ -197,7 +213,10 @@ contract PositionNFTHandler is Test {
             tokenId: tokenId, recipient: owner, amount0Max: type(uint128).max, amount1Max: type(uint128).max
         });
 
-        posManager.collect(params);
+        try posManager.collect(params) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "collectFees");
+        }
         vm.stopPrank();
     }
 
@@ -210,16 +229,21 @@ contract PositionNFTHandler is Test {
         address owner = posManager.ownerOf(tokenId);
 
         vm.startPrank(owner);
-        posManager.burn(tokenId);
+        try posManager.burn(tokenId) {
+            totalBurned++;
+        } catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "burnPosition");
+        }
         vm.stopPrank();
-
-        totalBurned++;
     }
 
     function _tokenExists(uint256 tokenId) internal view returns (bool) {
         try posManager.ownerOf(tokenId) returns (address) {
             return true;
-        } catch {
+        } catch (bytes memory) {
+            // T-6: existence probe only — a revert means "no such token", not a
+            // classified protocol revert. Named catch (no bare `catch {}`) so no
+            // revert is ever silently swallowed anywhere in this file.
             return false;
         }
     }
@@ -276,6 +300,11 @@ contract PositionNFTInvariantTest is StdInvariant, Test {
         handler = new PositionNFTHandler(vault, manager, posManager, key, token0, token1);
 
         targetContract(address(handler));
+    }
+
+    /// @notice T-6: only classified expected reverts may occur; anything else fails the run.
+    function invariant_noUnexpectedReverts() public view {
+        assertEq(handler.unexpectedReverts(), 0, "unexpected revert in PositionNFT handler");
     }
 
     /// @notice Invariant: PositionManager must never accumulate unsettled transient deltas.

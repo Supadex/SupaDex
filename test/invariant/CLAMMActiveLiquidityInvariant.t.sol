@@ -15,6 +15,7 @@ import {BalanceDelta} from "../../contract/types/BalanceDelta.sol";
 import {TickMathLib} from "../../contract/libraries/TickMathLib.sol";
 import {Slot0, Slot0Library} from "../../contract/types/Slot0.sol";
 import {SecurityTestSetup} from "../helpers/SecurityTestSetup.sol";
+import {RevertClassifier, RevertClassifyingHandler} from "./RevertClassifier.sol";
 
 contract LiqToken {
     mapping(address => uint256) public balanceOf;
@@ -32,7 +33,7 @@ contract LiqToken {
 }
 
 /// T-2 / T-3: dust-sized swaps plus `pool.liquidity == sum of in-range positions`.
-contract CLAMMLiquidityHandler is Test, IUnlockCallback {
+contract CLAMMLiquidityHandler is Test, IUnlockCallback, RevertClassifyingHandler {
     using CurrencyLibrary for Currency;
     using PoolIdLibrary for PoolKey;
 
@@ -100,32 +101,47 @@ contract CLAMMLiquidityHandler is Test, IUnlockCallback {
     function addA(uint256 amount) external {
         amount = bound(amount, 1, 1_000 ether);
         _fund(amount);
-        vault.unlock(abi.encode(uint8(0), amount, false));
+        try vault.unlock(abi.encode(uint8(0), amount, false)) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "addA");
+        }
     }
 
     function addB(uint256 amount) external {
         amount = bound(amount, 1, 1_000 ether);
         _fund(amount);
-        vault.unlock(abi.encode(uint8(1), amount, false));
+        try vault.unlock(abi.encode(uint8(1), amount, false)) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "addB");
+        }
     }
 
     function removeA(uint256 amount) external {
         if (liqA == 0) return;
         amount = bound(amount, 1, liqA);
-        vault.unlock(abi.encode(uint8(2), amount, false));
+        try vault.unlock(abi.encode(uint8(2), amount, false)) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "removeA");
+        }
     }
 
     function removeB(uint256 amount) external {
         if (liqB == 0) return;
         amount = bound(amount, 1, liqB);
-        vault.unlock(abi.encode(uint8(3), amount, false));
+        try vault.unlock(abi.encode(uint8(3), amount, false)) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "removeB");
+        }
     }
 
     /// Includes 1-wei swaps (T-2).
     function swap(bool zeroForOne, uint256 amount) external {
         amount = bound(amount, 1, 100 ether);
         _fund(amount);
-        vault.unlock(abi.encode(uint8(4), amount, zeroForOne));
+        try vault.unlock(abi.encode(uint8(4), amount, zeroForOne)) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "swap");
+        }
     }
 
     function _fund(uint256 amount) internal {
@@ -181,7 +197,23 @@ contract CLAMMActiveLiquidityInvariantTest is StdInvariant, Test {
         handler = new CLAMMLiquidityHandler(vault, manager, key);
         handler.addA(1_000_000);
         handler.addB(1_000_000);
+        // T-6: seeding must succeed; a classified revert here fails setUp loudly.
+        assertGt(handler.liqA(), 0, "seed A failed");
+        assertGt(handler.liqB(), 0, "seed B failed");
+        assertEq(handler.unexpectedReverts(), 0, "seed unexpected revert");
         targetContract(address(handler));
+        // Exclude the vault-only unlockCallback from the fuzz surface: a direct
+        // call reverts `onlyVault`, which is correct access control but (under a
+        // strict fail_on_revert profile) would fail the run; the callback is only
+        // ever invoked by the vault during an unlock.
+        bytes4[] memory excluded = new bytes4[](1);
+        excluded[0] = CLAMMLiquidityHandler.unlockCallback.selector;
+        excludeSelector(FuzzSelector({addr: address(handler), selectors: excluded}));
+    }
+
+    /// @notice T-6: only classified expected reverts may occur; anything else fails the run.
+    function invariant_noUnexpectedReverts() public view {
+        assertEq(handler.unexpectedReverts(), 0, "unexpected revert in CLAMM handler");
     }
 
     function invariant_activeLiquidityMatchesPositions() public view {

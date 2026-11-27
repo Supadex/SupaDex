@@ -9,8 +9,9 @@ import {PoolKey, CurveType, PoolKeyLibrary} from "../../contract/types/PoolKey.s
 import {PoolId} from "../../contract/types/PoolId.sol";
 import {Currency} from "../../contract/types/Currency.sol";
 import {BalanceDelta, toBalanceDelta} from "../../contract/types/BalanceDelta.sol";
+import {RevertClassifier, RevertClassifyingHandler} from "./RevertClassifier.sol";
 
-contract AntiJITResidencyHandler is Test {
+contract AntiJITResidencyHandler is Test, RevertClassifyingHandler {
     AntiJITVestingPlugin public immutable plugin;
     address public immutable manager;
     PoolKey public key;
@@ -43,14 +44,19 @@ contract AntiJITResidencyHandler is Test {
 
         uint128 deposit = uint128(bound(amount, 1, 1_000_000_000));
         vm.prank(manager);
-        plugin.beforeModifyLiquidity(
+        // T-6: a reverted before-hook must not be recorded as residency.
+        try plugin.beforeModifyLiquidity(
             actor,
             key,
             IPoolManager.ModifyLiquidityParams({
                 tickLower: -120, tickUpper: 120, liquidityDelta: int256(uint256(deposit)), salt: bytes32(0)
             }),
             ""
-        );
+        ) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "addLiquidity");
+            return;
+        }
 
         activeUserLiquidity[actor] += deposit;
     }
@@ -66,16 +72,23 @@ contract AntiJITResidencyHandler is Test {
         uint256 fees = bound(fee0, 0, 1_000_000);
 
         // before+after in one pranked call stack so transient pending bps survives.
+        // T-6: hook reverts are classified; a reverted hook leaves residency unchanged.
         vm.startPrank(manager);
-        plugin.beforeModifyLiquidity(
+        try plugin.beforeModifyLiquidity(
             actor,
             key,
             IPoolManager.ModifyLiquidityParams({
                 tickLower: -120, tickUpper: 120, liquidityDelta: -int256(uint256(burn)), salt: bytes32(0)
             }),
             ""
-        );
-        (,, BalanceDelta feesHook) = plugin.afterModifyLiquidity(
+        ) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "removeLiquidityBefore");
+            vm.stopPrank();
+            return;
+        }
+        BalanceDelta feesHook;
+        try plugin.afterModifyLiquidity(
             actor,
             key,
             IPoolManager.ModifyLiquidityParams({
@@ -84,7 +97,15 @@ contract AntiJITResidencyHandler is Test {
             toBalanceDelta(-int128(int256(uint256(burn))), 0),
             toBalanceDelta(int128(int256(fees)), 0),
             ""
-        );
+        ) returns (
+            bytes4, BalanceDelta, BalanceDelta _feesHook
+        ) {
+            feesHook = _feesHook;
+        } catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "removeLiquidityAfter");
+            vm.stopPrank();
+            return;
+        }
         vm.stopPrank();
 
         uint256 haircut = uint256(uint128(feesHook.amount0()));
@@ -105,6 +126,11 @@ contract AntiJITResidencyInvariantTest is StdInvariant, Test {
         handler = new AntiJITResidencyHandler(plugin, address(this));
 
         targetContract(address(handler));
+    }
+
+    /// @notice T-6: only classified expected reverts may occur; anything else fails the run.
+    function invariant_noUnexpectedReverts() public view {
+        assertEq(handler.unexpectedReverts(), 0, "unexpected revert in AntiJIT handler");
     }
 
     function invariant_residencyLiquidityMatchesActiveUserLiquidity() public view {
