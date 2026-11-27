@@ -58,10 +58,14 @@ and `[profile.ci.invariant]` sections are untouched.
 | --- | --- | --- | --- |
 | `check_nonzeroDeltaCannotUnlock(int128 delta)` | `TransientDeltaSolvency.t.sol` | An unlock with any non-zero transient delta reverts with exactly `CurrencyNotSettled(DUMMY, delta)` | `delta != 0` (`vm.assume`); `delta` ranges over all `int128` |
 | `check_zeroDeltaCanUnlock()` | `TransientDeltaSolvency.t.sol` | An unlock with zero delta succeeds and the vault is locked again afterwards | No symbolic inputs |
+| `check_chainedDeltasSumZeroUnlocks(int128 d1, int128 d2, int128 d3)` | `TransientDeltaSolvency.t.sol` | Three chained unlocks whose deltas sum to zero succeed (T-1 coverage) | `d1 + d2 + d3 == 0` |
+| `check_chainedDeltasNonzeroSumCannotUnlock(int128 d1, int128 d2, int128 d3)` | `TransientDeltaSolvency.t.sol` | Three chained unlocks whose deltas do not sum to zero revert | `d1 + d2 + d3 != 0` |
 | `check_claimsTransferConservation(uint128 initialBalAlice, uint128 transferAmount)` | `VaultSolvencyProof.t.sol` | Minting claims to Alice then transferring part to Bob conserves the total claim supply and lands exact balances | `initialBalAlice > 0`, `transferAmount <= initialBalAlice`; both amounts additionally bounded by `uint128(type(int128).max)` because the vault's per-call mint/settle bounds are `int128` (C-01 fix) |
 | `check_pauseStateTransition(bytes32 poolIdRaw)` | `CircuitBreakerFormal.t.sol` | A guardian can pause a pool and only the owner can unpause it | `poolIdRaw` arbitrary; `pausePool` is `onlyGuardianOrOwner`, `unpausePool` is `onlyOwner` |
 | `check_mulDivRoundingUpAlwaysGreaterOrEqual(uint128 a, uint128 b, uint128 denominator)` | `MathMonotonicityProof.t.sol` | `mulDivUp >= mulDiv` and the difference is at most 1 | `denominator != 0` (early return); pure math, no state |
 | `check_safeCastIdentityInRange(uint128 x)` | `MathMonotonicityProof.t.sol` | `SafeCastLib.toUint128` round-trips any `uint128` | Pure math, no state |
+| `check_hookDeltaSplitConservation(uint256 haircut, uint16 lpBps, uint16 protocolBps)` | `HookDeltaFormal.t.sol` | I-01 redesign (§9.4): for any haircut and any valid split, `SupaPoolManager._splitHookHaircut` conserves exactly (shares sum to the haircut, each ≤ haircut, zero-bps recipient gets exactly zero) | `haircut ≤ uint128(type(int128).max)`, `lpBps + protocolBps ≤ 10_000` (`vm.assume`); verified against the production pure function directly |
+| `check_hookDeltaCapHeadroom(int128 h)` | `HookDeltaFormal.t.sol` | I-01 redesign (§9.4): a real exactInput swap with a symbolic hook return either succeeds — specified leg identical to the engine delta, unspecified leg moved by exactly `h` — or reverts with exactly `HookDeltaCapExceeded` | `h` ranges over all `int128`; hook permissioned, pool configured at 500 bps; low-level-call + returndata pattern (no `expectRevert` in Halmos) |
 
 Local results (26 Nov 2026, 22:41 WAT, Halmos 0.3.3, z3, `--loop 2`,
 `--solver-timeout-assertion 120000`, run in the minimal verification vehicle —
@@ -87,6 +91,32 @@ command against the ORIGINAL unfixed harnesses gave 2 pass / 4 fail-error
 passed, CircuitBreaker failed on `deployCode`, TransientDelta's nonzero
 errored on `expectRevert` and its zero case failed on the missing callback,
 and VaultSolvency failed with "all paths have been reverted".
+
+Local results — I-01 hook-delta properties (27 Nov 2026, Halmos 0.3.3, z3,
+`--loop 2`, `--solver-timeout-assertion 120000`, same vehicle, clean full-set
+log `/tmp/halmos-full-clean.log` — the vehicle `out/` cache was wiped first,
+so no stale probe artifacts):
+**9 of 10 properties pass locally; `check_hookDeltaCapHeadroom` does NOT pass
+locally — it ERRORs, not fails.** Its solver subprocess is OOM-killed
+(returncode -9) on every attempt (4 attempts: 133–170 paths, ~180–200 s each;
+error queries saved under `/tmp/check_hookDeltaCapHeadroom-*-error/`,
+~120 KB each). No counterexample was ever produced: this is the 6 GB
+development VM running out of memory on z3's array reasoning over the full
+symbolic swap trace, not a property violation. The forge mirror
+`testFuzz_hookDeltaCapHeadroom` passes 4096 runs over the same claim. The
+authoritative run is CI's `halmos` job (GitHub-hosted runner, 16 GB) — it
+must pass there before the property is counted proven.
+
+| Function | Result | Paths | Time |
+| --- | --- | --- | --- |
+| `check_hookDeltaSplitConservation(uint256,uint16,uint16)` | PASS | 191 | 30.47 s |
+| `check_hookDeltaCapHeadroom(int128)` | ERROR (z3 OOM-killed, returncode -9; no counterexample) | 143 | 191.71 s |
+
+The cap property's setUp is deliberately leaner than its forge mirror's: the
+control pool and the second actor are skipped when the Halmos magic-address
+model is detected (see "CREATE addresses" below), because every extra storage
+slot inflates each solver query. The forge mirror keeps the full setup (it
+measures the exact cap on the control pool).
 
 ## Harness fixes (T-5) — why the original properties did not prove their claims
 
@@ -167,6 +197,27 @@ not the proof.
 - `vm.prank` / `startPrank` / `stopPrank`: implemented and used by
   `VaultSolvencyProof` and `CircuitBreakerFormal`.
 - `vm.assume`: supported.
+- `vm.getNonce` / `vm.computeCreateAddress`: not implemented (verified
+  27 Nov 2026: `setUp()` fails with `Unsupported cheat code: getNonce(address)`).
+  `SecurityTestSetup._deploy` uses both to predict the manager address for the
+  engines, so no formal file may use it.
+- `CREATE` addresses are NOT the RLP derivation: Halmos 0.3.3 (`sevm.py`,
+  `create()`) assigns every `CREATE` a sequential magic address
+  `0xAAAA0001 + counter`, so NO address prediction based on (sender, nonce)
+  can ever work under Halmos — verified 27 Nov 2026 by binary-searching
+  nonces 0–10, all failing. (`CREATE2` IS derived properly.) The
+  `HookDeltaFormal` harness therefore deploys the manager + engines through
+  `FormalManagerDeployer`, which creates a probe contract and branches on its
+  ACTUAL address: RLP prediction when the probe matches nonce 1 (forge), or
+  `probe + 4` when the probe is a magic address (Halmos). The `require` on
+  the predicted address guards both models. A future Halmos version that
+  derives CREATE addresses properly would take the RLP branch automatically.
+- Invoking `halmos` REQUIRES `FOUNDRY_PROFILE=halmos` in the environment:
+  Halmos shells out to `forge build` internally, and without the profile it
+  builds under `[profile.default]` (dynamic test linking on), so every `new`
+  fails with `Unsupported cheat code: deployCode(string,bytes)` (verified
+  27 Nov 2026). The `forge` binary must also be on `PATH` (`FileNotFoundError:
+  'forge'` otherwise).
 
 ## Assumptions, bounds, and what is NOT covered
 
