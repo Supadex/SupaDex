@@ -82,6 +82,20 @@ contract LVRShieldPluginTest is Test {
         assertGe(dynamicFee, 3000);
     }
 
+    /// I-07: with no oracle feed configured, `beforeSwap` applies ONLY the endogenous
+    /// fee — the trade that moves the price pays the pre-move (base) fee, because the
+    /// fee is computed from pre-trade observations. Meaningful LVR protection against
+    /// external prices requires the oracle overlay (`setOracleConfig`, ADR-0009); a
+    /// pool in this state must not be marketed as "LVR protected" (see
+    /// `docs/audit/CLAIMS_REGISTER.md` and `docs/runbooks/LVR-ORACLE-FEEDS.md`).
+    function test_I07_noOracleFeed_meansEndogenousFeeOnly() public {
+        assertEq(
+            address(plugin.getOracleConfig(key.toId()).feed), address(0), "no oracle feed configured in this setup"
+        );
+        (, uint24 fee) = plugin.beforeSwap(address(this), key, IPoolManager.SwapParams(true, 1000, 0), "");
+        assertEq(fee, 3000, "no volatility yet: endogenous fee is exactly the base fee");
+    }
+
     function test_dynamicFeeDecaysOverTime() public {
         plugin.beforeSwap(address(this), key, IPoolManager.SwapParams(true, 1000, 0), "");
 
@@ -158,5 +172,15 @@ contract LVRShieldPluginTest is Test {
         bare.afterInitialize(address(this), key, 100, 0);
         vm.expectRevert(abi.encodeWithSelector(PluginErrors.PluginPermissionDenied.selector, address(bare), uint32(0)));
         bare.setDecayHalfLife(key, 24);
+    }
+
+    /// L-03: a pool whose base fee is above 10% must not have that fee silently replaced by the 10% cap.
+    function test_highBaseFeeIsNotCappedAtTenPercent() public {
+        PoolKey memory high = key;
+        high.fee = 200_000;
+        plugin.afterInitialize(address(this), high, 100, 0);
+
+        (, uint24 dynamicFee) = plugin.beforeSwap(address(this), high, IPoolManager.SwapParams(true, 1000, 0), "");
+        assertEq(dynamicFee, 200_000);
     }
 }

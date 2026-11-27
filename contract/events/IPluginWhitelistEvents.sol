@@ -7,5 +7,6 @@ pragma solidity ^0.8.26;
  */
 interface IPluginWhitelistEvents {
     event PluginWhitelisted(address indexed plugin, bool whitelisted);
+    event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 }

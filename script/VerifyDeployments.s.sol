@@ -248,6 +248,16 @@ contract VerifyDeployments is Script {
         _req(r, PluginWhitelist(res.pluginWhitelist).owner() == res.timelock, "plugin whitelist owner == timelock");
         _req(r, SupaFeeCollector(payable(res.feeCollector)).owner() == res.timelock, "fee collector owner == timelock");
         _req(r, CircuitBreaker(res.circuitBreaker).owner() == res.timelock, "circuit breaker owner == timelock");
+        _req(r, SupaVault(payable(res.vaultProxy)).pendingOwner() == address(0), "vault has no pending owner");
+        _req(r, SupaPoolManager(res.poolManager).pendingOwner() == address(0), "pool manager has no pending owner");
+        _req(r, SupaRoles(res.roles).pendingOwner() == address(0), "roles has no pending owner");
+        _req(r, PluginWhitelist(res.pluginWhitelist).pendingOwner() == address(0), "whitelist has no pending owner");
+        _req(
+            r,
+            SupaFeeCollector(payable(res.feeCollector)).pendingOwner() == address(0),
+            "fee collector has no pending owner"
+        );
+        _req(r, CircuitBreaker(res.circuitBreaker).pendingOwner() == address(0), "circuit breaker has no pending owner");
         address impl = address(uint160(uint256(vm.load(res.vaultProxy, ERC1967_IMPLEMENTATION_SLOT))));
         _req(r, impl == res.vaultImplementation, "vault proxy implementation slot matches");
     }

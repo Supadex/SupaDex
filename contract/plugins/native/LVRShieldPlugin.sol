@@ -219,8 +219,9 @@ contract LVRShieldPlugin is BaseHook, IPluginEvents {
         uint256 scaledVol = (volatility * state.volatilityAlpha) / 100;
         if (scaledVol > type(uint24).max) scaledVol = type(uint24).max;
 
+        // Clamp with the pool's own [min, max], not the library's global 10% cap (L-03).
         dynamicFee = DynamicFeeLib.computeDynamicFee(
-            state.baseFee, state.lastFee, uint24(scaledVol), timeElapsed, state.decayHalfLife
+            state.baseFee, state.lastFee, uint24(scaledVol), timeElapsed, state.decayHalfLife, state.maxFeePips
         );
         dynamicFee = _clamp(dynamicFee, state);
         emit DynamicFeeUpdated(poolId, state.baseFee, dynamicFee, uint24(scaledVol), timeElapsed);

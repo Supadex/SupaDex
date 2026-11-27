@@ -71,7 +71,40 @@ contract DeploySupaDex is Script {
     }
 
     uint256 public constant DEFAULT_TIMELOCK_DELAY = 2 days;
-    uint32 public constant ANTI_JIT_MIN_RESIDENCY_BLOCKS = 10;
+
+    /**
+     * @notice I-06 (internal pre-audit 2026-11-26) — Anti-JIT minimum residency, per chain.
+     * @dev The old flat 10 blocks is ~120 s on 12 s chains (Ethereum, Sepolia, …)
+     *      but only ~20 s on 2 s chains (Base, Arbitrum, OP, Polygon, Avalanche, …),
+     *      where multi-block JIT stays economically viable. The target is ~120 s of
+     *      residency everywhere: 10 blocks at ~12 s/block, 40 at ~3 s/block (BNB
+     *      Chain), 24 at ~5 s/block (Gnosis), 60 at ~2 s/block (everything else).
+     *      Unknown chain ids fail closed to 60 blocks (the longest residency), never
+     *      to the shortest. The plugin's vesting economics are unchanged — only the
+     *      `minResidencyBlocks` constructor argument varies. Block times are
+     *      approximate (chainlist, Oct 2026); re-check before a value-bearing deploy.
+     *      A time-based residency would be more precise but would change the plugin's
+     *      vesting math; the per-chain block count keeps the economics identical and
+     *      the change reviewable.
+     */
+    function antiJitMinResidencyBlocks() public view returns (uint32) {
+        uint256 chainId = block.chainid;
+        if (chainId == 1 || chainId == 11155111 || chainId == 17000 || chainId == 560048) {
+            return 10; // ~12 s/block: Ethereum, Sepolia, Holesky, Hoodi.
+        }
+        if (chainId == 56 || chainId == 97) {
+            return 40; // ~3 s/block: BNB Smart Chain + testnet.
+        }
+        if (chainId == 100) {
+            return 24; // ~5 s/block: Gnosis.
+        }
+        if (chainId == 31337) {
+            return 10; // Local anvil: tests roll blocks explicitly.
+        }
+        // ~2 s/block default (Base, Arbitrum, OP, Polygon, Avalanche, Linea, zkSync, …)
+        // and any unknown chain id (fail closed to the longest residency).
+        return 60;
+    }
 
     /// @dev Reads PRIVATE_KEY only to sign under `forge script --broadcast`; never logged or stored.
     function run() external returns (DeploymentResult memory res) {
@@ -240,7 +273,7 @@ contract DeploySupaDex is Script {
         lvr.setRoles(ISupaRoles(res.roles)); // roles.owner() becomes the timelock in _handOff
         res.lvrShieldPlugin = address(lvr);
         res.oracle = address(lvr.oracle());
-        res.antiJITPlugin = address(new AntiJITVestingPlugin(pm, ANTI_JIT_MIN_RESIDENCY_BLOCKS));
+        res.antiJITPlugin = address(new AntiJITVestingPlugin(pm, antiJitMinResidencyBlocks()));
         console2.log("6. LVRShieldPlugin / AntiJITVestingPlugin:", res.lvrShieldPlugin, res.antiJITPlugin);
 
         address[] memory initialPlugins = new address[](2);
@@ -269,14 +302,17 @@ contract DeploySupaDex is Script {
 
     function _handOff(DeploymentResult memory res) internal {
         SupaVault(payable(res.vaultProxy)).setPoolManager(res.poolManager, true);
+        // L-01: two-step. This nominates the timelock; it is not the owner until it calls acceptOwnership
+        // (schedule + delay + execute). A mistyped timelock never receives ownership, and the deployer can
+        // nominate again. VerifyDeployments requires owner == timelock and pendingOwner == 0, so it passes
+        // only after the timelock accepts.
         SupaVault(payable(res.vaultProxy)).transferOwnership(res.timelock);
         SupaPoolManager(res.poolManager).transferOwnership(res.timelock);
         SupaRoles(res.roles).transferOwnership(res.timelock);
         PluginWhitelist(res.pluginWhitelist).transferOwnership(res.timelock);
         SupaFeeCollector(payable(res.feeCollector)).transferOwnership(res.timelock);
         CircuitBreaker(res.circuitBreaker).transferOwnership(res.timelock);
-        console2.log(
-            "8. Ownership of vault, pool manager, roles, whitelist, fee collector, circuit breaker -> SupaTimelock"
-        );
+        console2.log("8. Timelock NOMINATED as owner of vault, pool manager, roles, whitelist, fee collector, breaker");
+        console2.log("   The timelock must acceptOwnership on each contract before it can administer them.");
     }
 }

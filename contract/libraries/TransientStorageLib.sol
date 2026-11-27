@@ -126,17 +126,21 @@ library TransientStorageLib {
 
     /**
      * @notice Applies a delta change to (account, currency) and updates nonzero delta count.
+     * @dev Addition is checked signed arithmetic. EVM `add` is mod 2^256; using it here let a
+     * sequence of large negative deltas (permissionless `mint`) wrap the caller's delta back to
+     * zero and unlock with unbacked ERC-6909 claims (C-01).
      */
     function applyDelta(address account, Currency currency, int256 deltaChange) internal returns (int256 newDelta) {
         if (deltaChange == 0) return getDelta(account, currency);
+        int256 current = getDelta(account, currency);
+        newDelta = _addChecked(current, deltaChange);
+
         bytes32 deltaSlot = computeDeltaSlot(account, currency);
         bytes32 countSlot = NONZERO_DELTA_COUNT_SLOT;
         bytes32 lastCurrencySlot = LAST_UNSETTLED_CURRENCY_SLOT;
         bytes32 lastDeltaSlot = LAST_UNSETTLED_DELTA_SLOT;
         address currencyAddr = Currency.unwrap(currency);
         assembly {
-            let current := tload(deltaSlot)
-            newDelta := add(current, deltaChange)
             tstore(deltaSlot, newDelta)
 
             let count := tload(countSlot)
@@ -152,6 +156,71 @@ library TransientStorageLib {
                 tstore(lastCurrencySlot, currencyAddr)
                 tstore(lastDeltaSlot, newDelta)
             }
+        }
+    }
+
+    /**
+     * @dev Reverts when `a + b` overflows int256. Same-sign operands must not flip the sign bit.
+     */
+    function _addChecked(int256 a, int256 b) private pure returns (int256 c) {
+        unchecked {
+            c = a + b;
+            if ((a ^ b) >= 0 && (a ^ c) < 0) revert VaultErrors.DeltaOverflow();
+        }
+    }
+
+    /// @dev Currencies whose claim supply or reserves changed during this unlock and must be checked.
+    bytes32 internal constant CLAIM_TOUCH_COUNT_SLOT = keccak256("supadex.vault.claim.touch.count");
+    bytes32 internal constant CLAIM_TOUCH_INDEX_PREFIX = keccak256("supadex.vault.claim.touch.index");
+    bytes32 internal constant CLAIM_TOUCH_SEEN_PREFIX = keccak256("supadex.vault.claim.touch.seen");
+
+    /**
+     * @notice Records `currency` so `unlock` can assert claim supply <= reserves. Duplicates are ignored.
+     */
+    function noteClaimCheck(Currency currency) internal {
+        address c = Currency.unwrap(currency);
+        bytes32 seenSlot = keccak256(abi.encode(c, CLAIM_TOUCH_SEEN_PREFIX));
+        uint256 seen;
+        assembly {
+            seen := tload(seenSlot)
+        }
+        if (seen != 0) return;
+        bytes32 countSlot = CLAIM_TOUCH_COUNT_SLOT;
+        uint256 count;
+        assembly {
+            tstore(seenSlot, 1)
+            count := tload(countSlot)
+        }
+        bytes32 indexSlot = keccak256(abi.encode(count, CLAIM_TOUCH_INDEX_PREFIX));
+        assembly {
+            tstore(indexSlot, c)
+            tstore(countSlot, add(count, 1))
+        }
+    }
+
+    /**
+     * @notice Returns and clears the currencies noted by `noteClaimCheck` in this transaction.
+     */
+    function drainClaimChecks() internal returns (Currency[] memory currencies) {
+        bytes32 countSlot = CLAIM_TOUCH_COUNT_SLOT;
+        uint256 count;
+        assembly {
+            count := tload(countSlot)
+            tstore(countSlot, 0)
+        }
+        currencies = new Currency[](count);
+        for (uint256 i; i < count; ++i) {
+            bytes32 indexSlot = keccak256(abi.encode(i, CLAIM_TOUCH_INDEX_PREFIX));
+            address c;
+            assembly {
+                c := tload(indexSlot)
+                tstore(indexSlot, 0)
+            }
+            bytes32 seenSlot = keccak256(abi.encode(c, CLAIM_TOUCH_SEEN_PREFIX));
+            assembly {
+                tstore(seenSlot, 0)
+            }
+            currencies[i] = Currency.wrap(c);
         }
     }
 

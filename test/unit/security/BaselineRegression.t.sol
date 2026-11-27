@@ -402,8 +402,14 @@ contract BaselineRegressionTest is Test, IUnlockCallback {
 
     function test_adminSettersEmitEvents() public {
         vm.expectEmit(true, true, false, false, address(manager));
-        emit SupaPoolManager.OwnershipTransferred(address(this), address(0xB0B));
+        emit SupaPoolManager.OwnershipTransferStarted(address(this), address(0xB0B));
         manager.transferOwnership(address(0xB0B));
+        assertEq(manager.owner(), address(this), "nomination does not move ownership");
+        vm.expectEmit(true, true, false, false, address(manager));
+        emit SupaPoolManager.OwnershipTransferred(address(this), address(0xB0B));
+        vm.prank(address(0xB0B));
+        manager.acceptOwnership();
+        assertEq(manager.owner(), address(0xB0B));
     }
 
     // ------------------------------------------------------------------ SDX-008 withdraw-only pause

@@ -5,6 +5,12 @@ import {Test} from "forge-std/Test.sol";
 import {DeploySupaDex} from "../../script/DeploySupaDex.s.sol";
 import {SeedLocal} from "../../script/SeedLocal.s.sol";
 import {SupaTimelock} from "../../contract/governance/SupaTimelock.sol";
+import {SupaRoles} from "../../contract/governance/SupaRoles.sol";
+import {PluginWhitelist} from "../../contract/governance/PluginWhitelist.sol";
+import {SupaVault} from "../../contract/core/SupaVault.sol";
+import {SupaPoolManager} from "../../contract/core/SupaPoolManager.sol";
+import {SupaFeeCollector} from "../../contract/periphery/SupaFeeCollector.sol";
+import {CircuitBreaker} from "../../contract/security/CircuitBreaker.sol";
 import {LVRShieldPlugin} from "../../contract/plugins/native/LVRShieldPlugin.sol";
 import {ISupaQuoter} from "../../contract/interfaces/ISupaQuoter.sol";
 import {IPoolManager} from "../../contract/interfaces/IPoolManager.sol";
@@ -41,6 +47,14 @@ contract SeedLocalTest is Test {
                 timelockDelay: 1 hours
             })
         );
+        vm.startPrank(res.timelock);
+        SupaVault(payable(res.vaultProxy)).acceptOwnership();
+        SupaPoolManager(res.poolManager).acceptOwnership();
+        SupaRoles(res.roles).acceptOwnership();
+        PluginWhitelist(res.pluginWhitelist).acceptOwnership();
+        SupaFeeCollector(payable(res.feeCollector)).acceptOwnership();
+        CircuitBreaker(res.circuitBreaker).acceptOwnership();
+        vm.stopPrank();
         s = seeder.seed(
             SeedLocal.Addrs({
                 poolManager: res.poolManager,

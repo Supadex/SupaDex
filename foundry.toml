@@ -55,6 +55,22 @@ via_ir = false
 optimizer = true
 optimizer_runs = 200
 
+# Halmos profile (T-5, audit closure): inherits the whole default compiler
+# pipeline and overrides exactly one setting. Foundry 1.10 dynamically links
+# `new` deployments inside test contracts through vm.deployCode by default
+# ("dynamic test linking"), and Halmos 0.3.3 does not implement the deployCode
+# cheatcode, so any formal test that deploys a contract (e.g. CircuitBreaker)
+# fails in setUp() under the default profile. Disabling it here makes every
+# `new` compile to a plain CREATE, which Halmos executes. Scoped to this
+# profile only: default / ci / dev / legacy compilation is unchanged.
+# NOTE: the setting cannot be passed to Halmos's internal `forge build` via a
+# CLI flag (Halmos has no build-args passthrough) and neither
+# FOUNDRY_NO_DYNAMIC_TEST_LINKING nor NO_DYNAMIC_TEST_LINKING is honoured by
+# forge 1.10.0 (both verified to have no effect, 26 Nov 2026), so a profile
+# is the only declarative route. [invariant] / [profile.ci.invariant] untouched.
+[profile.halmos]
+dynamic_test_linking = false
+
 # CI profile (Edith remediation-3 condition 1): same compiler pipeline as default, with a PINNED fuzz seed so CI is
 # reproducible. Randomised seeds run in the separate `fuzz-random-seed` job (.github/workflows/test.yml), which
 # prints its seed so any failure can be replayed with `FOUNDRY_PROFILE=ci forge test --fuzz-seed <seed>`.
@@ -67,3 +83,20 @@ seed = "0x5eed2026"
 runs = 256
 depth = 128
 fail_on_revert = false
+
+# T-6 strict-revert profile: ONLY this profile sets fail_on_revert = true. The global
+# [invariant] and [profile.ci.invariant] sections stay false (founder constraint):
+# CrossProtocolInvariant handlers intentionally encounter expected economic reverts
+# (slippage, liquidity constraints, configured bounds), and a global flip would turn
+# legitimate economics into false positives. The strict suite
+# (test/invariant/StrictRevertInvariant.t.sol) runs under this profile; its handlers
+# catch every revert and classify it through test/invariant/RevertClassifier.sol, so
+# any uncaught revert fails the run here AND any classified-unexpected revert fails
+# invariant_noUnexpectedReverts under every profile.
+[profile.strict.invariant]
+runs = 256
+depth = 128
+fail_on_revert = true
+
+[profile.strict.fuzz]
+runs = 1024

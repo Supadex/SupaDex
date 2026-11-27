@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import {PoolId} from "../types/PoolId.sol";
+import {Currency} from "../types/Currency.sol";
 
 /**
  * @title PoolErrors
@@ -119,6 +120,20 @@ library PoolErrors {
     error HookDeltaCapExceeded();
 
     /**
+     * @notice I-01 redesign (2026-11-27): a non-zero afterSwap haircut on a pool
+     * with no hook-delta configuration (`maxHaircutBps == 0`). The feature is
+     * off by default and must be enabled per pool by governance.
+     */
+    error HookDeltaNotEnabled(PoolId id);
+
+    /**
+     * @notice I-01 redesign (2026-11-27): a `HookDeltaConfig` fails set-time
+     * validation (hard cap exceeded, splits not exhaustive, or a
+     * beneficiary/share mismatch).
+     */
+    error InvalidHookDeltaConfig();
+
+    /**
      * @dev Thrown when donate is attempted with no active liquidity to credit.
      */
     error NoLiquidityToDonate();
@@ -209,4 +224,9 @@ library PoolErrors {
      * @notice Caller is not the governance owner of the PoolManager (timelock).
      */
     error NotGovernance();
+
+    /**
+     * @notice Thrown when a pool would pay out more of `currency` than it has recorded (M-01).
+     */
+    error PoolInsolvent(PoolId id, Currency currency, uint256 requested, uint256 available);
 }

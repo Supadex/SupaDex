@@ -373,9 +373,11 @@ contract StableAMMEngine is ICurveEngine {
         // Edith G-1 / 8-A: the input side only grows on exact-out, so the result is at least xpIn : outAfter.
         // Classify a trade that necessarily leaves the pool beyond the bound BEFORE solving (the solver would
         // otherwise run far outside its domain). Condition 7: allowed only if it strictly reduces an existing breach.
-        if (v.xpIn / MAX_IMBALANCE_RATIO > outAfter) {
+        // Exact form: floor division (`xpIn / ratio > outAfter`) would tolerate a
+        // post-swap ratio up to (ratio-1)/outAfter past the documented bound.
+        if (v.xpIn > outAfter * MAX_IMBALANCE_RATIO) {
             (uint256 hiB, uint256 loB) = v.xpIn >= v.xpOut ? (v.xpIn, v.xpOut) : (v.xpOut, v.xpIn);
-            bool preBreach = hiB / MAX_IMBALANCE_RATIO > loB;
+            bool preBreach = hiB > loB * MAX_IMBALANCE_RATIO;
             // post ratio >= xpIn / outAfter; strictly reducing requires xpIn / outAfter < hiB / loB.
             if (!preBreach || v.xpIn * loB >= hiB * outAfter) {
                 revert PoolErrors.StableImbalanceExceeded(v.xpIn, outAfter, MAX_IMBALANCE_RATIO);
@@ -429,7 +431,7 @@ contract StableAMMEngine is ICurveEngine {
     /// @dev Supported operating range: both sides <= MAX_NORMALIZED_RESERVE and high/low <= MAX_IMBALANCE_RATIO.
     function _checkReserveBounds(uint256 xp0, uint256 xp1) internal pure {
         (uint256 hi, uint256 lo) = xp0 >= xp1 ? (xp0, xp1) : (xp1, xp0);
-        if (hi > MAX_NORMALIZED_RESERVE || lo == 0 || hi / MAX_IMBALANCE_RATIO > lo) {
+        if (hi > MAX_NORMALIZED_RESERVE || lo == 0 || hi > lo * MAX_IMBALANCE_RATIO) {
             revert PoolErrors.StableImbalanceExceeded(hi, lo, MAX_IMBALANCE_RATIO);
         }
     }
@@ -442,9 +444,12 @@ contract StableAMMEngine is ICurveEngine {
      */
     function _checkSwapBounds(uint256 pre0, uint256 pre1, uint256 post0, uint256 post1) internal pure {
         (uint256 hi, uint256 lo) = post0 >= post1 ? (post0, post1) : (post1, post0);
-        if (hi <= MAX_NORMALIZED_RESERVE && lo != 0 && hi / MAX_IMBALANCE_RATIO <= lo) return;
+        // Exact form: floor division (`hi / ratio <= lo`) would tolerate hi up to
+        // lo*ratio + (ratio-1) — at dust reserves a small swap could leave the pool
+        // past the documented bound (e.g. (20001, 2) = 10,000.5:1).
+        if (hi <= MAX_NORMALIZED_RESERVE && lo != 0 && hi <= lo * MAX_IMBALANCE_RATIO) return;
         (uint256 hiB, uint256 loB) = pre0 >= pre1 ? (pre0, pre1) : (pre1, pre0);
-        bool preBreach = hiB / MAX_IMBALANCE_RATIO > loB;
+        bool preBreach = hiB > loB * MAX_IMBALANCE_RATIO;
         // ratios compared by cross-multiplication; both sides <= ~1e34 so products fit in 256 bits.
         if (preBreach && hi <= MAX_NORMALIZED_RESERVE && lo != 0 && hi * loB < hiB * lo) return;
         revert PoolErrors.StableImbalanceExceeded(hi, lo, MAX_IMBALANCE_RATIO);

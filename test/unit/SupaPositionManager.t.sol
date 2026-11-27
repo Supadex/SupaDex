@@ -230,7 +230,9 @@ contract SupaPositionManagerTest is Test {
             amount0Min: 0,
             amount1Min: 0,
             deadline: block.timestamp + 100,
-            hookData: ""
+            hookData: "",
+            recipient: address(0),
+            receiveAsClaims: false
         });
         (uint256 dec0, uint256 dec1) = posManager.decreaseLiquidity(decParams);
         assertTrue(dec0 > 0);
@@ -270,7 +272,9 @@ contract SupaPositionManagerTest is Test {
             amount0Min: 0,
             amount1Min: 0,
             deadline: block.timestamp + 100,
-            hookData: ""
+            hookData: "",
+            recipient: address(0),
+            receiveAsClaims: false
         });
 
         vm.prank(alice);
@@ -312,7 +316,9 @@ contract SupaPositionManagerTest is Test {
             amount0Min: 0,
             amount1Min: 0,
             deadline: block.timestamp + 100,
-            hookData: ""
+            hookData: "",
+            recipient: address(0),
+            receiveAsClaims: false
         });
         posManager.decreaseLiquidity(decParams);
 

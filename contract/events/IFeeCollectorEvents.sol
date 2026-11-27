@@ -12,6 +12,10 @@ interface IFeeCollectorEvents {
 
     event FeeRecipientsUpdated(address daoTreasury, address lpStaking, address insuranceReserve);
 
+    event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
     event ProtocolFeesSwept(
         address indexed caller,
         Currency indexed currency,

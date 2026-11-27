@@ -259,6 +259,12 @@ contract JexiRegressionTest is Test {
         pm.transferOwnership(address(timelock));
         roles.transferOwnership(address(timelock));
         wl.transferOwnership(address(timelock));
+        vm.startPrank(address(timelock));
+        vault.acceptOwnership();
+        pm.acceptOwnership();
+        roles.acceptOwnership();
+        wl.acceptOwnership();
+        vm.stopPrank();
 
         JToken a = new JToken("A");
         JToken b = new JToken("B");

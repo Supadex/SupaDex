@@ -18,7 +18,9 @@ import {ICircuitBreaker} from "../interfaces/ICircuitBreaker.sol";
  * and flash accounting transient balance delta management.
  * @dev Storage layout (UUPS; MUST stay append-only, verified against the 2026-10 testnet implementation):
  *   slot 0 owner | 1 circuitBreaker | 2 isPoolManager | 3 reservesOf | 4 balanceOf | 5 allowance |
- *   6 isOperator | 7..49 __gap (43 slots reserved for future variables).
+ *   6 isOperator | 7 claimSupplyOf | 8 pendingOwner | 9..49 __gap (41 slots reserved).
+ * `claimSupplyOf` counts ERC-6909 claims minted after this variable was added. A vault that already has
+ * outstanding claims must exit them before upgrading, or `burn` of those claims underflows the counter.
  * Settlement (ADR-0002): ERC-20 payments must be bracketed by `sync(currency)` → transfer → `settle`.
  * Tokens that reach the vault outside that bracket (donations, positive rebases) are unaccounted surplus:
  * they never affect any caller's delta and can only be swept by the owner (timelock) via `sweepSurplus`.
@@ -65,9 +67,20 @@ contract SupaVault is IVault, UUPSUpgradeable {
     mapping(address => mapping(address => bool)) public override isOperator;
 
     /**
-     * @dev Reserved storage for future upgrades (SDX-014). Shrink when appending new variables.
+     * @notice Outstanding ERC-6909 claim supply per currency. Must be <= `reservesOf` when an unlock ends.
      */
-    uint256[43] private __gap;
+    mapping(Currency => uint256) public claimSupplyOf;
+
+    /**
+     * @notice Nominated owner. Ownership moves only when this address calls `acceptOwnership`.
+     */
+    address public pendingOwner;
+
+    /**
+     * @dev Reserved storage for future upgrades (SDX-014). Shrink when appending new variables.
+     * Two slots consumed by `claimSupplyOf` and `pendingOwner` (43 → 41).
+     */
+    uint256[41] private __gap;
 
     /**
      * @dev Modifier ensuring caller is owner.
@@ -113,12 +126,23 @@ contract SupaVault is IVault, UUPSUpgradeable {
     }
 
     /**
-     * @notice Transfers vault ownership to a new governor or timelock.
+     * @notice Nominates `newOwner`. The nominee must call `acceptOwnership` before ownership moves.
      */
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert VaultErrors.Unauthorized();
-        emit OwnershipTransferred(owner, newOwner);
-        owner = newOwner;
+        pendingOwner = newOwner;
+        emit OwnershipTransferStarted(owner, newOwner);
+    }
+
+    /**
+     * @notice Accepts a pending ownership nomination.
+     */
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert VaultErrors.Unauthorized();
+        address previous = owner;
+        owner = msg.sender;
+        pendingOwner = address(0);
+        emit OwnershipTransferred(previous, msg.sender);
     }
 
     /**
@@ -166,6 +190,7 @@ contract SupaVault is IVault, UUPSUpgradeable {
             (Currency unsettled, int256 unsettledDelta) = TransientStorageLib.getLastUnsettled();
             revert VaultErrors.CurrencyNotSettled(unsettled, unsettledDelta);
         }
+        _enforceClaimBacking();
 
         TransientStorageLib.clearSynced();
         TransientStorageLib.releaseLock();
@@ -218,10 +243,12 @@ contract SupaVault is IVault, UUPSUpgradeable {
             TransientStorageLib.clearSynced();
         }
         if (paid == 0) revert VaultErrors.ZeroAmount();
+        // Per-call deltas are int128-bounded (Uniswap v4). Larger settles must be split.
+        int128 credited = SafeCastLib.toInt128(paid);
 
-        reservesOf[currency] += paid;
-        TransientStorageLib.applyDelta(msg.sender, currency, SafeCastLib.toInt256(paid));
-        emit Settle(currency, msg.sender, paid);
+        reservesOf[currency] += uint256(uint128(credited));
+        TransientStorageLib.applyDelta(msg.sender, currency, int256(credited));
+        emit Settle(currency, msg.sender, uint256(uint128(credited)));
     }
 
     /**
@@ -229,15 +256,18 @@ contract SupaVault is IVault, UUPSUpgradeable {
      */
     function take(Currency currency, address to, uint256 amount) external override onlyUnlocked {
         if (amount == 0) revert VaultErrors.ZeroAmount();
+        int128 amt = SafeCastLib.toInt128(amount);
+        uint256 taken = uint256(uint128(amt));
         uint256 reserves = reservesOf[currency];
-        if (reserves < amount) {
-            revert VaultErrors.InsufficientBalance(currency, amount, reserves);
+        if (reserves < taken) {
+            revert VaultErrors.InsufficientBalance(currency, taken, reserves);
         }
 
-        reservesOf[currency] = reserves - amount;
-        TransientStorageLib.applyDelta(msg.sender, currency, -SafeCastLib.toInt256(amount));
-        currency.transfer(to, amount);
-        emit Take(currency, to, amount);
+        reservesOf[currency] = reserves - taken;
+        TransientStorageLib.applyDelta(msg.sender, currency, -int256(amt));
+        TransientStorageLib.noteClaimCheck(currency);
+        currency.transfer(to, taken);
+        emit Take(currency, to, taken);
     }
 
     /**
@@ -245,12 +275,16 @@ contract SupaVault is IVault, UUPSUpgradeable {
      */
     function mint(Currency currency, address to, uint256 amount) external override onlyUnlocked {
         if (amount == 0) revert VaultErrors.ZeroAmount();
-        TransientStorageLib.applyDelta(msg.sender, currency, -SafeCastLib.toInt256(amount));
+        int128 amt = SafeCastLib.toInt128(amount);
+        uint256 minted = uint256(uint128(amt));
+        TransientStorageLib.applyDelta(msg.sender, currency, -int256(amt));
 
         uint256 id = currency.toId();
-        balanceOf[to][id] += amount;
-        emit ClaimMinted(currency, to, amount);
-        emit Transfer(msg.sender, address(0), to, id, amount);
+        claimSupplyOf[currency] += minted;
+        balanceOf[to][id] += minted;
+        TransientStorageLib.noteClaimCheck(currency);
+        emit ClaimMinted(currency, to, minted);
+        emit Transfer(msg.sender, address(0), to, id, minted);
     }
 
     /**
@@ -258,16 +292,19 @@ contract SupaVault is IVault, UUPSUpgradeable {
      */
     function burn(Currency currency, uint256 amount) external override onlyUnlocked {
         if (amount == 0) revert VaultErrors.ZeroAmount();
+        int128 amt = SafeCastLib.toInt128(amount);
+        uint256 burned = uint256(uint128(amt));
         uint256 id = currency.toId();
         uint256 currentBal = balanceOf[msg.sender][id];
-        if (currentBal < amount) {
-            revert VaultErrors.InsufficientBalance(currency, amount, currentBal);
+        if (currentBal < burned) {
+            revert VaultErrors.InsufficientBalance(currency, burned, currentBal);
         }
 
-        balanceOf[msg.sender][id] = currentBal - amount;
-        TransientStorageLib.applyDelta(msg.sender, currency, SafeCastLib.toInt256(amount));
-        emit ClaimBurned(currency, msg.sender, amount);
-        emit Transfer(msg.sender, msg.sender, address(0), id, amount);
+        balanceOf[msg.sender][id] = currentBal - burned;
+        claimSupplyOf[currency] -= burned;
+        TransientStorageLib.applyDelta(msg.sender, currency, int256(amt));
+        emit ClaimBurned(currency, msg.sender, burned);
+        emit Transfer(msg.sender, msg.sender, address(0), id, burned);
     }
 
     /**
@@ -276,7 +313,23 @@ contract SupaVault is IVault, UUPSUpgradeable {
     function accountDelta(address account, Currency currency, int256 delta) external override onlyUnlocked {
         // ADR-0005: only authorized pool managers may move deltas (no owner self-credit path).
         if (!isPoolManager[msg.sender]) revert VaultErrors.Unauthorized();
-        TransientStorageLib.applyDelta(account, currency, delta);
+        // Per-call magnitude is int128. The running total stays int256 and uses checked addition.
+        TransientStorageLib.applyDelta(account, currency, int256(SafeCastLib.toInt128(delta)));
+    }
+
+    /**
+     * @dev At the end of an unlock, every currency whose claims or reserves moved must still satisfy
+     * claim supply <= reserves. Flash mint-then-settle is allowed; the check runs after the callback.
+     */
+    function _enforceClaimBacking() internal {
+        Currency[] memory touched = TransientStorageLib.drainClaimChecks();
+        uint256 len = touched.length;
+        for (uint256 i; i < len; ++i) {
+            Currency currency = touched[i];
+            uint256 supply = claimSupplyOf[currency];
+            uint256 reserves = reservesOf[currency];
+            if (supply > reserves) revert VaultErrors.ClaimsExceedReserves(currency, supply, reserves);
+        }
     }
 
     // =========================================================================

@@ -33,6 +33,16 @@ contract SupaPoolManager is IPoolManager {
     uint24 internal constant MAX_FEE_PIPS = 1_000_000;
 
     /**
+     * @notice I-01 redesign (2026-11-27): hard cap on a pool's configured
+     * afterSwap haircut (1_000 bps = 10% of the unspecified leg per swap).
+     * Same precedent as `DynamicFeeLib.MAX_FEE`.
+     */
+    uint16 internal constant MAX_HOOK_HAIRCUT_BPS = 1_000;
+
+    /// @notice I-01 redesign (2026-11-27): basis-point denominator for hook-delta splits.
+    uint16 internal constant BPS_DENOMINATOR = 10_000;
+
+    /**
      * @notice ADR-0006: BinAMM is a real multi-bin engine (price moves bin to bin); BIN_AMM pools are enabled.
      * @dev Kept as a (virtual) view so integrators and the deploy verifier can assert the curve set, and so a
      * future redeploy can gate a curve again without changing the ABI. Supersedes the ADR-0004 gate.
@@ -41,6 +51,7 @@ contract SupaPoolManager is IPoolManager {
         return true;
     }
 
+    event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event CircuitBreakerSet(address indexed circuitBreaker);
     event PluginWhitelistSet(address indexed whitelist);
@@ -61,6 +72,50 @@ contract SupaPoolManager is IPoolManager {
     mapping(Currency => uint256) public override protocolFeesAccrued;
     /// @notice Plugin permission bitmask cached at initialize; plugins cannot change it afterwards.
     mapping(PoolId => uint32) public pluginPermissions;
+
+    /**
+     * @notice Tokens attributed to a pool, per currency (M-01). Outflows cannot exceed this balance,
+     * so one pool cannot pay out another pool's reserves from the shared vault.
+     * @dev Not a UUPS layout: PoolManager is immutable and redeployed. Protocol fees are booked outside
+     * this pot (`protocolFeesAccrued`) at the moment they are split off the swap input.
+     */
+    mapping(PoolId => mapping(Currency => uint256)) public poolReserves;
+
+    /**
+     * @notice I-01 redesign (2026-11-27): per-pool afterSwap hook-delta
+     * configuration. Default (never set) is all zeros: the feature is
+     * disabled on the pool. Append-only storage (manager is not upgradeable).
+     * @dev Internal mapping + explicit `hookDeltaConfigs` getter below: a
+     * public struct mapping's auto-getter returns a flat tuple, which does
+     * not satisfy the interface's `returns (HookDeltaConfig memory)`.
+     */
+    mapping(PoolId => HookDeltaConfig) internal _hookDeltaConfigs;
+
+    /**
+     * @notice I-01 redesign (2026-11-27): accrued hook-beneficiary fees, per
+     * beneficiary per currency. Booked by moving the beneficiary share OUT of
+     * the pool pot at distribution time (same pattern as
+     * `protocolFeesAccrued` via `_moveToProtocol`), so the global invariant
+     * `sum(poolReserves) + protocolFeesAccrued + sum(hookBeneficiaryFees) <=
+     * reservesOf` counts every token exactly once. Collectable only by the
+     * beneficiary themself via `collectHookFees`.
+     * @dev Internal mapping + explicit `hookBeneficiaryFees` getter below (see
+     * `_hookDeltaConfigs`).
+     */
+    mapping(address => mapping(Currency => uint256)) internal _hookBeneficiaryFees;
+
+    /// @inheritdoc IPoolManager
+    function hookDeltaConfigs(PoolId id) external view override returns (HookDeltaConfig memory) {
+        return _hookDeltaConfigs[id];
+    }
+
+    /// @inheritdoc IPoolManager
+    function hookBeneficiaryFees(address beneficiary, Currency currency) external view override returns (uint256) {
+        return _hookBeneficiaryFees[beneficiary][currency];
+    }
+
+    /// @notice Nominated owner. Becomes `owner` only after `acceptOwnership`.
+    address public pendingOwner;
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert VaultErrors.Unauthorized();
@@ -114,8 +169,16 @@ contract SupaPoolManager is IPoolManager {
 
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert VaultErrors.Unauthorized();
-        emit OwnershipTransferred(owner, newOwner);
-        owner = newOwner;
+        pendingOwner = newOwner;
+        emit OwnershipTransferStarted(owner, newOwner);
+    }
+
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert VaultErrors.Unauthorized();
+        address previous = owner;
+        owner = msg.sender;
+        pendingOwner = address(0);
+        emit OwnershipTransferred(previous, msg.sender);
     }
 
     function _checkCircuitBreaker(PoolId id, CurveType curveType) internal view {
@@ -149,10 +212,19 @@ contract SupaPoolManager is IPoolManager {
     }
 
     /**
-     * @dev Hook deltas may only haircut user *credits* (negative reference):
+     * @dev Liquidity-side hook deltas (afterModifyLiquidity principal / fee
+     * haircuts) may only haircut user *credits* (negative reference):
      * - `referenceAmount > 0` (user debit): any non-zero hook underpays while engine state advances → reject.
      * - `referenceAmount < 0` (user credit): only non-negative haircuts with `hook <= |reference|`.
      * - `referenceAmount == 0`: non-zero hooks create value from nothing → reject.
+     *
+     * @notice I-01 (internal pre-audit 2026-11-26), RESOLVED by the 2026-11-27
+     * redesign: the swap-side afterSwap path no longer uses this function —
+     * `_applySwapHookDelta` now validates the haircut against the UNSPECIFIED
+     * leg with its own per-pool cap and distributes it per the pool's
+     * `HookDeltaConfig` (§4.4–§5 of the redesign doc). This function remains
+     * the validator for the liquidity side only, where the credit-only rule
+     * above is still the correct semantics.
      */
     function _validateHookDelta(address plugin, int128 hookAmount, int128 referenceAmount) internal view {
         if (hookAmount == 0) return;
@@ -190,8 +262,10 @@ contract SupaPoolManager is IPoolManager {
     {
         if (amount0 == 0 && amount1 == 0) return;
         if (engine.getLiquidity(key.toId()) == 0) {
-            if (amount0 > 0) protocolFeesAccrued[key.currency0] += amount0;
-            if (amount1 > 0) protocolFeesAccrued[key.currency1] += amount1;
+            // No LPs left to donate to. Move the retained tokens out of this pool's pot so they cannot
+            // also be paid out as liquidity, then book them as protocol fees.
+            _moveToProtocol(key.toId(), key.currency0, amount0);
+            _moveToProtocol(key.toId(), key.currency1, amount1);
             return;
         }
         engine.donate(key, amount0, amount1);
@@ -367,9 +441,34 @@ contract SupaPoolManager is IPoolManager {
     }
 
     /// @dev Caller owes positive deltas (vault debit = negative account delta) and is owed negative ones.
+    /// Positive deltas grow this pool's recorded reserves; negative deltas shrink them and revert if the
+    /// pool does not hold the tokens (M-01).
     function _accountCallerDelta(PoolKey memory key, BalanceDelta delta) internal {
-        if (delta.amount0() != 0) vault.accountDelta(msg.sender, key.currency0, -delta.amount0());
-        if (delta.amount1() != 0) vault.accountDelta(msg.sender, key.currency1, -delta.amount1());
+        _applyPoolLeg(key.toId(), key.currency0, delta.amount0());
+        _applyPoolLeg(key.toId(), key.currency1, delta.amount1());
+    }
+
+    function _applyPoolLeg(PoolId id, Currency currency, int128 delta) internal {
+        if (delta == 0) return;
+        if (delta > 0) {
+            poolReserves[id][currency] += uint256(uint128(delta));
+        } else {
+            uint256 owed = uint256(uint128(-delta));
+            uint256 held = poolReserves[id][currency];
+            if (held < owed) revert PoolErrors.PoolInsolvent(id, currency, owed, held);
+            poolReserves[id][currency] = held - owed;
+        }
+        vault.accountDelta(msg.sender, currency, -int256(delta));
+    }
+
+    /// @dev Moves `amount` from the pool pot into the global protocol-fee pot. No vault delta: the tokens
+    /// are already in the vault and become withdrawable only via `collectProtocolFees`.
+    function _moveToProtocol(PoolId id, Currency currency, uint256 amount) internal {
+        if (amount == 0) return;
+        uint256 held = poolReserves[id][currency];
+        if (held < amount) revert PoolErrors.PoolInsolvent(id, currency, amount, held);
+        poolReserves[id][currency] = held - amount;
+        protocolFeesAccrued[currency] += amount;
     }
 
     /// @dev keccak256("supadex.poolmanager.lastSwapFee") - 1
@@ -407,21 +506,24 @@ contract SupaPoolManager is IPoolManager {
 
         uint24 protocolFee = slot0.protocolFee();
         ICurveEngine engine = getCurveEngine(key.curveType);
-        {
-            uint256 protocolFeeAmount;
-            (swapDelta, protocolFeeAmount) = engine.swap(key, params, fee, protocolFee);
-            if (protocolFeeAmount > 0) {
-                protocolFeesAccrued[params.zeroForOne ? key.currency0 : key.currency1] += protocolFeeAmount;
-            }
-        }
+        uint256 protocolFeeAmount;
+        (swapDelta, protocolFeeAmount) = engine.swap(key, params, fee, protocolFee);
 
         // Sync before afterSwap so plugins (e.g. LVR oracle) read post-swap tick/liquidity.
         _syncSlot0FromEngine(id, engine, protocolFee);
         poolLiquidity[id] = engine.getLiquidity(id);
 
-        swapDelta = _applySwapHookDelta(key, params, swapDelta, hookData);
+        // I-01 redesign (§4.5): the hook haircuts the UNSPECIFIED leg only;
+        // the specified leg is sacred. Distribution runs AFTER accounting so
+        // every distributed share is covered by pool-pot balance.
+        (BalanceDelta adjustedDelta, Currency haircutCurrency, uint256 haircut) =
+            _applySwapHookDelta(key, params, swapDelta, hookData);
+        swapDelta = adjustedDelta;
 
+        // Credit the full input (fees included) to the pool, then move the protocol's share out of the pot.
         _accountCallerDelta(key, swapDelta);
+        if (haircut > 0) _distributeHookHaircut(key, engine, haircutCurrency, haircut);
+        _moveToProtocol(id, params.zeroForOne ? key.currency0 : key.currency1, protocolFeeAmount);
 
         emit Swap(
             id,
@@ -435,23 +537,204 @@ contract SupaPoolManager is IPoolManager {
         );
     }
 
+    /**
+     * @notice I-01 redesign (2026-11-27): the afterSwap hook returns a haircut
+     * on the UNSPECIFIED leg only — the specified leg is never read or written
+     * here. SupaDEX's `amountSpecified` convention is INVERTED vs Uniswap v4
+     * (`> 0` = exactInput, `< 0` = exactOutput), so the unspecified leg is the
+     * output leg for exactInput and the input leg for exactOutput. The haircut
+     * is applied with one uniform rule — add `H` to the unspecified leg — which
+     * shrinks the user's credit (exactInput) or grows their debit (exactOutput)
+     * by exactly `H`, leaving the specified amount exact in both modes.
+     * @dev Validation is §4.4 of the redesign doc, in order: (1) `H == 0` fast
+     * path, (2) `canPluginReturnDelta` gate, (3) negative reverts, (4) pool
+     * must be configured, (5) per-swap cap `floor(|S| * maxHaircutBps /
+     * 10_000)`, (6) absolute bound `H <= |S|`, (7) int128 headroom on the
+     * adjusted leg. All failures revert the whole swap atomically.
+     * @return adjusted The engine delta with the haircut applied to the
+     * unspecified leg (identical to the engine delta when `H == 0`).
+     * @return haircutCurrency Currency of the unspecified leg (the haircut).
+     * @return haircut The haircut amount `H` (0 when the hook returned 0).
+     */
     function _applySwapHookDelta(
         PoolKey memory key,
         SwapParams memory params,
         BalanceDelta swapDelta,
         bytes calldata hookData
-    ) internal returns (BalanceDelta) {
-        int128 hookDeltaSpecified = PluginDispatcher.dispatchAfterSwap(
+    ) internal returns (BalanceDelta adjusted, Currency haircutCurrency, uint256 haircut) {
+        int128 hookDeltaUnspecified = PluginDispatcher.dispatchAfterSwap(
             key.plugin, pluginPermissions[key.toId()], msg.sender, key, params, swapDelta, hookData
         );
-        if (hookDeltaSpecified == 0) return swapDelta;
-
-        int128 referenceAmount = params.zeroForOne ? swapDelta.amount0() : swapDelta.amount1();
-        _validateHookDelta(key.plugin, hookDeltaSpecified, referenceAmount);
-        if (params.zeroForOne) {
-            return toBalanceDelta(swapDelta.amount0() + hookDeltaSpecified, swapDelta.amount1());
+        if (hookDeltaUnspecified == 0) {
+            return (swapDelta, _unspecifiedLegCurrency(key, params), 0);
         }
-        return toBalanceDelta(swapDelta.amount0(), swapDelta.amount1() + hookDeltaSpecified);
+
+        // (2) Plugin gate: only a whitelisted plugin with canReturnDelta may take.
+        if (!pluginWhitelist.canPluginReturnDelta(key.plugin)) {
+            revert PoolErrors.HookDeltaNotAllowed(key.plugin);
+        }
+        // (3) Hooks only take, never give.
+        if (hookDeltaUnspecified < 0) revert PoolErrors.HookDeltaCapExceeded();
+
+        // (4) Pool gate: the feature is off by default; governance enables it per pool.
+        PoolId id = key.toId();
+        HookDeltaConfig memory cfg = _hookDeltaConfigs[id];
+        if (cfg.maxHaircutBps == 0) revert PoolErrors.HookDeltaNotEnabled(id);
+
+        bool exactInput = params.amountSpecified > 0;
+        int128 unspecified = _unspecifiedLegAmount(params, swapDelta);
+        haircutCurrency = _unspecifiedLegCurrency(key, params);
+        uint256 absUnspecified = _abs128(unspecified);
+        haircut = uint256(uint128(hookDeltaUnspecified));
+
+        // (5) Per-swap cap. A dust leg floors the cap to 0 (no skimming dust).
+        uint256 cap = absUnspecified * cfg.maxHaircutBps / BPS_DENOMINATOR;
+        if (haircut > cap) revert PoolErrors.HookDeltaCapExceeded();
+        // (6) Absolute bound (defence in depth: the cap must never consume the whole leg).
+        if (haircut > absUnspecified) revert PoolErrors.HookDeltaCapExceeded();
+        // (7) int128 headroom on the adjusted leg, checked uniformly in int256
+        // (exactInput legs shrink toward zero so this only binds exactOutput).
+        int256 adjustedUnspecified = int256(unspecified) + int256(haircut);
+        if (adjustedUnspecified > int256(type(int128).max) || adjustedUnspecified < int256(type(int128).min)) {
+            revert PoolErrors.HookDeltaCapExceeded();
+        }
+
+        int128 adjustedLeg = int128(adjustedUnspecified);
+        if (exactInput) {
+            if (params.zeroForOne) {
+                adjusted = toBalanceDelta(swapDelta.amount0(), adjustedLeg);
+            } else {
+                adjusted = toBalanceDelta(adjustedLeg, swapDelta.amount1());
+            }
+        } else {
+            if (params.zeroForOne) {
+                adjusted = toBalanceDelta(adjustedLeg, swapDelta.amount1());
+            } else {
+                adjusted = toBalanceDelta(swapDelta.amount0(), adjustedLeg);
+            }
+        }
+    }
+
+    /// @dev The unspecified leg of a swap: the output leg for exactInput
+    /// (`amountSpecified > 0`), the input leg for exactOutput (`< 0`).
+    function _unspecifiedLegAmount(SwapParams memory params, BalanceDelta swapDelta) internal pure returns (int128) {
+        if (params.amountSpecified > 0) {
+            return params.zeroForOne ? swapDelta.amount1() : swapDelta.amount0();
+        }
+        return params.zeroForOne ? swapDelta.amount0() : swapDelta.amount1();
+    }
+
+    /// @dev Currency of the unspecified leg (see `_unspecifiedLegAmount`).
+    function _unspecifiedLegCurrency(PoolKey memory key, SwapParams memory params) internal pure returns (Currency) {
+        if (params.amountSpecified > 0) {
+            return params.zeroForOne ? key.currency1 : key.currency0;
+        }
+        return params.zeroForOne ? key.currency0 : key.currency1;
+    }
+
+    /**
+     * @notice I-01 redesign (§5.2): splits a haircut exactly across the LP /
+     * protocol / beneficiary shares of a pool config. `lpShare` and
+     * `protocolShare` are floored; the remainder (0–2 wei) goes to the
+     * beneficiary, or — when the beneficiary share is zero — to the LP share
+     * (or the protocol share if the LP share is zero). A zero-bps recipient
+     * therefore receives exactly zero, and the three shares always sum exactly
+     * to `haircut`.
+     * @dev Public pure (not internal) so forge fuzz and Halmos can verify the
+     * exact-conservation property directly against this production code.
+     */
+    function _splitHookHaircut(uint256 haircut, HookDeltaConfig memory cfg)
+        public
+        pure
+        returns (uint256 lpShare, uint256 protocolShare, uint256 beneficiaryShare)
+    {
+        lpShare = haircut * cfg.lpBps / BPS_DENOMINATOR;
+        protocolShare = haircut * cfg.protocolBps / BPS_DENOMINATOR;
+        beneficiaryShare = haircut - lpShare - protocolShare;
+        if (cfg.beneficiaryBps == 0 && beneficiaryShare > 0) {
+            // One of lpBps / protocolBps is non-zero (the splits sum to 10_000).
+            if (cfg.lpBps > 0) lpShare += beneficiaryShare;
+            else protocolShare += beneficiaryShare;
+            beneficiaryShare = 0;
+        }
+    }
+
+    /**
+     * @notice I-01 redesign (§5.3): routes a validated haircut after accounting
+     * (§4.5), so every share is covered by pool-pot balance. The LP share is
+     * donated to in-range LPs via the existing Anti-JIT path
+     * (`_redistributeConfiscatedFees`, which falls back to protocol when the
+     * pool has no liquidity); the protocol and beneficiary shares are moved
+     * OUT of the pool pot into their named accruals, so the global invariant
+     * `sum(poolReserves) + protocolFeesAccrued + sum(hookBeneficiaryFees) <=
+     * reservesOf` counts every token exactly once.
+     */
+    function _distributeHookHaircut(PoolKey memory key, ICurveEngine engine, Currency currency, uint256 haircut)
+        internal
+    {
+        PoolId id = key.toId();
+        HookDeltaConfig memory cfg = _hookDeltaConfigs[id];
+        (uint256 lpShare, uint256 protocolShare, uint256 beneficiaryShare) = _splitHookHaircut(haircut, cfg);
+        if (lpShare > 0) {
+            if (Currency.unwrap(currency) == Currency.unwrap(key.currency0)) {
+                _redistributeConfiscatedFees(key, engine, lpShare, 0);
+            } else {
+                _redistributeConfiscatedFees(key, engine, 0, lpShare);
+            }
+        }
+        if (protocolShare > 0) _moveToProtocol(id, currency, protocolShare);
+        if (beneficiaryShare > 0) _moveToBeneficiary(id, cfg.beneficiary, currency, beneficiaryShare);
+        emit HookDeltaApplied(id, currency, haircut, lpShare, protocolShare, beneficiaryShare);
+    }
+
+    /// @dev Moves `amount` from the pool pot into a hook beneficiary's accrual.
+    /// Mirrors `_moveToProtocol`: no vault delta (the tokens are already in the
+    /// vault); the accrual is the claim that lets the beneficiary collect them.
+    function _moveToBeneficiary(PoolId id, address beneficiary, Currency currency, uint256 amount) internal {
+        if (amount == 0) return;
+        uint256 held = poolReserves[id][currency];
+        if (held < amount) revert PoolErrors.PoolInsolvent(id, currency, amount, held);
+        poolReserves[id][currency] = held - amount;
+        _hookBeneficiaryFees[beneficiary][currency] += amount;
+    }
+
+    /// @inheritdoc IPoolManager
+    function setHookDeltaConfig(PoolKey memory key, HookDeltaConfig calldata cfg) external override onlyOwner {
+        if (cfg.maxHaircutBps > MAX_HOOK_HAIRCUT_BPS) revert PoolErrors.InvalidHookDeltaConfig();
+        if (uint256(cfg.lpBps) + uint256(cfg.protocolBps) + uint256(cfg.beneficiaryBps) != BPS_DENOMINATOR) {
+            revert PoolErrors.InvalidHookDeltaConfig();
+        }
+        if ((cfg.beneficiaryBps > 0) != (cfg.beneficiary != address(0))) {
+            revert PoolErrors.InvalidHookDeltaConfig();
+        }
+        PoolId id = key.toId();
+        _hookDeltaConfigs[id] = cfg;
+        emit HookDeltaConfigSet(id, cfg.maxHaircutBps, cfg.lpBps, cfg.protocolBps, cfg.beneficiaryBps, cfg.beneficiary);
+    }
+
+    /// @inheritdoc IPoolManager
+    function collectHookFees(Currency currency, address recipient, uint256 amount)
+        external
+        override
+        returns (uint256 collected)
+    {
+        if (recipient == address(0)) revert VaultErrors.Unauthorized();
+        // The accrual is keyed by beneficiary, so only the beneficiary
+        // themself can collect their own accrual. A caller with no accrual —
+        // i.e. never named as a beneficiary, or already fully collected —
+        // reverts rather than silently collecting zero (unlike
+        // `collectProtocolFees`, which returns 0 on an empty accrual).
+        uint256 accrued = _hookBeneficiaryFees[msg.sender][currency];
+        if (accrued == 0) revert VaultErrors.Unauthorized();
+
+        collected = amount > accrued ? accrued : amount;
+        // accountDelta is int128-bounded. A larger balance is collected across calls.
+        uint256 cap = uint256(uint128(type(int128).max));
+        if (collected > cap) collected = cap;
+
+        _hookBeneficiaryFees[msg.sender][currency] = accrued - collected;
+        vault.accountDelta(recipient, currency, int256(collected));
+        emit HookBeneficiaryFeesCollected(msg.sender, currency, recipient, collected);
     }
 
     function _syncSlot0FromEngine(PoolId id, ICurveEngine engine, uint24 protocolFee) internal {
@@ -483,9 +766,12 @@ contract SupaPoolManager is IPoolManager {
         uint256 accrued = protocolFeesAccrued[currency];
         collected = amount > accrued ? accrued : amount;
         if (collected == 0) return 0;
+        // accountDelta is int128-bounded. A larger balance is collected across calls.
+        uint256 cap = uint256(uint128(type(int128).max));
+        if (collected > cap) collected = cap;
 
         protocolFeesAccrued[currency] = accrued - collected;
-        vault.accountDelta(recipient, currency, SafeCastLib.toInt256(collected));
+        vault.accountDelta(recipient, currency, int256(collected));
         emit ProtocolFeesCollected(currency, recipient, collected);
     }
 
@@ -507,10 +793,14 @@ contract SupaPoolManager is IPoolManager {
         );
 
         if (amount0 != 0) {
-            vault.accountDelta(msg.sender, key.currency0, -SafeCastLib.toInt256(amount0));
+            int128 a0 = SafeCastLib.toInt128(amount0);
+            poolReserves[id][key.currency0] += uint256(uint128(a0));
+            vault.accountDelta(msg.sender, key.currency0, -int256(a0));
         }
         if (amount1 != 0) {
-            vault.accountDelta(msg.sender, key.currency1, -SafeCastLib.toInt256(amount1));
+            int128 a1 = SafeCastLib.toInt128(amount1);
+            poolReserves[id][key.currency1] += uint256(uint128(a1));
+            vault.accountDelta(msg.sender, key.currency1, -int256(a1));
         }
 
         ICurveEngine engine = getCurveEngine(key.curveType);

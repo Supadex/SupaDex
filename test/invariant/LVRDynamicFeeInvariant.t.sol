@@ -10,8 +10,9 @@ import {PoolKey, CurveType} from "../../contract/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "../../contract/types/PoolId.sol";
 import {Currency} from "../../contract/types/Currency.sol";
 import {DynamicFeeLib} from "../../contract/libraries/DynamicFeeLib.sol";
+import {RevertClassifier, RevertClassifyingHandler} from "./RevertClassifier.sol";
 
-contract LVRDynamicFeeHandler is Test {
+contract LVRDynamicFeeHandler is Test, RevertClassifyingHandler {
     using PoolIdLibrary for PoolKey;
 
     LVRShieldPlugin public immutable plugin;
@@ -43,13 +44,25 @@ contract LVRDynamicFeeHandler is Test {
 
         int24 newTick = int24(bound(int256(tickJump), -50000, 50000));
         vm.prank(address(plugin));
-        try oracle.write(key.toId(), uint32(block.timestamp), newTick, 1_000_000) {} catch {}
+        // T-6: was a bare `catch {}` swallowing every oracle failure. Oracle errors
+        // (NotOracleWriter / OracleNotInitialized / InvalidCardinality / ...) are
+        // UNEXPECTED here — a failed write means the fee is computed from stale ticks.
+        try oracle.write(key.toId(), uint32(block.timestamp), newTick, 1_000_000) {}
+        catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "oracleWrite");
+            return;
+        }
 
-        (, uint24 overrideFee) = plugin.beforeSwap(
+        // T-6: a reverted beforeSwap must not update the tracked fee.
+        try plugin.beforeSwap(
             address(this), key, IPoolManager.SwapParams(true, int256(uint256(swapAmount % 1_000_000_000 + 1)), 0), ""
-        );
-
-        latestCalculatedFee = overrideFee;
+        ) returns (
+            bytes4, uint24 overrideFee
+        ) {
+            latestCalculatedFee = overrideFee;
+        } catch (bytes memory err) {
+            _classify(err, RevertClassifier.CTX_ECONOMIC | RevertClassifier.CTX_INPUT, "beforeSwap");
+        }
     }
 }
 
@@ -61,6 +74,11 @@ contract LVRDynamicFeeInvariantTest is StdInvariant, Test {
     function setUp() public {
         handler = new LVRDynamicFeeHandler();
         targetContract(address(handler));
+    }
+
+    /// @notice T-6: only classified expected reverts may occur; anything else fails the run.
+    function invariant_noUnexpectedReverts() public view {
+        assertEq(handler.unexpectedReverts(), 0, "unexpected revert in LVR handler");
     }
 
     function invariant_dynamicFeeAlwaysWithinBounds() public view {

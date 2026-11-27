@@ -7,5 +7,6 @@ pragma solidity ^0.8.26;
  */
 interface IRolesEvents {
     event OperatorUpdated(address indexed account, bool active);
+    event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 }

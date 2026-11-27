@@ -466,10 +466,17 @@ contract SecurityRegressionTest is Test {
         o.write(key.toId(), uint32(block.timestamp + 1), 0, 1e18);
     }
 
-    /// M3: same-sign / debit-amplifying hook deltas revert even when canReturnDelta is granted
+    /// M3: an oversized hook delta reverts even when canReturnDelta is granted.
+    /// I-01 REDESIGN (2026-11-27): the hook's return is now a haircut on the
+    /// UNSPECIFIED leg (the output leg for this exactInput swap), not an
+    /// adjustment of the debit leg — the old "same-sign" framing is obsolete.
+    /// With the pool configured at a 500 bps cap, the 1e6 haircut dwarfs the
+    /// cap (~5% of the output leg) and reverts HookDeltaCapExceeded. On an
+    /// unconfigured pool the same swap would revert HookDeltaNotEnabled
+    /// (see the T-8 disabled-pool tests).
     function test_M3_sameSignHookDeltaRejected() public {
         EvilHook evil = new EvilHook(manager);
-        // Same sign as a zeroForOne exact-input swap's amount0 (positive debt to vault).
+        // Oversized haircut vs the configured 500 bps cap.
         evil.setSteal(int128(1e6));
 
         address[] memory plugins = new address[](1);
@@ -481,6 +488,12 @@ contract SecurityRegressionTest is Test {
         PoolKey memory evilKey = key;
         evilKey.plugin = address(evil);
         evilKey.fee = 500;
+        manager.setHookDeltaConfig(
+            evilKey,
+            IPoolManager.HookDeltaConfig({
+                maxHaircutBps: 500, lpBps: 10000, protocolBps: 0, beneficiaryBps: 0, beneficiary: address(0)
+            })
+        );
         manager.initialize(evilKey, 1 << 96, "");
         victim.modify(evilKey, -120, 120, 10_000_000, bytes32(0));
 
@@ -508,6 +521,157 @@ contract SecurityRegressionTest is Test {
 
         vm.expectRevert(PoolErrors.HookDeltaCapExceeded.selector);
         attacker.swap(evilKey, true, 1_000_000);
+    }
+
+    /// I-01 / T-8 — REDESIGNED 2026-11-27 (founder decision, Option B):
+    /// afterSwap hook deltas are no longer rejected outright. A non-negative
+    /// haircut on the UNSPECIFIED leg, inside the pool's configured cap, is
+    /// now PERMITTED and distributed per the pool's HookDeltaConfig (LPs /
+    /// protocol / beneficiary). The 4 tests below are the REPLACEMENT for the
+    /// old rejection tests (same 2x2 direction x mode matrix): the two
+    /// positive-steal slots now assert the permitted haircut (specified leg
+    /// exact, unspecified leg moved by exactly H, shares accrued), and the
+    /// two negative-steal slots still assert rejection (hooks only take,
+    /// never give). The old "every non-zero delta reverts" behaviour is gone
+    /// by design — see the redesign doc and `_validateHookDelta` NatSpec.
+    /// The still-rejecting cases (unpermissioned, disabled pool, over-cap,
+    /// negative, dust) are also covered in
+    /// `test/unit/HookDeltaAfterSwapRejection.t.sol` (T-8, reworked) and
+    /// `test/unit/HookDeltaAfterSwap.t.sol` (new suite).
+    function _setupEvilHook(int128 steal) internal returns (PoolKey memory evilKey) {
+        EvilHook evil = new EvilHook(manager);
+        evil.setSteal(steal);
+
+        address[] memory plugins = new address[](1);
+        plugins[0] = address(evil);
+        PluginWhitelist wl = new PluginWhitelist(address(this), plugins);
+        wl.setPluginCanReturnDelta(address(evil), true);
+        manager.setPluginWhitelist(IPluginWhitelist(address(wl)));
+
+        evilKey = key;
+        evilKey.plugin = address(evil);
+        evilKey.fee = 500;
+        manager.initialize(evilKey, 1 << 96, "");
+        victim.modify(evilKey, -120, 120, 10_000_000, bytes32(0));
+    }
+
+    /// I-01 REDESIGN: permitted haircut on the unspecified leg. The hooked
+    /// pool is configured (500 bps cap; 50% LP / 30% protocol / 20%
+    /// beneficiary, beneficiary = attacker) and seeded wide ([-60000, 60000])
+    /// next to an identical no-hook control pool, so the engine deltas match
+    /// and the haircut is observable in the attacker's balances.
+    function _setupI01RedesignPool()
+        internal
+        returns (PoolKey memory evilKey, PoolKey memory controlKey, EvilHook evil)
+    {
+        evil = new EvilHook(manager);
+        evil.setSteal(0);
+
+        address[] memory plugins = new address[](1);
+        plugins[0] = address(evil);
+        PluginWhitelist wl = new PluginWhitelist(address(this), plugins);
+        wl.setPluginCanReturnDelta(address(evil), true);
+        manager.setPluginWhitelist(IPluginWhitelist(address(wl)));
+
+        evilKey = key;
+        evilKey.plugin = address(evil);
+        evilKey.fee = 500;
+        controlKey = key;
+        controlKey.fee = 500;
+        manager.setHookDeltaConfig(
+            evilKey,
+            IPoolManager.HookDeltaConfig({
+                maxHaircutBps: 500, lpBps: 5000, protocolBps: 3000, beneficiaryBps: 2000, beneficiary: address(attacker)
+            })
+        );
+        manager.initialize(evilKey, 1 << 96, "");
+        manager.initialize(controlKey, 1 << 96, "");
+        victim.modify(evilKey, -60000, 60000, 10_000_000, bytes32(0));
+        victim.modify(controlKey, -60000, 60000, 10_000_000, bytes32(0));
+    }
+
+    /// @dev Runs the control swap, sets the hook haircut to 1% of the
+    /// unspecified leg, runs the hooked swap, and returns the haircut plus
+    /// the attacker's balance moves on both swaps.
+    function _i01PermittedSwap(
+        PoolKey memory evilKey,
+        PoolKey memory controlKey,
+        EvilHook evil,
+        bool zeroForOne,
+        int256 amountSpecified
+    ) internal returns (uint256 haircut, int256 ctrl0, int256 ctrl1, int256 hooked0, int256 hooked1) {
+        uint256 t0Before = t0.balanceOf(address(attacker));
+        uint256 t1Before = t1.balanceOf(address(attacker));
+        attacker.swap(controlKey, zeroForOne, amountSpecified);
+        ctrl0 = int256(t0.balanceOf(address(attacker))) - int256(t0Before);
+        ctrl1 = int256(t1.balanceOf(address(attacker))) - int256(t1Before);
+        // The unspecified leg is the output leg (exactInput) or the input leg
+        // (exactOutput); 1% of it is well inside the 5% cap.
+        int256 unspecified = amountSpecified > 0 ? (zeroForOne ? ctrl1 : ctrl0) : (zeroForOne ? ctrl0 : ctrl1);
+        uint256 absUnspecified = uint256(unspecified < 0 ? -unspecified : unspecified);
+        haircut = absUnspecified / 100;
+        evil.setSteal(int128(uint128(haircut)));
+
+        t0Before = t0.balanceOf(address(attacker));
+        t1Before = t1.balanceOf(address(attacker));
+        attacker.swap(evilKey, zeroForOne, amountSpecified);
+        hooked0 = int256(t0.balanceOf(address(attacker))) - int256(t0Before);
+        hooked1 = int256(t1.balanceOf(address(attacker))) - int256(t1Before);
+    }
+
+    /// @dev Asserts the haircut's distribution for one permitted I-01 swap.
+    function _i01AssertDistribution(PoolKey memory evilKey, uint256 haircut, Currency haircutCurrency) internal view {
+        IPoolManager.HookDeltaConfig memory cfg = manager.hookDeltaConfigs(evilKey.toId());
+        (uint256 lpShare, uint256 protocolShare, uint256 beneficiaryShare) = manager._splitHookHaircut(haircut, cfg);
+        assertEq(lpShare + protocolShare + beneficiaryShare, haircut, "split must sum to the haircut");
+        assertEq(manager.protocolFeesAccrued(haircutCurrency), protocolShare, "protocol share must accrue");
+        assertEq(
+            manager.hookBeneficiaryFees(address(attacker), haircutCurrency),
+            beneficiaryShare,
+            "beneficiary share must accrue"
+        );
+    }
+
+    /// I-01 REDESIGN: zeroForOne exactOutput, positive hook delta — PERMITTED.
+    /// The specified output (1_000_000) is delivered exactly; the input leg
+    /// grows by exactly the haircut; the shares accrue per the config.
+    function test_I01_afterSwapDeltaPermitted_zeroForOne_exactOutput() public {
+        (PoolKey memory evilKey, PoolKey memory controlKey, EvilHook evil) = _setupI01RedesignPool();
+        (uint256 haircut, int256 ctrl0, int256 ctrl1, int256 hooked0, int256 hooked1) =
+            _i01PermittedSwap(evilKey, controlKey, evil, true, -1_000_000);
+        assertEq(ctrl1, 1_000_000, "control must deliver exactly the specified output");
+        assertEq(hooked1, 1_000_000, "specified output leg must stay exact under the haircut");
+        assertEq(hooked0, ctrl0 - int256(haircut), "input leg must grow by exactly the haircut");
+        _i01AssertDistribution(evilKey, haircut, evilKey.currency0);
+    }
+
+    /// I-01: zeroForOne exactOutput, negative hook delta (would reduce the debit).
+    /// Still rejected under the redesign: hooks only take, never give.
+    function test_I01_afterSwapDeltaRejected_zeroForOne_exactOutput_negativeSteal() public {
+        PoolKey memory evilKey = _setupEvilHook(-int128(1e5));
+        vm.expectRevert(PoolErrors.HookDeltaCapExceeded.selector);
+        attacker.swap(evilKey, true, -1_000_000);
+    }
+
+    /// I-01 REDESIGN: oneForZero exactInput, positive hook delta — PERMITTED.
+    /// The specified input (1_000_000) is paid exactly; the output leg
+    /// shrinks by exactly the haircut; the shares accrue per the config.
+    function test_I01_afterSwapDeltaPermitted_oneForZero_exactInput() public {
+        (PoolKey memory evilKey, PoolKey memory controlKey, EvilHook evil) = _setupI01RedesignPool();
+        (uint256 haircut, int256 ctrl0, int256 ctrl1, int256 hooked0, int256 hooked1) =
+            _i01PermittedSwap(evilKey, controlKey, evil, false, 1_000_000);
+        assertEq(ctrl1, -1_000_000, "control must pay exactly the specified input");
+        assertEq(hooked1, -1_000_000, "specified input leg must stay exact under the haircut");
+        assertEq(hooked0, ctrl0 - int256(haircut), "output leg must shrink by exactly the haircut");
+        _i01AssertDistribution(evilKey, haircut, evilKey.currency0);
+    }
+
+    /// I-01: oneForZero exactOutput, negative hook delta.
+    /// Still rejected under the redesign: hooks only take, never give.
+    function test_I01_afterSwapDeltaRejected_oneForZero_exactOutput() public {
+        PoolKey memory evilKey = _setupEvilHook(-int128(1e5));
+        vm.expectRevert(PoolErrors.HookDeltaCapExceeded.selector);
+        attacker.swap(evilKey, false, -1_000_000);
     }
 
     /// M: delisting blocks donate hooks on initialized pools

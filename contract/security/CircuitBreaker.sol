@@ -37,6 +37,9 @@ contract CircuitBreaker is ICircuitBreaker {
      */
     mapping(uint8 => bool) public override isCurvePaused;
 
+    /// @notice Nominated owner. Becomes `owner` only after `acceptOwnership`.
+    address public pendingOwner;
+
     modifier onlyOwner() {
         if (msg.sender != owner) revert CircuitBreakerErrors.UnauthorizedGuardian();
         _;
@@ -127,6 +130,15 @@ contract CircuitBreaker is ICircuitBreaker {
      */
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert CircuitBreakerErrors.ZeroAddress();
-        owner = newOwner;
+        pendingOwner = newOwner;
+        emit OwnershipTransferStarted(owner, newOwner);
+    }
+
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert CircuitBreakerErrors.UnauthorizedGuardian();
+        address previous = owner;
+        owner = msg.sender;
+        pendingOwner = address(0);
+        emit OwnershipTransferred(previous, msg.sender);
     }
 }

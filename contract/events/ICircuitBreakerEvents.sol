@@ -27,4 +27,14 @@ interface ICircuitBreakerEvents {
      * @notice Emitted when an emergency guardian's status is modified
      */
     event GuardianUpdated(address indexed guardian, bool active);
+
+    /**
+     * @notice Emitted when circuit-breaker ownership is nominated.
+     */
+    event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
+
+    /**
+     * @notice Emitted when circuit-breaker ownership changes.
+     */
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 }

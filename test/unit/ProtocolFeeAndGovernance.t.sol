@@ -14,16 +14,21 @@ contract ProtocolFeeAndGovernanceTest is Test {
         assertEq(proto, 0);
     }
 
-    function test_splitFeeHalf() public pure {
-        (uint256 lp, uint256 proto) = ProtocolFeeLib.splitFee(1000, 500_000);
-        assertEq(lp, 500);
-        assertEq(proto, 500);
+    function test_splitFeeQuarterIsTheCeiling() public pure {
+        (uint256 lp, uint256 proto) = ProtocolFeeLib.splitFee(1000, 250_000);
+        assertEq(lp, 750);
+        assertEq(proto, 250);
     }
 
-    function test_splitFeeFullProtocol() public pure {
-        (uint256 lp, uint256 proto) = ProtocolFeeLib.splitFee(1000, 1_000_000);
-        assertEq(lp, 0);
-        assertEq(proto, 1000);
+    function test_splitFeeAboveCeilingIsCappedAtTwentyFivePercent() public pure {
+        // 100% and 50% inputs must not confiscate the LP fee. The ceiling is 25%.
+        (uint256 lpFull, uint256 protoFull) = ProtocolFeeLib.splitFee(1000, 1_000_000);
+        assertEq(lpFull, 750);
+        assertEq(protoFull, 250);
+        (uint256 lpHalf, uint256 protoHalf) = ProtocolFeeLib.splitFee(1000, 500_000);
+        assertEq(lpHalf, 750);
+        assertEq(protoHalf, 250);
+        assertEq(ProtocolFeeLib.MAX_PROTOCOL_FEE, 250_000);
     }
 
     function test_rolesOperator() public {

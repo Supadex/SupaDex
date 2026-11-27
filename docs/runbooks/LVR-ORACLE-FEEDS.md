@@ -82,6 +82,36 @@ Then do the following:
 `src/config/chainlinkFeeds.ts` in Admin-page, reviewed by Jexi.
 
 ## Known limits (do not over-claim)
+
+## LVR-protection claims require the oracle overlay (I-07)
+
+The endogenous fee alone is **not** "LVR protection" in the sense of protection
+against external (CEX) prices, and must never be marketed as such:
+
+- `LVRShieldPlugin.beforeSwap` (`contract/plugins/native/LVRShieldPlugin.sol:186-227`)
+  computes the fee from **pre-trade** observations: realised tick movement over
+  the trailing 12 s window (`VolatilityTWAPOracle.getInstantaneousVolatility`,
+  `VolatilityTWAPOracle.sol:198-216`, comparing `latestTicks` with the tick 12 s
+  earlier). The trade that moves the price pays the decayed **prior** fee; only
+  later swaps pay the surcharge. The pool's own ticks can also be pushed to
+  raise other users' fees (griefing at the attacker's own cost).
+- Meaningful protection against toxic flow priced off an external market comes
+  only from the oracle overlay: `_applyOracle` (`LVRShieldPlugin.sol:239+`),
+  which surcharges swaps when the pool price deviates from the configured
+  Chainlink feed (`setOracleConfig`, ADR-0009; procedure above).
+- **Rule:** a pool may be described as having "LVR protection" only while a
+  feed is configured for it (`getOracleConfig(poolId).feed != address(0)`).
+  A pool with no feed configured offers only the endogenous adaptive fee; the
+  permitted wording for it is the claims-register wording — "adaptive-fee plugin
+  … surcharges swaps after realised pool-tick movement (endogenous signal,
+  capped at 10%)" — and the prohibited wording ("Eliminates LVR", "Guarantees
+  arbitrage prevention", "CEX fair-price LVR measurement", …) applies in full.
+  See `docs/audit/CLAIMS_REGISTER.md`, "Dynamic LVR Protection" row.
+- **Frontend follow-up:** the supaswap / Admin-page UIs must show the
+  per-pool oracle status (feed configured or not) wherever "LVR protection"
+  is displayed, and must not show an "LVR protected" badge for a pool with no
+  feed configured.
+
 - **Feed lag:** within the heartbeat and below the deviation threshold, the feed can legitimately lag the market. The overlay then charges only on the measured deviation (test `test_feedLag_withinHeartbeat_underCharges`: true price 1.03, feed and pool at 1.00, only the 3,000-pip base fee is charged). The overlay is a surcharge heuristic, not manipulation-resistant pricing.
 - When the feed or sequencer is unusable, swaps never revert. They pay max(endogenous fee, fallbackFee) and the fallback reason is emitted.
 - Deviation above maxDeviation (reason 6, feed healthy), APUS-SUPADEX-023: a trade in the arbitrage direction pays max(endogenous, fallbackFee, base + surcharge capped at maxDeviation). Pushing past maxDeviation and returning therefore never costs less than a direct arbitrage. Choose alpha, deadband and maxDeviation knowing that base + alpha·(maxDeviation − deadband)·100/10,000 pips (capped at 100,000) is the fee arbitrageurs pay at and beyond maxDeviation.

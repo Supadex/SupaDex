@@ -66,6 +66,15 @@ interface IPlugin {
 
     /**
      * @notice Hook called after executing a swap.
+     * @dev I-01 redesign (2026-11-27): returns a non-negative haircut on the
+     * UNSPECIFIED leg of the swap. The specified leg — the exact input amount
+     * (`amountSpecified > 0`) or the exact output amount (`amountSpecified < 0`)
+     * — is sacred and never touched. `hookDeltaUnspecified > 0` takes that many
+     * units of the unspecified-leg currency from the swap; the manager caps it
+     * per the pool's `HookDeltaConfig`, validates it, and routes it to in-range
+     * LPs, the protocol treasury and/or the configured beneficiary. Negative
+     * values revert (hooks only take, never give). Zero means no haircut.
+     * @return hookDeltaUnspecified Haircut on the unspecified leg (see above).
      */
     function afterSwap(
         address sender,
@@ -73,7 +82,7 @@ interface IPlugin {
         IPoolManager.SwapParams calldata params,
         BalanceDelta delta,
         bytes calldata hookData
-    ) external returns (bytes4, int128 hookDeltaSpecified);
+    ) external returns (bytes4, int128 hookDeltaUnspecified);
 
     /**
      * @notice Hook called before a donation.

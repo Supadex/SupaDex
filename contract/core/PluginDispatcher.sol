@@ -182,7 +182,7 @@ library PluginDispatcher {
         IPoolManager.SwapParams memory params,
         BalanceDelta delta,
         bytes memory hookData
-    ) internal returns (int128 hookDeltaSpecified) {
+    ) internal returns (int128 hookDeltaUnspecified) {
         if (plugin == address(0)) return 0;
         if (!hasPermission(permissions, AFTER_SWAP_FLAG)) return 0;
 
@@ -191,7 +191,7 @@ library PluginDispatcher {
             bytes4 res, int128 returnedDelta
         ) {
             if (res != selector) revert PluginErrors.PluginCallFailed(plugin, selector, "");
-            hookDeltaSpecified = returnedDelta;
+            hookDeltaUnspecified = returnedDelta;
         } catch (bytes memory reason) {
             revert PluginErrors.PluginCallFailed(plugin, selector, reason);
         }

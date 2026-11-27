@@ -28,6 +28,9 @@ contract SupaFeeCollector is ISupaFeeCollector, IUnlockCallback, PeripheryPaymen
     address public override lpStaking;
     address public override insuranceReserve;
 
+    /// @notice Nominated owner. Becomes `owner` only after `acceptOwnership`.
+    address public pendingOwner;
+
     modifier onlyOwner() {
         if (msg.sender != owner) revert FeeCollectorErrors.Unauthorized();
         _;
@@ -88,7 +91,16 @@ contract SupaFeeCollector is ISupaFeeCollector, IUnlockCallback, PeripheryPaymen
 
     function transferOwnership(address newOwner) external onlyOwner {
         if (newOwner == address(0)) revert FeeCollectorErrors.ZeroAddress();
-        owner = newOwner;
+        pendingOwner = newOwner;
+        emit OwnershipTransferStarted(owner, newOwner);
+    }
+
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert FeeCollectorErrors.Unauthorized();
+        address previous = owner;
+        owner = msg.sender;
+        pendingOwner = address(0);
+        emit OwnershipTransferred(previous, msg.sender);
     }
 
     /**

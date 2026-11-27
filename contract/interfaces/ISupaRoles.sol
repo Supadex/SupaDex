@@ -11,5 +11,7 @@ interface ISupaRoles is IRolesEvents {
     function owner() external view returns (address);
     function isOperator(address account) external view returns (bool);
     function setOperator(address account, bool active) external;
+    function pendingOwner() external view returns (address);
     function transferOwnership(address newOwner) external;
+    function acceptOwnership() external;
 }

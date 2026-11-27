@@ -52,4 +52,14 @@ library VaultErrors {
      * @notice Thrown when native ETH is attached to a non-native settle.
      */
     error NonZeroNativeValue();
+
+    /**
+     * @notice Thrown when a transient delta addition overflows int256 (C-01).
+     */
+    error DeltaOverflow();
+
+    /**
+     * @notice Thrown when ERC-6909 claim supply of a currency exceeds recorded reserves.
+     */
+    error ClaimsExceedReserves(Currency currency, uint256 supply, uint256 reserves);
 }
