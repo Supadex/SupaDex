@@ -16,6 +16,10 @@ import {IUnlockCallback} from "../../contract/interfaces/IUnlockCallback.sol";
 import {BalanceDelta} from "../../contract/types/BalanceDelta.sol";
 import {SecurityTestSetup} from "../helpers/SecurityTestSetup.sol";
 import {RevertClassifier, RevertClassifyingHandler} from "./RevertClassifier.sol";
+import {BaseHook} from "../../contract/plugins/external/BaseHook.sol";
+import {PluginDispatcher} from "../../contract/core/PluginDispatcher.sol";
+import {PluginWhitelist} from "../../contract/governance/PluginWhitelist.sol";
+import {IPluginWhitelist} from "../../contract/interfaces/IPluginWhitelist.sol";
 
 contract MockPerPoolToken {
     string public name;
@@ -40,6 +44,34 @@ contract MockPerPoolToken {
     }
 }
 
+/// @dev I-01 redesign (2026-11-27): afterSwap hook taking a 1% haircut of
+/// the unspecified leg on every swap — always inside the pool's 5% cap, so
+/// delta-pool swaps never revert. Lets the invariant suite exercise the
+/// permitted haircut path (distribution to LPs / protocol / beneficiary)
+/// under fuzzed swaps.
+contract ProportionalDeltaHook is BaseHook {
+    constructor(IPoolManager pm) BaseHook(pm) {}
+
+    function getPluginPermissions() public pure override returns (uint32) {
+        return PluginDispatcher.AFTER_SWAP_FLAG;
+    }
+
+    function afterSwap(
+        address,
+        PoolKey calldata,
+        IPoolManager.SwapParams calldata params,
+        BalanceDelta delta,
+        bytes calldata
+    ) external view override onlyPoolManager returns (bytes4, int128) {
+        int128 unspecified = params.amountSpecified > 0
+            ? (params.zeroForOne ? delta.amount1() : delta.amount0())
+            : (params.zeroForOne ? delta.amount0() : delta.amount1());
+        uint256 absUnspecified = uint256(uint128(unspecified < 0 ? -unspecified : unspecified));
+        uint256 h = absUnspecified * 100 / 10_000; // 1% — always inside the 5% cap.
+        return (this.afterSwap.selector, int128(uint128(h)));
+    }
+}
+
 /// @dev T-4 (M-01): ghost-tracks the net inflow of every pool, per currency,
 /// from the exact deltas the PoolManager settles, and the test asserts the
 /// ghost equals the manager's on-chain `poolReserves` pot — and never goes
@@ -56,6 +88,8 @@ contract PerPoolSolvencyHandler is Test, IUnlockCallback, RevertClassifyingHandl
     PoolKey public clammKey;
     PoolKey public binKey;
     PoolKey public stableKey;
+    PoolKey public deltaKey;
+    address public deltaBeneficiary;
 
     MockPerPoolToken public tokenA;
     MockPerPoolToken public tokenB;
@@ -74,6 +108,8 @@ contract PerPoolSolvencyHandler is Test, IUnlockCallback, RevertClassifyingHandl
         PoolKey memory _clammKey,
         PoolKey memory _binKey,
         PoolKey memory _stableKey,
+        PoolKey memory _deltaKey,
+        address _deltaBeneficiary,
         MockPerPoolToken _tokenA,
         MockPerPoolToken _tokenB
     ) {
@@ -82,20 +118,23 @@ contract PerPoolSolvencyHandler is Test, IUnlockCallback, RevertClassifyingHandl
         clammKey = _clammKey;
         binKey = _binKey;
         stableKey = _stableKey;
+        deltaKey = _deltaKey;
+        deltaBeneficiary = _deltaBeneficiary;
         tokenA = _tokenA;
         tokenB = _tokenB;
     }
 
     function _pool(uint256 poolSeed) internal view returns (PoolKey memory) {
-        uint256 p = poolSeed % 3;
+        uint256 p = poolSeed % 4;
         if (p == 0) return clammKey;
         if (p == 1) return binKey;
-        return stableKey;
+        if (p == 2) return stableKey;
+        return deltaKey;
     }
 
     function unlockCallback(bytes calldata data) external override returns (bytes memory) {
         (uint8 action, uint8 poolIdx, bool zeroForOne, uint256 amount) = abi.decode(data, (uint8, uint8, bool, uint256));
-        uint256 p = poolIdx % 3;
+        uint256 p = poolIdx % 4;
         PoolKey memory k = _pool(p);
 
         if (action == 0) {
@@ -114,6 +153,14 @@ contract PerPoolSolvencyHandler is Test, IUnlockCallback, RevertClassifyingHandl
             added[p] -= amount;
         } else if (action == 2) {
             // Swap (1-wei dust included: bound in swap()).
+            // I-01 redesign: on the delta pool (p == 3) the haircut's
+            // protocol / beneficiary shares leave the pool pot at
+            // distribution, so the ghost (which tracks the pot) must subtract
+            // what left it. The LP share stays in the pot (fee growth).
+            uint256 proto0Before = manager.protocolFeesAccrued(k.currency0);
+            uint256 proto1Before = manager.protocolFeesAccrued(k.currency1);
+            uint256 ben0Before = manager.hookBeneficiaryFees(deltaBeneficiary, k.currency0);
+            uint256 ben1Before = manager.hookBeneficiaryFees(deltaBeneficiary, k.currency1);
             BalanceDelta delta = manager.swap(
                 k,
                 IPoolManager.SwapParams({
@@ -122,6 +169,25 @@ contract PerPoolSolvencyHandler is Test, IUnlockCallback, RevertClassifyingHandl
                 ""
             );
             _settleAndTrack(k, delta);
+            if (p == 3) {
+                bytes32 id = PoolId.unwrap(k.toId());
+                ghostNet[
+                    id
+                ][Currency.unwrap(k.currency0)] -= int256(manager.protocolFeesAccrued(k.currency0) - proto0Before);
+                ghostNet[
+                    id
+                ][Currency.unwrap(k.currency1)] -= int256(manager.protocolFeesAccrued(k.currency1) - proto1Before);
+                ghostNet[
+                    id
+                ][
+                    Currency.unwrap(k.currency0)
+                ] -= int256(manager.hookBeneficiaryFees(deltaBeneficiary, k.currency0) - ben0Before);
+                ghostNet[
+                    id
+                ][
+                    Currency.unwrap(k.currency1)
+                ] -= int256(manager.hookBeneficiaryFees(deltaBeneficiary, k.currency1) - ben1Before);
+            }
         } else if (action == 3) {
             // Donate: the pot grows by the donated amounts directly.
             BalanceDelta delta = manager.donate(k, amount, amount, "");
@@ -161,7 +227,7 @@ contract PerPoolSolvencyHandler is Test, IUnlockCallback, RevertClassifyingHandl
     }
 
     function addLiquidity(uint256 poolSeed, uint256 amount) external {
-        uint256 p = poolSeed % 3;
+        uint256 p = poolSeed % 4;
         PoolKey memory k = _pool(p);
         amount = bound(amount, 1_000, 10_000 ether);
         MockPerPoolToken(Currency.unwrap(k.currency0)).mint(address(this), amount * 4);
@@ -173,7 +239,7 @@ contract PerPoolSolvencyHandler is Test, IUnlockCallback, RevertClassifyingHandl
     }
 
     function removeLiquidity(uint256 poolSeed, uint256 pct) external {
-        uint256 p = poolSeed % 3;
+        uint256 p = poolSeed % 4;
         if (added[p] == 0) return;
         uint256 amount = added[p] * bound(pct, 1, 100) / 100;
         if (amount == 0) return;
@@ -185,7 +251,7 @@ contract PerPoolSolvencyHandler is Test, IUnlockCallback, RevertClassifyingHandl
 
     /// T-2 aligned: swap amounts start at 1 wei.
     function swap(uint256 poolSeed, bool zeroForOne, uint256 amount) external {
-        uint256 p = poolSeed % 3;
+        uint256 p = poolSeed % 4;
         PoolKey memory k = _pool(p);
         amount = bound(amount, 1, 5_000 ether);
         _mintFor(k, zeroForOne, amount * 2);
@@ -196,7 +262,7 @@ contract PerPoolSolvencyHandler is Test, IUnlockCallback, RevertClassifyingHandl
     }
 
     function dustSwap(uint256 poolSeed, bool zeroForOne) external {
-        uint256 p = poolSeed % 3;
+        uint256 p = poolSeed % 4;
         PoolKey memory k = _pool(p);
         _mintFor(k, zeroForOne, 2);
         try vault.unlock(abi.encode(uint8(2), uint8(p), zeroForOne, uint256(1))) {}
@@ -206,7 +272,7 @@ contract PerPoolSolvencyHandler is Test, IUnlockCallback, RevertClassifyingHandl
     }
 
     function donate(uint256 poolSeed, uint256 amount) external {
-        uint256 p = poolSeed % 3;
+        uint256 p = poolSeed % 4;
         PoolKey memory k = _pool(p);
         amount = bound(amount, 1, 1_000 ether);
         MockPerPoolToken(Currency.unwrap(k.currency0)).mint(address(this), amount * 2);
@@ -229,6 +295,8 @@ contract PerPoolSolvencyInvariantTest is StdInvariant, Test {
     PoolKey public clammKey;
     PoolKey public binKey;
     PoolKey public stableKey;
+    PoolKey public deltaKey;
+    address public deltaBeneficiary;
 
     MockPerPoolToken public tokenA;
     MockPerPoolToken public tokenB;
@@ -265,21 +333,52 @@ contract PerPoolSolvencyInvariantTest is StdInvariant, Test {
         manager.initialize(binKey, 1 << 96, "");
         manager.initializeWithParams(stableKey, 1 << 96, abi.encode(uint256(100)), "");
 
-        handler = new PerPoolSolvencyHandler(vault, manager, clammKey, binKey, stableKey, tokenA, tokenB);
+        // I-01 redesign: a fourth (CLAMM) pool with a 1%-haircut afterSwap
+        // hook, capped at 5%, split 50% LP / 30% protocol / 20% beneficiary.
+        // The test contract is the beneficiary (accrual only — the invariant
+        // suite never collects).
+        ProportionalDeltaHook deltaHook = new ProportionalDeltaHook(manager);
+        address[] memory plugins = new address[](1);
+        plugins[0] = address(deltaHook);
+        PluginWhitelist wl = new PluginWhitelist(address(this), plugins);
+        wl.setPluginCanReturnDelta(address(deltaHook), true);
+        manager.setPluginWhitelist(IPluginWhitelist(address(wl)));
+        deltaKey = PoolKey({
+            currency0: cA,
+            currency1: cB,
+            fee: 3000,
+            tickSpacing: 60,
+            plugin: address(deltaHook),
+            curveType: CurveType.CLAMM
+        });
+        deltaBeneficiary = address(this);
+        manager.initialize(deltaKey, 1 << 96, "");
+        manager.setHookDeltaConfig(
+            deltaKey,
+            IPoolManager.HookDeltaConfig({
+                maxHaircutBps: 500, lpBps: 5000, protocolBps: 3000, beneficiaryBps: 2000, beneficiary: deltaBeneficiary
+            })
+        );
+
+        handler = new PerPoolSolvencyHandler(
+            vault, manager, clammKey, binKey, stableKey, deltaKey, deltaBeneficiary, tokenA, tokenB
+        );
 
         handler.addLiquidity(0, 10_000 ether);
         handler.addLiquidity(1, 10_000 ether);
         handler.addLiquidity(2, 10_000 ether);
+        handler.addLiquidity(3, 10_000 ether);
         // T-6 (integration): seeding must succeed; a classified revert here fails setUp loudly.
         assertEq(handler.unexpectedReverts(), 0, "seed unexpected revert");
 
         targetContract(address(handler));
     }
 
-    function _pools() internal view returns (PoolKey[3] memory ks) {
+    function _pools() internal view returns (PoolKey[4] memory ks) {
         ks[0] = clammKey;
         ks[1] = binKey;
         ks[2] = stableKey;
+        ks[3] = deltaKey;
     }
 
     /// @notice T-6 (integration): only classified expected reverts may occur; anything else fails the run.
@@ -292,8 +391,8 @@ contract PerPoolSolvencyInvariantTest is StdInvariant, Test {
     /// poolReserves pot. Any engine accounting bug that lets a pool pay out
     /// more than it took in breaks this, even if the vault as a whole is solvent.
     function invariant_perPoolGhostMatchesPot() public view {
-        PoolKey[3] memory ks = _pools();
-        for (uint256 i; i < 3; i++) {
+        PoolKey[4] memory ks = _pools();
+        for (uint256 i; i < 4; i++) {
             bytes32 id = PoolId.unwrap(ks[i].toId());
             _assertPoolPot(ks[i], id, ks[i].currency0);
             _assertPoolPot(ks[i], id, ks[i].currency1);
@@ -308,19 +407,21 @@ contract PerPoolSolvencyInvariantTest is StdInvariant, Test {
 
     /// @notice T-4: the per-pool pots plus protocol fees plus outstanding
     /// claims never exceed the vault's reserves for that currency, and
-    /// reserves never exceed the physical balance.
+    /// reserves never exceed the physical balance. I-01 redesign: the hook
+    /// beneficiary accrual is a further claim on the same reserves.
     function invariant_perPoolPotsCoveredByVault() public view {
         _assertCurrencyCovered(clammKey.currency0);
         _assertCurrencyCovered(clammKey.currency1);
     }
 
     function _assertCurrencyCovered(Currency currency) internal view {
-        PoolKey[3] memory ks = _pools();
+        PoolKey[4] memory ks = _pools();
         uint256 pots;
-        for (uint256 i; i < 3; i++) {
+        for (uint256 i; i < 4; i++) {
             pots += manager.poolReserves(ks[i].toId(), currency);
         }
-        uint256 owed = pots + manager.protocolFeesAccrued(currency) + vault.claimSupplyOf(currency);
+        uint256 owed = pots + manager.protocolFeesAccrued(currency) + vault.claimSupplyOf(currency)
+            + manager.hookBeneficiaryFees(deltaBeneficiary, currency);
         assertLe(owed, vault.reservesOf(currency), "pool pots + fees + claims exceed reserves");
         assertLe(vault.reservesOf(currency), currency.balanceOf(address(vault)), "reserves exceed balance");
     }
