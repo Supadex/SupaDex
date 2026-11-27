@@ -191,6 +191,32 @@ contract MultiCurveHandler is Test, IUnlockCallback, RevertClassifyingHandler {
     }
 
     function _mintTokensForLiquidity(PoolKey memory pKey, uint256 amount) internal {
+        if (pKey.curveType == CurveType.STABLE_AMM) {
+            // P8-2: the Stable engine prices an add of `shares` pro-rata to the
+            // pool's CURRENT reserves (amount_i = ceil(shares * reserve_i /
+            // totalShares)), so a flat `amount * 4` under-funds the add once a
+            // swap skews the pool: on the 49,950-wei seed a 149,926-token swap
+            // leaves reserve1 / totalShares > 4 and the settlement reverts in
+            // the mock token. Mint twice the exact live requirement instead.
+            // The settlement can never exceed it (accrued position fees only
+            // reduce what is owed), and the mint is read from live pool state
+            // so no fixed multiplier has to guess the skew.
+            StableAMMEngine stable = StableAMMEngine(address(manager.stableEngine()));
+            uint256 totalShares = stable.getLiquidity(pKey.toId());
+            if (totalShares == 0) {
+                // First deposit: requirement is ceil(shares / rate_i), which is
+                // <= shares for 18-decimal tokens; the flat heuristic covers it.
+                MockMultiCurveToken(Currency.unwrap(pKey.currency0)).mint(address(this), amount * 4);
+                MockMultiCurveToken(Currency.unwrap(pKey.currency1)).mint(address(this), amount * 4);
+            } else {
+                (uint256 reserve0, uint256 reserve1) = stable.getReserves(pKey.toId());
+                uint256 need0 = (amount * reserve0 + totalShares - 1) / totalShares;
+                uint256 need1 = (amount * reserve1 + totalShares - 1) / totalShares;
+                MockMultiCurveToken(Currency.unwrap(pKey.currency0)).mint(address(this), need0 * 2);
+                MockMultiCurveToken(Currency.unwrap(pKey.currency1)).mint(address(this), need1 * 2);
+            }
+            return;
+        }
         MockMultiCurveToken(Currency.unwrap(pKey.currency0)).mint(address(this), amount * 4);
         MockMultiCurveToken(Currency.unwrap(pKey.currency1)).mint(address(this), amount * 4);
     }
