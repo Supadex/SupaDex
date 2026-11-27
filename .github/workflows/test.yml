@@ -26,6 +26,8 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: 1.10.0
 
       - name: Show Forge version
         run: forge --version
@@ -59,6 +61,8 @@ jobs:
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: 1.10.0
 
       - name: Pick seed
         id: seed
@@ -68,3 +72,51 @@ jobs:
         run: |
           echo "fuzz seed: ${{ steps.seed.outputs.seed }}"
           forge test --fuzz-seed "${{ steps.seed.outputs.seed }}" --match-test "(testFuzz|invariant)" -vv
+
+  halmos:
+    name: Halmos formal verification (test/formal check_)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 45
+    env:
+      FOUNDRY_PROFILE: halmos
+      RAYON_NUM_THREADS: 2
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: 1.10.0
+
+      - name: Show Forge version
+        run: forge --version
+
+      - name: Install Halmos 0.3.3
+        # No continue-on-error and no conditional skip anywhere in this job:
+        # if the install fails, the job fails. PEP 668: Ubuntu's system Python
+        # is externally managed, so --break-system-packages is required to
+        # install into the user site. No actions/setup-python: the system
+        # Python on ubuntu-latest is sufficient and avoids an extra action pin.
+        run: |
+          python3 -m pip install --user --break-system-packages "halmos==0.3.3"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Show Halmos version
+        run: halmos --version
+
+      - name: Build (Halmos profile: dynamic test linking off, AST for Halmos)
+        run: forge build --ast --extra-output storageLayout metadata
+
+      - name: Run Halmos formal tests
+        # --loop 2: at most 2 loop iterations per explored path (Halmos default).
+        # --solver-timeout-assertion 120000: 120 s per solver query; a query that
+        # exceeds it fails that function instead of hanging. `timeout 25m` caps
+        # the whole run (exit 124 on timeout fails the step). Any failed or
+        # errored check_ function makes halmos exit non-zero and fails the job.
+        run: timeout 25m halmos --function check_ --solver z3 --loop 2 --solver-timeout-assertion 120000
