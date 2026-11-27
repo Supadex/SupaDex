@@ -168,7 +168,8 @@ contract TransientDeltaSolvencyFormalProof is Test {
         chained.setDeltas(d1, d2, d3);
 
         int256 sum = int256(d1) + int256(d2) + int256(d3);
-        (bool ok, bytes memory ret) = address(chained).call(abi.encodeWithSelector(ChainedDeltaCallback.unlock.selector));
+        (bool ok, bytes memory ret) =
+            address(chained).call(abi.encodeWithSelector(ChainedDeltaCallback.unlock.selector));
         assertFalse(ok);
         assertEq(ret, abi.encodeWithSelector(VaultErrors.CurrencyNotSettled.selector, DUMMY, sum));
     }
