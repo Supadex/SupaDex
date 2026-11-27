@@ -667,9 +667,14 @@ contract JexiRV039040Test is RouterQuoterFixture {
         lp.addLiquidityRange(k, -600, 600, 10_000 ether);
     }
 
-    /// A whitelisted canReturnDelta plugin returning ANY non-zero afterSwap delta cannot shift the delivered amount:
-    /// the PoolManager applies hook deltas to the input (debit) leg only and rejects every non-zero swap hook delta
-    /// (HookDeltaCapExceeded). So the router's delivered check can never be passed or failed "wrongly" by a plugin.
+    /// A whitelisted canReturnDelta plugin returning ANY non-zero afterSwap delta cannot shift the delivered amount.
+    /// Under the I-01 redesign (2026-11-27) the PoolManager applies a permitted hook haircut to the input
+    /// (unspecified) leg only; on this UNCONFIGURED pool (maxHaircutBps == 0) every positive non-zero swap hook
+    /// delta reverts HookDeltaNotEnabled, while every negative delta reverts HookDeltaCapExceeded — hooks only
+    /// take, never give, and that check (validation step 3) runs before the pool gate. So the router's delivered
+    /// check can never be passed or failed "wrongly" by a plugin. See
+    /// testFuzz_rv_deltaPlugin_configuredPool_permittedHaircutKeepsDeliveredExact for the configured-pool case,
+    /// where a permitted haircut succeeds and delivered == amountOut exactly.
     function testFuzz_rv_deltaPlugin_cannotShiftDelivered(int128 d, uint128 amountOut, bool useLimit, bool zeroForOne)
         public
     {
@@ -686,8 +691,12 @@ contract JexiRV039040Test is RouterQuoterFixture {
             assertTrue(f.ok, "zero hook delta: normal fill");
             assertEq(f.delivered, amountOut);
         } else {
-            assertFalse(f.ok, "non-zero swap hook delta always rejected");
-            assertEq(_sel(f.err), PoolErrors.HookDeltaCapExceeded.selector);
+            assertFalse(f.ok, "non-zero swap hook delta always rejected on an unconfigured pool");
+            // Negative deltas are rejected before the pool gate (HookDeltaCapExceeded); positive deltas
+            // reach the pool gate and revert HookDeltaNotEnabled on this unconfigured pool.
+            assertEq(
+                _sel(f.err), d < 0 ? PoolErrors.HookDeltaCapExceeded.selector : PoolErrors.HookDeltaNotEnabled.selector
+            );
             assertEq(f.paid, 0);
             assertEq(f.delivered, 0);
         }
@@ -700,12 +709,62 @@ contract JexiRV039040Test is RouterQuoterFixture {
             assertEq(_bal(zeroForOne ? tokenB : tokenA, bob) - out0, amountOut);
         } catch (bytes memory e) {
             assertTrue(d != 0);
-            assertEq(_sel(e), PoolErrors.HookDeltaCapExceeded.selector);
+            assertEq(
+                _sel(e), d < 0 ? PoolErrors.HookDeltaCapExceeded.selector : PoolErrors.HookDeltaNotEnabled.selector
+            );
         }
         // quoter agrees
         (bool qOk,, bytes memory qErr) = _quoteOut(p);
-        if (d == 0) assertTrue(qOk);
-        else assertEq(_sel(qErr), PoolErrors.HookDeltaCapExceeded.selector);
+        if (d == 0) {
+            assertTrue(qOk);
+        } else {
+            assertEq(
+                _sel(qErr), d < 0 ? PoolErrors.HookDeltaCapExceeded.selector : PoolErrors.HookDeltaNotEnabled.selector
+            );
+        }
+        _assertClean();
+    }
+
+    /// Configured-pool case (I-01 redesign, 2026-11-27): with a HookDeltaConfig set (small 5% cap, 50/30/20
+    /// split), a permitted positive hook haircut SUCCEEDS and the delivered amount is still exactly amountOut —
+    /// the haircut is taken from the input (unspecified) leg only, so for exactOutput the delivered amount is the
+    /// specified leg, which the hook can never touch. This is the core property of
+    /// testFuzz_rv_deltaPlugin_cannotShiftDelivered, now stronger under the redesign: the plugin cannot shift the
+    /// delivered amount even when its delta is permitted.
+    function testFuzz_rv_deltaPlugin_configuredPool_permittedHaircutKeepsDeliveredExact(
+        uint128 dRaw,
+        uint128 amountOut,
+        bool zeroForOne
+    ) public {
+        (PoolKey memory k, RVDeltaPlugin pl) = _pluginPool(BEFORE_SWAP_FLAG | AFTER_SWAP_FLAG);
+        manager.setHookDeltaConfig(
+            k,
+            IPoolManager.HookDeltaConfig({
+                maxHaircutBps: 500, lpBps: 5000, protocolBps: 3000, beneficiaryBps: 2000, beneficiary: bob
+            })
+        );
+        amountOut = uint128(bound(amountOut, 1 ether, 50 ether));
+        // Well under the 5% per-swap cap: the input (unspecified) leg is >= amountOut, so the cap is
+        // >= amountOut / 20; d <= amountOut / 40 keeps a 2x margin against fee / price-impact variation.
+        uint256 d = bound(dRaw, 1, amountOut / 40);
+        pl.set(int128(uint128(d)), 0);
+        ISupaRouter.ExactOutputSingleParams memory p = _outSingle(k, zeroForOne, bob, amountOut, type(uint128).max);
+        // Quote BEFORE executing: the quoter simulates the same swap (haircut included) without changing state,
+        // while each execution moves the price, so a quote taken after the fill would price a different state.
+        (bool qOk, uint256 qIn,) = _quoteOut(p);
+        assertTrue(qOk, "quoter prices the permitted haircut");
+        Fill memory f = _execOut(p);
+        assertTrue(f.ok, "permitted hook haircut must succeed on a configured pool");
+        assertEq(f.delivered, amountOut, "permitted haircut cannot shift the delivered amount");
+        assertGt(f.paid, 0, "payer is charged");
+        assertEq(qIn, f.paid, "quote == execution (haircut included)");
+        // multi-hop through the configured plugin pool: same exact delivery
+        bytes memory path = zeroForOne ? _path1(tokenB, k, tokenA) : _path1(tokenA, k, tokenB);
+        uint256 out0 = _bal(zeroForOne ? tokenB : tokenA, bob);
+        vm.prank(alice);
+        uint256 paidMulti = router.exactOutput(_outMulti(path, bob, amountOut, type(uint128).max));
+        assertEq(_bal(zeroForOne ? tokenB : tokenA, bob) - out0, amountOut, "multi-hop: exact delivery");
+        assertGt(paidMulti, 0);
         _assertClean();
     }
 
