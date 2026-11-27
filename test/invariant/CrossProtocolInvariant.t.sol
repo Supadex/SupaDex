@@ -130,7 +130,9 @@ contract CrossProtocolHandler is Test {
 
     function swap(uint256 poolSeed, bool z, uint256 amt) external {
         uint256 p = poolSeed % 3;
-        amt = bound(amt, 1e6, 1e23);
+        // T-2: dust swaps start at 1 wei (was 1e6). C-02's trigger is a 1-unit
+        // swap right after a tick cross, below the old lower bound.
+        amt = bound(amt, 1, 1e23);
         calls["swap"]++;
         try trader.exec(_one(_op(1, p, int256(amt), z))) {}
         catch (bytes memory err) {
@@ -155,7 +157,8 @@ contract CrossProtocolHandler is Test {
     /// a sub-fee gain in one token cannot hide behind a loss in the other. Dust events (exactly 1 wei) are counted.
     function roundTrip(uint256 poolSeed, bool z, uint256 amt) external {
         uint256 p = poolSeed % 3;
-        amt = bound(amt, 1e9, 1e22);
+        // T-2: round trips start at 1 wei (was 1e9).
+        amt = bound(amt, 1, 1e22);
         calls["roundTrip"]++;
         uint256 b0 = t0.balanceOf(address(arb));
         uint256 b1 = t1.balanceOf(address(arb));
@@ -305,6 +308,26 @@ contract CrossProtocolInvariantTest is StdInvariant, Test {
     function invariant_stableImbalanceBounded() public view {
         (uint256 r0, uint256 r1) = stable.getReserves(keys[2].toId());
         if (r0 == 0 || r1 == 0) return;
+        uint256 hi = r0 > r1 ? r0 : r1;
+        uint256 lo = r0 > r1 ? r1 : r0;
+        assertLe(hi, lo * stable.MAX_IMBALANCE_RATIO());
+    }
+
+    /// REGRESSION: deterministic replay of the invariant_stableImbalanceBounded
+    /// counterexample found at CI parameters (256 runs x depth 128, seed 0x5eed2026).
+    /// Removing 100% of the sole Stable LP leaves the pool at dust reserves
+    /// (~1000/1000, the MINIMUM_LIQUIDITY lock); a 19,009-wei exact-in swap then
+    /// drained the low side to 2 wei and left (20001, 2) — ratio 10,000.5:1, past
+    /// the documented MAX_IMBALANCE_RATIO:1 bound. Root cause was StableAMMEngine
+    /// enforcing the bound with floor division (`hi / ratio <= lo`), which tolerates
+    /// hi up to lo*ratio + (ratio-1); the engine now uses the exact multiplication
+    /// form. Failed with 'assertion failed: 20001 > 20000' before the fix; guards
+    /// the exact-form check. Do NOT weaken this assertion.
+    function test_stableImbalanceBoundedDustRepro() public {
+        h.removeLiquidity(0, 8, 6100);
+        h.swap(14, false, 19009);
+        (uint256 r0, uint256 r1) = stable.getReserves(keys[2].toId());
+        console2.log("repro reserves r0/r1:", r0, r1);
         uint256 hi = r0 > r1 ? r0 : r1;
         uint256 lo = r0 > r1 ? r1 : r0;
         assertLe(hi, lo * stable.MAX_IMBALANCE_RATIO());

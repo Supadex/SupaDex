@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
 
-import {Test} from "forge-std/Test.sol";
+import {Test, console2} from "forge-std/Test.sol";
 import {StdInvariant} from "forge-std/StdInvariant.sol";
 import {SupaVault} from "../../contract/core/SupaVault.sol";
 import {SupaPoolManager} from "../../contract/core/SupaPoolManager.sol";
@@ -32,20 +32,29 @@ contract LiqToken {
 }
 
 /// T-2 / T-3: dust-sized swaps plus `pool.liquidity == sum of in-range positions`.
+/// Ghost-tracked positions in three adjacent ranges (A [-120,120), B [120,240),
+/// C [240,360)), each with its own salt, so the liquidity-sum invariant is
+/// checked against the engine's per-position state as well as the handler ghost.
 contract CLAMMLiquidityHandler is Test, IUnlockCallback {
     using CurrencyLibrary for Currency;
     using PoolIdLibrary for PoolKey;
+    using Slot0Library for Slot0;
 
     int24 internal constant A_LO = -120;
     int24 internal constant A_HI = 120;
     int24 internal constant B_LO = 120;
     int24 internal constant B_HI = 240;
+    int24 internal constant C_LO = 240;
+    int24 internal constant C_HI = 360;
 
     SupaVault public vault;
     SupaPoolManager public manager;
     PoolKey public key;
     uint128 public liqA;
     uint128 public liqB;
+    uint128 public liqC;
+    uint256 public dustSwapsExecuted;
+    uint256 public tickTargetedSwapsExecuted;
 
     constructor(SupaVault _vault, SupaPoolManager _manager, PoolKey memory _key) {
         vault = _vault;
@@ -53,46 +62,74 @@ contract CLAMMLiquidityHandler is Test, IUnlockCallback {
         key = _key;
     }
 
+    function _range(uint8 action) internal pure returns (int24 lo, int24 hi, bytes32 salt, uint8 slot) {
+        if (action == 0 || action == 2) return (A_LO, A_HI, bytes32(uint256(0)), 0);
+        if (action == 1 || action == 3) return (B_LO, B_HI, bytes32(uint256(1)), 1);
+        return (C_LO, C_HI, bytes32(uint256(2)), 2);
+    }
+
     function unlockCallback(bytes calldata data) external override returns (bytes memory) {
         (uint8 action, uint256 amount, bool zeroForOne) = abi.decode(data, (uint8, uint256, bool));
-        if (action == 0 || action == 1) {
-            int24 lo = action == 0 ? A_LO : B_LO;
-            int24 hi = action == 0 ? A_HI : B_HI;
+        if (action == 0 || action == 1 || action == 5) {
+            (int24 lo, int24 hi, bytes32 salt, uint8 slot) = _range(action);
             (BalanceDelta principal, BalanceDelta fees) = manager.modifyLiquidity(
                 key,
                 IPoolManager.ModifyLiquidityParams({
-                    tickLower: lo, tickUpper: hi, liquidityDelta: int256(amount), salt: bytes32(uint256(action))
+                    tickLower: lo, tickUpper: hi, liquidityDelta: int256(amount), salt: salt
                 }),
                 ""
             );
             // The vault is moved by principal - fees. Settle that net, or accrued fees are left open.
             _settle(principal.sub(fees));
-            if (action == 0) liqA += uint128(amount);
-            else liqB += uint128(amount);
-        } else if (action == 2 || action == 3) {
-            uint128 have = action == 2 ? liqA : liqB;
+            if (slot == 0) liqA += uint128(amount);
+            else if (slot == 1) liqB += uint128(amount);
+            else liqC += uint128(amount);
+        } else if (action == 2 || action == 3 || action == 6) {
+            (int24 lo, int24 hi, bytes32 salt, uint8 slot) = _range(action);
+            uint128 have = slot == 0 ? liqA : slot == 1 ? liqB : liqC;
             if (amount > have) amount = have;
             if (amount == 0) return "";
-            int24 lo = action == 2 ? A_LO : B_LO;
-            int24 hi = action == 2 ? A_HI : B_HI;
             (BalanceDelta principal, BalanceDelta fees) = manager.modifyLiquidity(
                 key,
                 IPoolManager.ModifyLiquidityParams({
-                    tickLower: lo, tickUpper: hi, liquidityDelta: -int256(amount), salt: bytes32(uint256(action - 2))
+                    tickLower: lo, tickUpper: hi, liquidityDelta: -int256(amount), salt: salt
                 }),
                 ""
             );
             _settle(principal.sub(fees));
-            if (action == 2) liqA -= uint128(amount);
-            else liqB -= uint128(amount);
+            if (slot == 0) liqA -= uint128(amount);
+            else if (slot == 1) liqB -= uint128(amount);
+            else liqC -= uint128(amount);
+        } else if (action == 7) {
+            // T-2: swap TO exactly an initialized tick, then immediately make a
+            // 1-wei dust swap in the same direction. This is the C-02 trigger: a
+            // zero-movement step right after a tick cross.
+            int24 target = zeroForOne ? A_LO : B_LO;
+            uint160 limit = TickMathLib.getSqrtRatioAtTick(target);
+            BalanceDelta first = manager.swap(
+                key,
+                IPoolManager.SwapParams({
+                    zeroForOne: zeroForOne, amountSpecified: int256(100 ether), sqrtPriceLimitX96: limit
+                }),
+                ""
+            );
+            _settle(first);
+            tickTargetedSwapsExecuted++;
+            BalanceDelta dust = manager.swap(
+                key, IPoolManager.SwapParams({zeroForOne: zeroForOne, amountSpecified: 1, sqrtPriceLimitX96: 0}), ""
+            );
+            _settle(dust);
+            dustSwapsExecuted++;
         } else {
-            int256 specified = zeroForOne ? int256(amount) : int256(amount);
             BalanceDelta delta = manager.swap(
                 key,
-                IPoolManager.SwapParams({zeroForOne: zeroForOne, amountSpecified: specified, sqrtPriceLimitX96: 0}),
+                IPoolManager.SwapParams({
+                    zeroForOne: zeroForOne, amountSpecified: int256(amount), sqrtPriceLimitX96: 0
+                }),
                 ""
             );
             _settle(delta);
+            if (amount == 1) dustSwapsExecuted++;
         }
         return "";
     }
@@ -109,6 +146,12 @@ contract CLAMMLiquidityHandler is Test, IUnlockCallback {
         vault.unlock(abi.encode(uint8(1), amount, false));
     }
 
+    function addC(uint256 amount) external {
+        amount = bound(amount, 1, 1_000 ether);
+        _fund(amount);
+        vault.unlock(abi.encode(uint8(5), amount, false));
+    }
+
     function removeA(uint256 amount) external {
         if (liqA == 0) return;
         amount = bound(amount, 1, liqA);
@@ -121,11 +164,35 @@ contract CLAMMLiquidityHandler is Test, IUnlockCallback {
         vault.unlock(abi.encode(uint8(3), amount, false));
     }
 
+    function removeC(uint256 amount) external {
+        if (liqC == 0) return;
+        amount = bound(amount, 1, liqC);
+        vault.unlock(abi.encode(uint8(6), amount, false));
+    }
+
     /// Includes 1-wei swaps (T-2).
     function swap(bool zeroForOne, uint256 amount) external {
         amount = bound(amount, 1, 100 ether);
         _fund(amount);
         vault.unlock(abi.encode(uint8(4), amount, zeroForOne));
+    }
+
+    /// A single 1-wei dust swap (T-2).
+    function dustSwap(bool zeroForOne) external {
+        _fund(1);
+        vault.unlock(abi.encode(uint8(4), uint256(1), zeroForOne));
+    }
+
+    /// T-2: swap TO exactly an initialized tick (-120 going down, +120 going
+    /// up) and then immediately execute a 1-wei dust swap in the same
+    /// direction, in a single unlock. No-ops when the price is already at or
+    /// beyond the target tick (the limit would be on the wrong side).
+    function swapToTickThenDust(bool zeroForOne) external {
+        int24 tick = manager.getSlot0(key.toId()).tick();
+        if (zeroForOne && tick <= A_LO) return;
+        if (!zeroForOne && tick >= B_LO) return;
+        _fund(100 ether);
+        vault.unlock(abi.encode(uint8(7), uint256(0), zeroForOne));
     }
 
     function _fund(uint256 amount) internal {
@@ -181,6 +248,7 @@ contract CLAMMActiveLiquidityInvariantTest is StdInvariant, Test {
         handler = new CLAMMLiquidityHandler(vault, manager, key);
         handler.addA(1_000_000);
         handler.addB(1_000_000);
+        handler.addC(1_000_000);
         targetContract(address(handler));
     }
 
@@ -189,7 +257,31 @@ contract CLAMMActiveLiquidityInvariantTest is StdInvariant, Test {
         uint128 expected;
         if (tick >= -120 && tick < 120) expected += handler.liqA();
         if (tick >= 120 && tick < 240) expected += handler.liqB();
+        if (tick >= 240 && tick < 360) expected += handler.liqC();
         assertEq(engine.getLiquidity(key.toId()), expected, "pool.liquidity == sum of in-range positions");
+    }
+
+    /// T-3: the engine's own per-position state must match the ghost-tracked
+    /// handler balances for every range, not just the aggregate sum. A
+    /// re-crossed tick (C-02) would double-apply liquidityNet to the pool
+    /// without changing any position, so this catches it from a second angle.
+    function invariant_positionLiquidityMatchesGhost() public view {
+        PoolId id = key.toId();
+        assertEq(
+            engine.getPosition(id, address(handler), -120, 120, bytes32(uint256(0))).liquidity,
+            handler.liqA(),
+            "engine position A drifted from ghost"
+        );
+        assertEq(
+            engine.getPosition(id, address(handler), 120, 240, bytes32(uint256(1))).liquidity,
+            handler.liqB(),
+            "engine position B drifted from ghost"
+        );
+        assertEq(
+            engine.getPosition(id, address(handler), 240, 360, bytes32(uint256(2))).liquidity,
+            handler.liqC(),
+            "engine position C drifted from ghost"
+        );
     }
 
     function invariant_tickAgreesWithPrice() public view {
@@ -202,5 +294,10 @@ contract CLAMMActiveLiquidityInvariantTest is StdInvariant, Test {
         if (stored + 1 == fromPrice) {
             assertEq(price, TickMathLib.getSqrtRatioAtTick(fromPrice));
         }
+    }
+
+    function afterInvariant() external view {
+        console2.log("dust swaps executed:", handler.dustSwapsExecuted());
+        console2.log("tick-targeted swaps executed:", handler.tickTargetedSwapsExecuted());
     }
 }
