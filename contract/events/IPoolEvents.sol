@@ -66,4 +66,38 @@ interface IPoolEvents {
      * @notice Emitted when protocol fees are collected to a recipient.
      */
     event ProtocolFeesCollected(Currency indexed currency, address indexed recipient, uint256 amount);
+
+    /**
+     * @notice I-01 redesign (2026-11-27): emitted when governance sets (or
+     * clears) a pool's afterSwap hook-delta configuration.
+     */
+    event HookDeltaConfigSet(
+        PoolId indexed id,
+        uint16 maxHaircutBps,
+        uint16 lpBps,
+        uint16 protocolBps,
+        uint16 beneficiaryBps,
+        address beneficiary
+    );
+
+    /**
+     * @notice I-01 redesign (2026-11-27): emitted when an afterSwap haircut is
+     * distributed. The three shares always sum exactly to `haircut`.
+     */
+    event HookDeltaApplied(
+        PoolId indexed id,
+        Currency indexed currency,
+        uint256 haircut,
+        uint256 lpShare,
+        uint256 protocolShare,
+        uint256 beneficiaryShare
+    );
+
+    /**
+     * @notice I-01 redesign (2026-11-27): emitted when a hook beneficiary
+     * collects accrued hook fees to a recipient of their choice.
+     */
+    event HookBeneficiaryFeesCollected(
+        address indexed beneficiary, Currency indexed currency, address indexed recipient, uint256 amount
+    );
 }

@@ -34,6 +34,25 @@ interface IPoolManager is IPoolEvents {
     }
 
     /**
+     * @notice I-01 redesign (2026-11-27): how an afterSwap haircut is split on
+     * one pool. Set by governance (owner = timelock) via `setHookDeltaConfig`.
+     * Default (never set) is all zeros: the feature is disabled on the pool.
+     * @param maxHaircutBps 0 = feature disabled; > 0 enables it, capped at
+     * `MAX_HOOK_HAIRCUT_BPS` (1_000 = 10%) in the manager.
+     * @param lpBps Share to in-range LPs via engine.donate (fee growth).
+     * @param protocolBps Share to `protocolFeesAccrued` (treasury).
+     * @param beneficiaryBps Share to the approved hook beneficiary accrual.
+     * @param beneficiary `!= address(0)` iff `beneficiaryBps > 0`.
+     */
+    struct HookDeltaConfig {
+        uint16 maxHaircutBps;
+        uint16 lpBps;
+        uint16 protocolBps;
+        uint16 beneficiaryBps;
+        address beneficiary;
+    }
+
+    /**
      * @notice Returns the underlying Vault contract.
      */
     function vault() external view returns (IVault);
@@ -129,4 +148,35 @@ interface IPoolManager is IPoolEvents {
     function collectProtocolFees(Currency currency, address recipient, uint256 amount)
         external
         returns (uint256 collected);
+
+    /**
+     * @notice I-01 redesign (2026-11-27): returns a pool's afterSwap
+     * hook-delta configuration (all zeros = feature disabled).
+     */
+    function hookDeltaConfigs(PoolId id) external view returns (HookDeltaConfig memory);
+
+    /**
+     * @notice I-01 redesign (2026-11-27): returns a hook beneficiary's accrued
+     * uncollected hook fees for a currency.
+     */
+    function hookBeneficiaryFees(address beneficiary, Currency currency) external view returns (uint256);
+
+    /**
+     * @notice I-01 redesign (2026-11-27): sets a pool's afterSwap hook-delta
+     * configuration (owner only). Reverts `InvalidHookDeltaConfig` unless
+     * `maxHaircutBps <= MAX_HOOK_HAIRCUT_BPS`, the three split shares sum to
+     * exactly 10_000 bps, and `beneficiaryBps > 0` iff `beneficiary != address(0)`.
+     */
+    function setHookDeltaConfig(PoolKey memory key, HookDeltaConfig calldata cfg) external;
+
+    /**
+     * @notice I-01 redesign (2026-11-27): collects the caller's accrued hook
+     * fees to a recipient of their choice. Only the beneficiary themself may
+     * call (the accrual is keyed by beneficiary); a caller with no accrual
+     * reverts. Per-call amount is capped at `type(int128).max` (same pattern
+     * as `collectProtocolFees` — larger balances are collected across calls).
+     * The credited delta must be settled inside the same `unlock`, like every
+     * other vault credit.
+     */
+    function collectHookFees(Currency currency, address recipient, uint256 amount) external returns (uint256 collected);
 }

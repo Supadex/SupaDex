@@ -35,9 +35,10 @@ contract SwapTok {
 }
 
 /// @dev afterSwap hook that always returns a configurable non-zero delta.
-/// Per the I-01 resolution, afterSwap hook deltas are EXPLICITLY UNSUPPORTED
-/// BY DESIGN: the reference leg in _applySwapHookDelta is always the input
-/// (debit) leg, so _validateHookDelta must reject every non-zero delta here.
+/// I-01 REDESIGN (2026-11-27): non-negative haircuts inside the pool's
+/// configured cap are now PERMITTED (see HookDeltaAfterSwap.t.sol). This
+/// mock is kept for the cases that still reject: unpermissioned hooks,
+/// unconfigured pools, over-cap and negative deltas, and dust legs.
 contract RejectSwapHook is BaseHook {
     int128 public steal;
 
@@ -116,14 +117,15 @@ contract SwapActor is IUnlockCallback {
     }
 }
 
-/// @title T-8 (I-01): afterSwap hook deltas are rejected in every direction/mode
-/// @notice The I-01 resolution is that afterSwap hook deltas are UNSUPPORTED BY
-/// DESIGN and always revert. These tests pin that behaviour in both swap
-/// directions (zeroForOne / oneForZero) and both modes (exactInput /
-/// exactOutput), for both signs of the returned delta. If any of these tests
-/// starts PASSING a swap (i.e. the revert disappears), the feature's fate has
-/// changed and the positive path needs its own tests — do not silently update
-/// these expectations.
+/// @title T-8 (I-01 redesign): afterSwap hook deltas that still reject
+/// @notice I-01 was REDESIGNED on 2026-11-27 (founder decision, Option B):
+/// a non-negative haircut on the unspecified leg, inside the pool's
+/// configured cap, is now PERMITTED — the positive path lives in
+/// `test/unit/HookDeltaAfterSwap.t.sol`. This suite is KEPT for the cases
+/// that still revert: unpermissioned hooks, unconfigured pools, over-cap
+/// and negative deltas, and dust legs (cap floors to 0). The old
+/// "every non-zero delta reverts" behaviour is gone by design; these tests
+/// pin the new rejection boundaries instead.
 contract HookDeltaAfterSwapRejectionTest is Test {
     using PoolIdLibrary for PoolKey;
     using Slot0Library for Slot0;
@@ -136,6 +138,7 @@ contract HookDeltaAfterSwapRejectionTest is Test {
     PoolKey internal key;
     PoolKey internal hookedKey;
     RejectSwapHook internal hook;
+    PluginWhitelist internal wl;
     SwapActor internal victim;
     SwapActor internal attacker;
 
@@ -160,10 +163,10 @@ contract HookDeltaAfterSwapRejectionTest is Test {
         hook = new RejectSwapHook(manager);
         address[] memory plugins = new address[](1);
         plugins[0] = address(hook);
-        PluginWhitelist wl = new PluginWhitelist(address(this), plugins);
-        // Grant canReturnDelta so the rejection comes from the reference-leg
-        // rule itself, not from the permission gate (that gate is covered by
-        // test_F4_hookDeltaCappedAndPermissioned).
+        wl = new PluginWhitelist(address(this), plugins);
+        // Grant canReturnDelta so the rejection comes from the cap/config
+        // rules themselves, not from the permission gate (that gate is covered
+        // by test_afterSwapDeltaRejected_unpermissioned).
         wl.setPluginCanReturnDelta(address(hook), true);
         manager.setPluginWhitelist(IPluginWhitelist(address(wl)));
 
@@ -190,69 +193,112 @@ contract HookDeltaAfterSwapRejectionTest is Test {
         assertEq(clamm.getLiquidity(hookedKey.toId()), liqBefore, "reverted swap moved liquidity");
     }
 
-    function _expectHookDeltaRevert(bool zeroForOne, int256 amountSpecified) internal {
+    /// @dev Configures the hooked pool: 500 bps cap, 100% of the haircut to LPs.
+    function _configurePool() internal {
+        manager.setHookDeltaConfig(
+            hookedKey,
+            IPoolManager.HookDeltaConfig({
+                maxHaircutBps: 500, lpBps: 10000, protocolBps: 0, beneficiaryBps: 0, beneficiary: address(0)
+            })
+        );
+    }
+
+    function _expectSwapRevert(bytes memory expected, bool zeroForOne, int256 amountSpecified) internal {
         int24 tickBefore = clamm.getSlot0(hookedKey.toId()).tick();
         uint128 liqBefore = clamm.getLiquidity(hookedKey.toId());
-        vm.expectRevert(PoolErrors.HookDeltaCapExceeded.selector);
+        vm.expectRevert(expected);
         attacker.swap(hookedKey, zeroForOne, amountSpecified);
         _assertPoolUnchanged(tickBefore, liqBefore);
     }
 
-    function test_afterSwapDeltaRejected_zeroForOne_exactIn_positiveDelta() public {
+    /// @notice Disabled pool (never configured) + positive hook delta, in all
+    /// 8 direction/mode/sign combinations that reach the config gate: the
+    /// feature is off by default, so the swap reverts HookDeltaNotEnabled.
+    /// (Negative deltas hit the take-only rule first — see the negative tests.)
+    function test_afterSwapDeltaRejected_disabledPool_zeroForOne_exactIn_positiveDelta() public {
         hook.setSteal(int128(1e6));
-        _expectHookDeltaRevert(true, 1_000_000);
+        _expectSwapRevert(
+            abi.encodeWithSelector(PoolErrors.HookDeltaNotEnabled.selector, hookedKey.toId()), true, 1_000_000
+        );
     }
 
-    function test_afterSwapDeltaRejected_zeroForOne_exactIn_negativeDelta() public {
-        hook.setSteal(-int128(1e5));
-        _expectHookDeltaRevert(true, 1_000_000);
-    }
-
-    function test_afterSwapDeltaRejected_zeroForOne_exactOut_positiveDelta() public {
+    function test_afterSwapDeltaRejected_disabledPool_zeroForOne_exactOut_positiveDelta() public {
         hook.setSteal(int128(1e6));
-        _expectHookDeltaRevert(true, -1_000);
+        _expectSwapRevert(
+            abi.encodeWithSelector(PoolErrors.HookDeltaNotEnabled.selector, hookedKey.toId()), true, -1_000
+        );
     }
 
-    function test_afterSwapDeltaRejected_zeroForOne_exactOut_negativeDelta() public {
-        hook.setSteal(-int128(1e5));
-        _expectHookDeltaRevert(true, -1_000);
-    }
-
-    function test_afterSwapDeltaRejected_oneForZero_exactIn_positiveDelta() public {
+    function test_afterSwapDeltaRejected_disabledPool_oneForZero_exactIn_positiveDelta() public {
         hook.setSteal(int128(1e6));
-        _expectHookDeltaRevert(false, 1_000_000);
+        _expectSwapRevert(
+            abi.encodeWithSelector(PoolErrors.HookDeltaNotEnabled.selector, hookedKey.toId()), false, 1_000_000
+        );
     }
 
-    function test_afterSwapDeltaRejected_oneForZero_exactIn_negativeDelta() public {
-        hook.setSteal(-int128(1e5));
-        _expectHookDeltaRevert(false, 1_000_000);
-    }
-
-    function test_afterSwapDeltaRejected_oneForZero_exactOut_positiveDelta() public {
+    function test_afterSwapDeltaRejected_disabledPool_oneForZero_exactOut_positiveDelta() public {
         hook.setSteal(int128(1e6));
-        _expectHookDeltaRevert(false, -1_000);
+        _expectSwapRevert(
+            abi.encodeWithSelector(PoolErrors.HookDeltaNotEnabled.selector, hookedKey.toId()), false, -1_000
+        );
     }
 
-    function test_afterSwapDeltaRejected_oneForZero_exactOut_negativeDelta() public {
+    /// @notice Negative delta on a disabled pool: the take-only rule (rule 3)
+    /// fires before the config gate (rule 4), so the error is CapExceeded.
+    function test_afterSwapDeltaRejected_disabledPool_negativeDelta() public {
         hook.setSteal(-int128(1e5));
-        _expectHookDeltaRevert(false, -1_000);
+        _expectSwapRevert(abi.encodeWithSelector(PoolErrors.HookDeltaCapExceeded.selector), true, 1_000_000);
+        hook.setSteal(-int128(1e5));
+        _expectSwapRevert(abi.encodeWithSelector(PoolErrors.HookDeltaCapExceeded.selector), false, -1_000);
     }
 
-    /// @notice Even a 1-wei hook delta is rejected: there is no dust exemption.
-    function test_afterSwapDeltaRejected_oneWeiDelta() public {
+    /// @notice Over-cap on a configured pool: a 1e9 haircut dwarfs the 5% cap
+    /// on any leg these swaps produce. The exact cap boundary (cap vs cap+1)
+    /// is pinned in HookDeltaAfterSwap.t.sol (test_capBoundary).
+    function test_afterSwapDeltaRejected_overCap() public {
+        _configurePool();
+        hook.setSteal(int128(1_000_000_000));
+        _expectSwapRevert(abi.encodeWithSelector(PoolErrors.HookDeltaCapExceeded.selector), true, 1_000_000);
+        hook.setSteal(int128(1_000_000_000));
+        _expectSwapRevert(abi.encodeWithSelector(PoolErrors.HookDeltaCapExceeded.selector), true, -1_000);
+    }
+
+    /// @notice Negative delta on a configured pool reverts in both modes.
+    function test_afterSwapDeltaRejected_negativeDelta() public {
+        _configurePool();
+        hook.setSteal(-int128(1e5));
+        _expectSwapRevert(abi.encodeWithSelector(PoolErrors.HookDeltaCapExceeded.selector), true, 1_000_000);
+        hook.setSteal(-int128(1e5));
+        _expectSwapRevert(abi.encodeWithSelector(PoolErrors.HookDeltaCapExceeded.selector), false, -1_000);
+    }
+
+    /// @notice Unpermissioned hook (whitelisted but canReturnDelta cleared):
+    /// HookDeltaNotAllowed.
+    function test_afterSwapDeltaRejected_unpermissioned() public {
+        wl.setPluginCanReturnDelta(address(hook), false);
+        hook.setSteal(int128(1e6));
+        vm.expectRevert(abi.encodeWithSelector(PoolErrors.HookDeltaNotAllowed.selector, address(hook)));
+        attacker.swap(hookedKey, true, 1_000_000);
+    }
+
+    /// @notice Dust output: a 1-wei exact-output swap has a 0 cap, so even a
+    /// 1-wei hook reverts; a zero hook still succeeds.
+    function test_afterSwapDeltaRejected_dustOutput() public {
+        _configurePool();
         hook.setSteal(int128(1));
-        _expectHookDeltaRevert(true, 1_000_000);
-        hook.setSteal(-int128(1));
-        _expectHookDeltaRevert(false, -1_000);
+        _expectSwapRevert(abi.encodeWithSelector(PoolErrors.HookDeltaCapExceeded.selector), true, -1);
+        hook.setSteal(0);
+        attacker.swap(hookedKey, true, -1);
     }
 
-    /// @notice Fuzz over both directions, both modes, and the full int128
-    /// delta range: every non-zero afterSwap delta must revert.
-    function testFuzz_afterSwapDeltaAlwaysRejected(bool zeroForOne, bool exactOut, int128 stealRaw) public {
-        int128 steal = stealRaw == 0 ? int128(1) : stealRaw;
+    /// @notice Fuzz over both directions, both modes, and the negative delta
+    /// range: every negative afterSwap delta must revert (take-only rule).
+    function testFuzz_afterSwapNegativeDeltaAlwaysRejected(bool zeroForOne, bool exactOut, int128 stealRaw) public {
+        uint256 mag = bound(uint256(uint128(stealRaw)), 1, uint256(uint128(type(int128).max)));
+        int128 steal = -int128(uint128(mag));
         hook.setSteal(steal);
         int256 amountSpecified = exactOut ? int256(-1_000) : int256(1_000_000);
-        _expectHookDeltaRevert(zeroForOne, amountSpecified);
+        _expectSwapRevert(abi.encodeWithSelector(PoolErrors.HookDeltaCapExceeded.selector), zeroForOne, amountSpecified);
     }
 
     /// @notice Control: with a zero hook delta the same four swaps succeed.
