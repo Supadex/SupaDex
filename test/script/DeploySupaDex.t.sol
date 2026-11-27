@@ -372,4 +372,36 @@ contract DeploySupaDexTest is Test {
         assertTrue(verifier.isMultisig(address(new MockSafe(2, 3))));
         assertTrue(verifier.isMultisig(address(new MockSafe(3, 5))));
     }
+
+    /// I-06: Anti-JIT residency is tuned per chain (~120 s everywhere). 10 blocks
+    /// at ~12 s/block (Ethereum + testnets), 40 at ~3 s/block (BNB), 24 at ~5 s/block
+    /// (Gnosis), 60 at ~2 s/block (Base/Arbitrum/OP/Polygon/Avalanche/…) and 60 for
+    /// unknown chain ids (fail closed to the longest residency).
+    function test_I06_antiJitResidencyPerChain() public {
+        DeployHarness h = new DeployHarness();
+        vm.chainId(1);
+        assertEq(h.antiJitMinResidencyBlocks(), 10, "Ethereum mainnet");
+        vm.chainId(11155111);
+        assertEq(h.antiJitMinResidencyBlocks(), 10, "Sepolia");
+        vm.chainId(17000);
+        assertEq(h.antiJitMinResidencyBlocks(), 10, "Holesky");
+        vm.chainId(8453);
+        assertEq(h.antiJitMinResidencyBlocks(), 60, "Base");
+        vm.chainId(42161);
+        assertEq(h.antiJitMinResidencyBlocks(), 60, "Arbitrum One");
+        vm.chainId(10);
+        assertEq(h.antiJitMinResidencyBlocks(), 60, "OP Mainnet");
+        vm.chainId(137);
+        assertEq(h.antiJitMinResidencyBlocks(), 60, "Polygon PoS");
+        vm.chainId(56);
+        assertEq(h.antiJitMinResidencyBlocks(), 40, "BNB Smart Chain");
+        vm.chainId(97);
+        assertEq(h.antiJitMinResidencyBlocks(), 40, "BNB testnet");
+        vm.chainId(100);
+        assertEq(h.antiJitMinResidencyBlocks(), 24, "Gnosis");
+        vm.chainId(31337);
+        assertEq(h.antiJitMinResidencyBlocks(), 10, "local anvil");
+        vm.chainId(999999);
+        assertEq(h.antiJitMinResidencyBlocks(), 60, "unknown chain fails closed to longest");
+    }
 }

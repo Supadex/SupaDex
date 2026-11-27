@@ -104,6 +104,12 @@ library SqrtPriceMathLib {
 
     /**
      * @notice Computes the next sqrt price given input token1.
+     * @dev I-04 (internal pre-audit 2026-11-26) — Uniswap v3 parity: the `add` branch
+     *      must not compute `amount << 96` unchecked. For `amount > type(uint160).max`
+     *      the shift truncates the high bits and returns a wrong (too low) price, so
+     *      v3 takes the `FullMathLib.mulDiv` fallback instead. The `sub` branch already
+     *      used `mulDivRoundingUp`. `computeSwapStep` recomputes amounts from the
+     *      resulting price, so the old path was self-consistent rather than value-leaking.
      */
     function getNextSqrtPriceFromAmount1RoundingDown(uint160 sqrtPX96, uint128 liquidity, uint256 amount, bool add)
         internal
@@ -111,8 +117,12 @@ library SqrtPriceMathLib {
         returns (uint160)
     {
         if (add) {
-            uint256 quotient = (amount << 96) / liquidity;
-            return uint160(uint256(sqrtPX96) + quotient);
+            if (amount <= type(uint160).max) {
+                uint256 quotient = (amount << 96) / liquidity;
+                return uint160(uint256(sqrtPX96) + quotient);
+            } else {
+                return uint160(uint256(sqrtPX96) + FullMathLib.mulDiv(amount, 1 << 96, liquidity));
+            }
         } else {
             uint256 quotient = FullMathLib.mulDivRoundingUp(amount, 1 << 96, liquidity);
             require(sqrtPX96 > quotient);

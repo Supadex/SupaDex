@@ -93,6 +93,10 @@ abstract contract PeripheryPayments is IPeripheryPayments {
 
     /**
      * @dev Refunds all native ETH held by this periphery contract to `to`.
+     * @notice I-08: this is the internal helper used by user-facing flows. The
+     *      public `refundETH()` below is a different, permissionless path — see its
+     *      NatSpec. Never send ETH directly to a periphery contract expecting it
+     *      to be held for you; use the router flows, which settle through the vault.
      */
     function _refundETH(address to) internal {
         uint256 balance = address(this).balance;
@@ -104,6 +108,19 @@ abstract contract PeripheryPayments is IPeripheryPayments {
     /**
      * @inheritdoc IPeripheryPayments
      * @dev Permissionless sweep of stranded ETH to the caller. User-facing flows must use `_refundETH`.
+     * @notice I-08 (internal pre-audit 2026-11-26) — PUBLIC / PERMISSIONLESS, BY DESIGN (Uniswap v3
+     *      periphery pattern: "periphery holds no funds"). ANYONE can call this and receive ALL native
+     *      ETH currently held by this contract — there is no allowlist, no per-user balance and no
+     *      "only my ETH" check, because the contract tracks no per-user ETH balances. The same
+     *      applies to `sweepToken` below for ERC-20s. This is safe only because user-facing flows
+     *      never leave funds sitting in a periphery contract: swaps and liquidity ops settle
+     *      atomically through the vault inside one transaction. Users must NEVER send tokens or ETH
+     *      directly to a router / position manager / claims router address — a direct transfer is
+     *      stranded balance that the next caller of `sweepToken` / `refundETH` can claim. Frontends
+     *      must warn before any direct transfer; see `docs/users/USER_GUIDE.md` §5 and
+     *      `docs/TOKEN-POLICY.md`. No behaviour change is made here: restricting these functions
+     *      would break the standard periphery pattern (e.g. multicall flows that legitimately
+     *      sweep dust) and the audit recommendation is documentation + UI warning only.
      */
     function refundETH() external payable override {
         _refundETH(msg.sender);
@@ -111,6 +128,12 @@ abstract contract PeripheryPayments is IPeripheryPayments {
 
     /**
      * @inheritdoc IPeripheryPayments
+     * @notice I-08 — PUBLIC / PERMISSIONLESS sweep, by design (see `refundETH` above). Anyone can
+     *      withdraw the contract's ENTIRE balance of `currency` (native ETH included) to any
+     *      `recipient`, provided the balance is at least `amountMinimum`. There is no per-user
+     *      accounting here: tokens accidentally sent directly to this contract are claimable by
+     *      anyone. Frontends must warn users never to transfer tokens directly to periphery
+     *      contract addresses; see `docs/users/USER_GUIDE.md` §5.
      */
     function sweepToken(Currency currency, uint256 amountMinimum, address recipient) external payable override {
         uint256 balance = currency.balanceOfSelf();
