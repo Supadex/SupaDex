@@ -110,7 +110,7 @@ jobs:
       - name: Show Halmos version
         run: halmos --version
 
-      - name: Build (Halmos profile: dynamic test linking off, AST for Halmos)
+      - name: "Build (Halmos profile: dynamic test linking off, AST for Halmos)"
         run: forge build --ast --extra-output storageLayout metadata
 
       - name: Run Halmos formal tests
@@ -120,3 +120,32 @@ jobs:
         # the whole run (exit 124 on timeout fails the step). Any failed or
         # errored check_ function makes halmos exit non-zero and fails the job.
         run: timeout 25m halmos --function check_ --solver z3 --loop 2 --solver-timeout-assertion 120000
+
+  strict-revert:
+    name: Strict-revert invariant suite (FOUNDRY_PROFILE=strict, fail_on_revert=true)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      FOUNDRY_PROFILE: strict
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          submodules: recursive
+
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: 1.10.0
+
+      - name: Show Forge version
+        run: forge --version
+
+      - name: Strict-revert invariant suite (unexpected reverts fail the run)
+        # fail_on_revert=true is set ONLY in [profile.strict] (foundry.toml); the
+        # global [invariant] and [profile.ci.invariant] sections stay false per the
+        # founder constraint. 256 runs x depth 128, pinned seed for replay.
+        timeout-minutes: 30
+        run: forge test --match-contract "StrictRevertInvariantTest|StrictRevertRegressionTest" --fuzz-seed 0x5eed2026 -vv
